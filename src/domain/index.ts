@@ -106,7 +106,7 @@ export type ValidateLedger = {
   commandType: "validate_ledger";
   schemaVersion: 1;
   runId: string;
-  triggeringStateVersion: 2;
+  triggeringStateVersion: number;
   purposeId: string;
   inputArtifactHashes: string[];
   policyHash: string;
@@ -125,7 +125,7 @@ export type RenderLedger = {
   commandType: "render_ledger";
   schemaVersion: 1;
   runId: string;
-  triggeringStateVersion: 2;
+  triggeringStateVersion: number;
   purposeId: string;
   inputArtifactHashes: string[];
   policyHash: string;
@@ -401,11 +401,12 @@ function submitLedger(
     outputTokens: 0,
     costUsdMicros: 0,
   };
+  const nextStateVersion = previousState.stateVersion + 1;
   const validateWithoutIdentity = {
     commandType: "validate_ledger" as const,
     schemaVersion: 1 as const,
     runId: input.runId,
-    triggeringStateVersion: 2 as const,
+    triggeringStateVersion: nextStateVersion,
     purposeId: `${input.runId}:ledger:${input.ledgerVersionId}:validate`,
     inputArtifactHashes: [
       input.ledgerContentHash,
@@ -424,7 +425,7 @@ function submitLedger(
     commandType: "render_ledger" as const,
     schemaVersion: 1 as const,
     runId: input.runId,
-    triggeringStateVersion: 2 as const,
+    triggeringStateVersion: nextStateVersion,
     purposeId: `${input.runId}:ledger:${input.ledgerVersionId}:render`,
     inputArtifactHashes: [input.ledgerContentHash],
     policyHash: policy.policyHash,
@@ -481,7 +482,7 @@ function submitLedger(
   return {
     nextState: {
       ...previousState,
-      stateVersion: 2,
+      stateVersion: nextStateVersion,
       currentLedgerVersionId: input.ledgerVersionId,
       currentLedgerArtifactId: input.ledgerArtifactId,
       ledgerValidationStatus: "pending",

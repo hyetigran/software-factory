@@ -418,4 +418,25 @@ describe("transition", () => {
       expect.objectContaining({ code: "INVALID_TRANSITION" }),
     );
   });
+
+  it("advances the authoritative version for a revised ledger", () => {
+    const draft = transition(null, runStartedInput(), { policyHash }).nextState;
+    const first = transition(draft, ledgerSubmittedInput(), { policyHash });
+    const revision = {
+      ...ledgerSubmittedInput(),
+      expectedStateVersion: 2,
+      ledgerVersionId: "ledger_02JTEST",
+      ledgerArtifactId: "artifact_ledger_02JTEST",
+      validateCommandId: "command_validate_ledger_02JTEST",
+      renderCommandId: "command_render_ledger_02JTEST",
+    };
+
+    const second = transition(first.nextState, revision, { policyHash });
+
+    expect(second.nextState.stateVersion).toBe(3);
+    expect(second.commands).toEqual([
+      expect.objectContaining({ triggeringStateVersion: 3 }),
+      expect.objectContaining({ triggeringStateVersion: 3 }),
+    ]);
+  });
 });
