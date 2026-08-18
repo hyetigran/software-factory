@@ -23,12 +23,17 @@ export type ArtifactEvidenceReference = {
 export type DraftRunState = {
   runId: string;
   state: "draft";
-  stateVersion: 1;
+  stateVersion: number;
   sourceArtifactId: string;
+  sourceContentHash: string;
   configurationArtifactId: string;
+  configurationContentHash: string;
   policyHash: string;
   policyLocked: false;
   blockedReason: null;
+  currentLedgerVersionId?: string;
+  currentLedgerArtifactId?: string;
+  ledgerValidationStatus?: "pending";
 };
 
 export type RunStarted = {
@@ -53,6 +58,24 @@ export type PinnedRunPolicy = {
   policyHash: string;
 };
 
+export type LedgerSubmitted = {
+  type: "LedgerSubmitted";
+  runId: string;
+  expectedStateVersion: number;
+  ledgerVersionId: string;
+  ledgerArtifactId: string;
+  ledgerContentHash: string;
+  ledgerSchemaValid: boolean;
+  sourceReferencesValid: boolean;
+  auditChainVerified: boolean;
+  databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
+  validateCommandId: string;
+  renderCommandId: string;
+  actor: HumanActor;
+};
+
 export type BudgetReservation = {
   calls: number;
   inputTokens: number;
@@ -74,6 +97,43 @@ export type RenderSourceRegistrationReport = {
   budgetReservation: BudgetReservation;
   payload: {
     sourceArtifactId: string;
+  };
+};
+
+export type ValidateLedger = {
+  commandId: string;
+  commandKey: string;
+  commandType: "validate_ledger";
+  schemaVersion: 1;
+  runId: string;
+  triggeringStateVersion: 2;
+  purposeId: string;
+  inputArtifactHashes: string[];
+  policyHash: string;
+  provider: "local";
+  budgetReservation: BudgetReservation;
+  payload: {
+    ledgerVersionId: string;
+    ledgerArtifactId: string;
+    sourceArtifactId: string;
+  };
+};
+
+export type RenderLedger = {
+  commandId: string;
+  commandKey: string;
+  commandType: "render_ledger";
+  schemaVersion: 1;
+  runId: string;
+  triggeringStateVersion: 2;
+  purposeId: string;
+  inputArtifactHashes: string[];
+  policyHash: string;
+  provider: "local";
+  budgetReservation: BudgetReservation;
+  payload: {
+    ledgerVersionId: string;
+    ledgerArtifactId: string;
   };
 };
 
@@ -110,15 +170,35 @@ export type CommandPlannedFact = {
   payload: {
     commandId: string;
     commandKey: string;
-    commandType: "render_source_registration_report";
+    commandType:
+      "render_source_registration_report" | "validate_ledger" | "render_ledger";
     reservation: BudgetReservation;
+  };
+};
+
+export type LedgerSubmittedFact = {
+  type: "ledger_submitted";
+  actor: HumanActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    ledgerVersionId: string;
+    ledgerArtifactId: string;
+    contentHash: string;
   };
 };
 
 export type TransitionResult = {
   nextState: DraftRunState;
-  commands: RenderSourceRegistrationReport[];
-  auditFacts: [RunStartedFact, SourceRegisteredFact, CommandPlannedFact];
+  commands: Array<
+    RenderSourceRegistrationReport | ValidateLedger | RenderLedger
+  >;
+  auditFacts: Array<
+    | RunStartedFact
+    | SourceRegisteredFact
+    | LedgerSubmittedFact
+    | CommandPlannedFact
+  >;
 };
 
 type DomainTransitionErrorCode = "INVALID_TRANSITION" | "PRECONDITION_FAILED";
@@ -135,16 +215,27 @@ export class DomainTransitionError extends Error {
 
 export function transition(
   previousState: DraftRunState | null,
+  input: RunStarted | LedgerSubmitted,
+  policy: PinnedRunPolicy,
+): TransitionResult {
+  switch (input.type) {
+    case "RunStarted":
+      return startRun(previousState, input, policy);
+    case "LedgerSubmitted":
+      return submitLedger(previousState, input, policy);
+    default:
+      throw new DomainTransitionError(
+        "INVALID_TRANSITION",
+        `Unsupported transition: ${String((input as { type: unknown }).type)}`,
+      );
+  }
+}
+
+function startRun(
+  previousState: DraftRunState | null,
   input: RunStarted,
   policy: PinnedRunPolicy,
 ): TransitionResult {
-  if (input.type !== "RunStarted") {
-    throw new DomainTransitionError(
-      "INVALID_TRANSITION",
-      `Unsupported transition: ${String(input.type)}`,
-    );
-  }
-
   if (previousState !== null) {
     throw new DomainTransitionError(
       "INVALID_TRANSITION",
@@ -216,7 +307,9 @@ export function transition(
       state: "draft",
       stateVersion: 1,
       sourceArtifactId: input.sourceArtifactId,
+      sourceContentHash: input.sourceContentHash,
       configurationArtifactId: input.configurationArtifactId,
+      configurationContentHash: input.configurationContentHash,
       policyHash: policy.policyHash,
       policyLocked: false,
       blockedReason: null,
@@ -262,6 +355,152 @@ export function transition(
           reservation: command.budgetReservation,
         },
       },
+    ],
+  };
+}
+
+function submitLedger(
+  previousState: DraftRunState | null,
+  input: LedgerSubmitted,
+  policy: PinnedRunPolicy,
+): TransitionResult {
+  if (
+    previousState === null ||
+    previousState.state !== "draft" ||
+    previousState.runId !== input.runId
+  ) {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      "LedgerSubmitted requires the matching draft run",
+    );
+  }
+
+  if (
+    previousState.stateVersion !== input.expectedStateVersion ||
+    !input.ledgerSchemaValid ||
+    !input.sourceReferencesValid ||
+    !input.auditChainVerified ||
+    !input.databaseIntegrityVerified ||
+    !input.schemaCompatible ||
+    !input.mutationLeaseAvailable ||
+    input.actor.kind !== "human" ||
+    typeof input.actor.displayName !== "string" ||
+    input.actor.displayName.length === 0 ||
+    typeof input.actor.osAccount !== "string" ||
+    input.actor.osAccount.length === 0
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "LedgerSubmitted requires valid ledger and workspace evidence",
+    );
+  }
+
+  const reservation: BudgetReservation = {
+    calls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    costUsdMicros: 0,
+  };
+  const validateWithoutIdentity = {
+    commandType: "validate_ledger" as const,
+    schemaVersion: 1 as const,
+    runId: input.runId,
+    triggeringStateVersion: 2 as const,
+    purposeId: `${input.runId}:ledger:${input.ledgerVersionId}:validate`,
+    inputArtifactHashes: [
+      input.ledgerContentHash,
+      previousState.sourceContentHash,
+    ],
+    policyHash: policy.policyHash,
+    provider: "local" as const,
+    budgetReservation: reservation,
+    payload: {
+      ledgerVersionId: input.ledgerVersionId,
+      ledgerArtifactId: input.ledgerArtifactId,
+      sourceArtifactId: previousState.sourceArtifactId,
+    },
+  };
+  const renderWithoutIdentity = {
+    commandType: "render_ledger" as const,
+    schemaVersion: 1 as const,
+    runId: input.runId,
+    triggeringStateVersion: 2 as const,
+    purposeId: `${input.runId}:ledger:${input.ledgerVersionId}:render`,
+    inputArtifactHashes: [input.ledgerContentHash],
+    policyHash: policy.policyHash,
+    provider: "local" as const,
+    budgetReservation: reservation,
+    payload: {
+      ledgerVersionId: input.ledgerVersionId,
+      ledgerArtifactId: input.ledgerArtifactId,
+    },
+  };
+  const validateCommand: ValidateLedger = {
+    commandId: input.validateCommandId,
+    commandKey: createHash("sha256")
+      .update(canonicalJson(validateWithoutIdentity))
+      .digest("hex"),
+    ...validateWithoutIdentity,
+  };
+  const renderCommand: RenderLedger = {
+    commandId: input.renderCommandId,
+    commandKey: createHash("sha256")
+      .update(canonicalJson(renderWithoutIdentity))
+      .digest("hex"),
+    ...renderWithoutIdentity,
+  };
+  const ledgerEvidence: ArtifactEvidenceReference = {
+    kind: "artifact",
+    artifactId: input.ledgerArtifactId,
+    contentHash: input.ledgerContentHash,
+  };
+  const sourceEvidence: ArtifactEvidenceReference = {
+    kind: "artifact",
+    artifactId: previousState.sourceArtifactId,
+    contentHash: previousState.sourceContentHash,
+  };
+  const commandFact = (
+    command: ValidateLedger | RenderLedger,
+  ): CommandPlannedFact => ({
+    type: "command_planned",
+    actor: {
+      kind: "system",
+      component: "domain-transition",
+      version: "0.0.0",
+    },
+    reason: `Plan ${command.commandType}`,
+    evidence: [ledgerEvidence],
+    payload: {
+      commandId: command.commandId,
+      commandKey: command.commandKey,
+      commandType: command.commandType,
+      reservation: command.budgetReservation,
+    },
+  });
+
+  return {
+    nextState: {
+      ...previousState,
+      stateVersion: 2,
+      currentLedgerVersionId: input.ledgerVersionId,
+      currentLedgerArtifactId: input.ledgerArtifactId,
+      ledgerValidationStatus: "pending",
+    },
+    commands: [validateCommand, renderCommand],
+    auditFacts: [
+      {
+        type: "ledger_submitted",
+        actor: input.actor,
+        reason: "Submit a requirements ledger for validation and review",
+        evidence: [ledgerEvidence, sourceEvidence],
+        payload: {
+          ledgerVersionId: input.ledgerVersionId,
+          ledgerArtifactId: input.ledgerArtifactId,
+          contentHash: input.ledgerContentHash,
+        },
+      },
+      commandFact(validateCommand),
+      commandFact(renderCommand),
     ],
   };
 }
