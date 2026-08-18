@@ -15,12 +15,13 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "test": "vitest run",
+    "test": "vitest run && npm run test:package",
+    "test:package": "npm run build --silent && node scripts/test-package.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src tests",
-    "format": "prettier --write src tests package.json tsconfig.json tsconfig.build.json eslint.config.js",
-    "format:check": "prettier --check src tests package.json tsconfig.json tsconfig.build.json eslint.config.js"
+    "lint": "eslint src tests && node --check scripts/test-package.mjs",
+    "format": "prettier --write src tests scripts package.json tsconfig.json tsconfig.build.json eslint.config.js",
+    "format:check": "prettier --check src tests scripts package.json tsconfig.json tsconfig.build.json eslint.config.js"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

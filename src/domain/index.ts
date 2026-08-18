@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { canonicalJson } from "./canonical-json.js";
+
 export type HumanActor = {
   kind: "human";
   displayName: string;
@@ -29,6 +31,8 @@ export type RunStarted = {
   configurationContentHash: string;
   auditChainVerified: boolean;
   databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
   renderCommandId: string;
   actor: HumanActor;
 };
@@ -120,7 +124,12 @@ export function transition(
     input.expectedStateVersion !== 0 ||
     !input.sourceObjectVerified ||
     !input.auditChainVerified ||
-    !input.databaseIntegrityVerified
+    !input.databaseIntegrityVerified ||
+    !input.schemaCompatible ||
+    !input.mutationLeaseAvailable ||
+    input.actor.kind !== "human" ||
+    input.actor.displayName.length === 0 ||
+    input.actor.osAccount.length === 0
   ) {
     throw new DomainTransitionError(
       "PRECONDITION_FAILED",
@@ -167,7 +176,7 @@ export function transition(
       {
         commandId: input.renderCommandId,
         commandKey: createHash("sha256")
-          .update(JSON.stringify(commandWithoutIdentity))
+          .update(canonicalJson(commandWithoutIdentity))
           .digest("hex"),
         ...commandWithoutIdentity,
       },

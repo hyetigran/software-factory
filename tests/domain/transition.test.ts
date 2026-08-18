@@ -19,6 +19,8 @@ function runStartedInput(): RunStarted {
     configurationContentHash,
     auditChainVerified: true,
     databaseIntegrityVerified: true,
+    schemaCompatible: true,
+    mutationLeaseAvailable: true,
     renderCommandId: "command_render_source_01JTEST",
     actor: {
       kind: "human",
@@ -47,7 +49,7 @@ describe("transition", () => {
         {
           commandId: "command_render_source_01JTEST",
           commandKey:
-            "ab0d32eb5eb8b582dc8c66bd5c750be1fe6b2929bce3612ae34653ca8f30bdf0",
+            "684db2024a706ffc91c075de8abdca100e1dc5d8164449c3f553beaa759fb7ba",
           commandType: "render_source_registration_report",
           schemaVersion: 1,
           runId: "run_01JTEST0000000000000000000",
@@ -123,6 +125,30 @@ describe("transition", () => {
         code: "PRECONDITION_FAILED",
         message: "RunStarted requires verified source and workspace integrity",
       }),
+    );
+  });
+
+  it.each([
+    ["audit chain", { auditChainVerified: false }],
+    ["database integrity", { databaseIntegrityVerified: false }],
+    ["schema compatibility", { schemaCompatible: false }],
+    ["mutation lease", { mutationLeaseAvailable: false }],
+  ])("rejects RunStarted without %s verification", (_name, override) => {
+    const input = { ...runStartedInput(), ...override };
+
+    expect(() => transition(null, input, { policyHash })).toThrowError(
+      expect.objectContaining({ code: "PRECONDITION_FAILED" }),
+    );
+  });
+
+  it("rejects RunStarted from an unauthorized actor", () => {
+    const input = {
+      ...runStartedInput(),
+      actor: { kind: "human" as const, displayName: "", osAccount: "" },
+    };
+
+    expect(() => transition(null, input, { policyHash })).toThrowError(
+      expect.objectContaining({ code: "PRECONDITION_FAILED" }),
     );
   });
 });
