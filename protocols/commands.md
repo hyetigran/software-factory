@@ -28,7 +28,7 @@ interface PlannedCommand<T> {
 
 | Command | Effect | Success input |
 |---|---|---|
-| `render_source_registration_report` | deterministic source-registration receipt | `SourceRegistrationReportRendered` |
+| `render_source_registration_report` | deterministic source-registration receipt | operational evidence only; no domain transition |
 | `validate_ledger` | deterministic schema, coverage, identity, and lineage checks | `LedgerValidationCompleted` |
 | `render_ledger` | deterministic Markdown and coverage projection | `LedgerRendered` |
 | `generate_plan` | Planner provider request | `PlanGenerated` |

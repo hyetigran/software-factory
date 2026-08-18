@@ -1,9 +1,15 @@
 {
   "name": "@hyetigran/software-factory",
   "version": "0.0.0",
-  "private": true,
+  "private": false,
   "description": "Local requirements-to-approved-plan workflow",
   "type": "module",
+  "bin": {
+    "factory": "dist/cli/index.js"
+  },
+  "files": [
+    "dist"
+  ],
   "engines": {
     "node": ">=22"
   },
