@@ -8,6 +8,18 @@ export type HumanActor = {
   osAccount: string;
 };
 
+export type SystemActor = {
+  kind: "system";
+  component: string;
+  version: string;
+};
+
+export type ArtifactEvidenceReference = {
+  kind: "artifact";
+  artifactId: string;
+  contentHash: string;
+};
+
 export type DraftRunState = {
   runId: string;
   state: "draft";
@@ -69,7 +81,7 @@ export type RunStartedFact = {
   type: "run_started";
   actor: HumanActor;
   reason: string;
-  evidence: string[];
+  evidence: ArtifactEvidenceReference[];
   payload: {
     sourceArtifactId: string;
     configurationHash: string;
@@ -82,7 +94,7 @@ export type SourceRegisteredFact = {
   type: "source_registered";
   actor: HumanActor;
   reason: string;
-  evidence: string[];
+  evidence: ArtifactEvidenceReference[];
   payload: {
     sourceArtifactId: string;
     contentHash: string;
@@ -90,10 +102,23 @@ export type SourceRegisteredFact = {
   };
 };
 
+export type CommandPlannedFact = {
+  type: "command_planned";
+  actor: SystemActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    commandId: string;
+    commandKey: string;
+    commandType: "render_source_registration_report";
+    reservation: BudgetReservation;
+  };
+};
+
 export type TransitionResult = {
   nextState: DraftRunState;
   commands: RenderSourceRegistrationReport[];
-  auditFacts: [RunStartedFact, SourceRegisteredFact];
+  auditFacts: [RunStartedFact, SourceRegisteredFact, CommandPlannedFact];
 };
 
 type DomainTransitionErrorCode = "INVALID_TRANSITION" | "PRECONDITION_FAILED";
@@ -113,6 +138,13 @@ export function transition(
   input: RunStarted,
   policy: PinnedRunPolicy,
 ): TransitionResult {
+  if (input.type !== "RunStarted") {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      `Unsupported transition: ${String(input.type)}`,
+    );
+  }
+
   if (previousState !== null) {
     throw new DomainTransitionError(
       "INVALID_TRANSITION",
@@ -160,6 +192,23 @@ export function transition(
       sourceArtifactId: input.sourceArtifactId,
     },
   };
+  const command: RenderSourceRegistrationReport = {
+    commandId: input.renderCommandId,
+    commandKey: createHash("sha256")
+      .update(canonicalJson(commandWithoutIdentity))
+      .digest("hex"),
+    ...commandWithoutIdentity,
+  };
+  const sourceEvidence: ArtifactEvidenceReference = {
+    kind: "artifact",
+    artifactId: input.sourceArtifactId,
+    contentHash: input.sourceContentHash,
+  };
+  const configurationEvidence: ArtifactEvidenceReference = {
+    kind: "artifact",
+    artifactId: input.configurationArtifactId,
+    contentHash: input.configurationContentHash,
+  };
 
   return {
     nextState: {
@@ -172,21 +221,13 @@ export function transition(
       policyLocked: false,
       blockedReason: null,
     },
-    commands: [
-      {
-        commandId: input.renderCommandId,
-        commandKey: createHash("sha256")
-          .update(canonicalJson(commandWithoutIdentity))
-          .digest("hex"),
-        ...commandWithoutIdentity,
-      },
-    ],
+    commands: [command],
     auditFacts: [
       {
         type: "run_started",
         actor: input.actor,
         reason: "Start a run from verified immutable source",
-        evidence: [input.sourceArtifactId, input.configurationArtifactId],
+        evidence: [sourceEvidence, configurationEvidence],
         payload: {
           configurationHash: input.configurationContentHash,
           parentRunId: null,
@@ -198,11 +239,27 @@ export function transition(
         type: "source_registered",
         actor: input.actor,
         reason: "Register the verified source artifact for this run",
-        evidence: [input.sourceArtifactId],
+        evidence: [sourceEvidence],
         payload: {
           contentHash: input.sourceContentHash,
           provenancePath: input.sourceProvenancePath,
           sourceArtifactId: input.sourceArtifactId,
+        },
+      },
+      {
+        type: "command_planned",
+        actor: {
+          kind: "system",
+          component: "domain-transition",
+          version: "0.0.0",
+        },
+        reason: "Plan the deterministic source registration report",
+        evidence: [sourceEvidence],
+        payload: {
+          commandId: command.commandId,
+          commandKey: command.commandKey,
+          commandType: command.commandType,
+          reservation: command.budgetReservation,
         },
       },
     ],

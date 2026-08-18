@@ -78,7 +78,18 @@ describe("transition", () => {
             osAccount: "tig",
           },
           reason: "Start a run from verified immutable source",
-          evidence: ["artifact_source_01JTEST", "artifact_config_01JTEST"],
+          evidence: [
+            {
+              kind: "artifact",
+              artifactId: "artifact_source_01JTEST",
+              contentHash: sourceContentHash,
+            },
+            {
+              kind: "artifact",
+              artifactId: "artifact_config_01JTEST",
+              contentHash: configurationContentHash,
+            },
+          ],
           payload: {
             configurationHash: configurationContentHash,
             parentRunId: null,
@@ -94,11 +105,45 @@ describe("transition", () => {
             osAccount: "tig",
           },
           reason: "Register the verified source artifact for this run",
-          evidence: ["artifact_source_01JTEST"],
+          evidence: [
+            {
+              kind: "artifact",
+              artifactId: "artifact_source_01JTEST",
+              contentHash: sourceContentHash,
+            },
+          ],
           payload: {
             contentHash: sourceContentHash,
             provenancePath: "/project/requirements.md",
             sourceArtifactId: "artifact_source_01JTEST",
+          },
+        },
+        {
+          type: "command_planned",
+          actor: {
+            kind: "system",
+            component: "domain-transition",
+            version: "0.0.0",
+          },
+          reason: "Plan the deterministic source registration report",
+          evidence: [
+            {
+              kind: "artifact",
+              artifactId: "artifact_source_01JTEST",
+              contentHash: sourceContentHash,
+            },
+          ],
+          payload: {
+            commandId: "command_render_source_01JTEST",
+            commandKey:
+              "684db2024a706ffc91c075de8abdca100e1dc5d8164449c3f553beaa759fb7ba",
+            commandType: "render_source_registration_report",
+            reservation: {
+              calls: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              costUsdMicros: 0,
+            },
           },
         },
       ],
@@ -149,6 +194,20 @@ describe("transition", () => {
 
     expect(() => transition(null, input, { policyHash })).toThrowError(
       expect.objectContaining({ code: "PRECONDITION_FAILED" }),
+    );
+  });
+
+  it("rejects an unsupported transition discriminator at runtime", () => {
+    const input = {
+      ...runStartedInput(),
+      type: "UnsupportedTransition",
+    } as unknown as RunStarted;
+
+    expect(() => transition(null, input, { policyHash })).toThrowError(
+      expect.objectContaining({
+        code: "INVALID_TRANSITION",
+        message: "Unsupported transition: UnsupportedTransition",
+      }),
     );
   });
 });
