@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://software-factory.local/schemas/review.v1.schema.json",
+  "title": "Review Output v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "review_id", "review_kind", "plan_artifact_id", "policy_hash", "prior_findings", "new_concerns", "summary"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "review_id": { "$ref": "#/$defs/id" },
+    "review_kind": { "enum": ["baseline", "remediation", "closure"] },
+    "plan_artifact_id": { "$ref": "#/$defs/id" },
+    "policy_hash": { "$ref": "#/$defs/hash" },
+    "prior_findings": { "type": "array", "items": { "$ref": "#/$defs/prior" } },
+    "new_concerns": { "type": "array", "items": { "$ref": "#/$defs/concern" } },
+    "summary": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{2,127}$" },
+    "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifact_id", "section_ids", "explanation"],
+      "properties": {
+        "artifact_id": { "$ref": "#/$defs/id" },
+        "section_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "explanation": { "type": "string", "minLength": 1 }
+      }
+    },
+    "prior": {
+      "type": "object", "additionalProperties": false,
+      "required": ["finding_id", "disposition", "severity", "evidence", "reason"],
+      "properties": {
+        "finding_id": { "$ref": "#/$defs/id" },
+        "disposition": { "enum": ["reproduced", "resolved", "uncertain"] },
+        "severity": { "enum": ["critical", "high", "medium", "low"] },
+        "evidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence" } },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "concern": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rule_id", "category", "severity", "component_ids", "requirement_ids", "title", "description", "evidence"],
+      "properties": {
+        "rule_id": { "$ref": "#/$defs/id" },
+        "category": { "type": "string", "minLength": 1 },
+        "severity": { "enum": ["critical", "high", "medium", "low"] },
+        "component_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "requirement_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "title": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "evidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence" } }
+      }
+    }
+  }
+}

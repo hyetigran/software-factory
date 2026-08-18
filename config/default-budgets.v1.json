@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "budget_id": "conservative-default-v1",
+  "requires_explicit_acceptance_before_live_run": true,
+  "max_live_calls": 12,
+  "max_physical_attempts": 18,
+  "max_schema_repairs_per_command": 2,
+  "max_transport_retries_per_command": 2,
+  "max_remediation_cycles": 3,
+  "max_closure_cycles": 2,
+  "max_input_tokens": 1000000,
+  "max_output_tokens": 150000,
+  "max_cost_usd": 25,
+  "unknown_outcome_accounting": "retain reservation until reconciled; otherwise charge configured maximum",
+  "notes": "These are safety ceilings, not expected usage. Pricing is provider-controlled and must be refreshed before release. A ceiling increase always requires a child run."
+}

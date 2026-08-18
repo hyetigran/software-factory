@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "taxonomy_id": "software-factory-default-v1",
+  "severity": {
+    "critical": "The plan could cause irreversible loss, severe security exposure, unlawful behavior, or complete failure of the primary product outcome.",
+    "high": "A required behavior, boundary, recovery guarantee, or major risk is missing or materially incorrect and blocks implementation approval.",
+    "medium": "The plan is implementable but contains a meaningful ambiguity, incomplete edge case, or avoidable operational risk.",
+    "low": "A localized clarity, maintainability, or minor completeness issue that does not block safe implementation."
+  },
+  "blocking_severities": ["critical", "high"],
+  "rules": [
+    { "rule_id": "RULE_REQUIREMENT_COVERAGE", "category": "coverage", "default_severity": "high", "question": "Does every active requirement map to a concrete plan section with a credible justification?" },
+    { "rule_id": "RULE_INTERNAL_CONSISTENCY", "category": "consistency", "default_severity": "high", "question": "Do proposed components, flows, data, APIs, and sequencing agree with one another?" },
+    { "rule_id": "RULE_FEASIBILITY", "category": "feasibility", "default_severity": "high", "question": "Can the approach be implemented under the stated platform, scope, and dependency constraints?" },
+    { "rule_id": "RULE_FAILURE_RECOVERY", "category": "reliability", "default_severity": "high", "question": "Are partial failure, retry, recovery, cancellation, and terminal outcomes explicit and safe?" },
+    { "rule_id": "RULE_SECURITY_BOUNDARY", "category": "security", "default_severity": "critical", "question": "Are trust boundaries, secrets, untrusted inputs, authorization, and data exposure handled safely?" },
+    { "rule_id": "RULE_DATA_INTEGRITY", "category": "data", "default_severity": "critical", "question": "Can state or user data be lost, silently corrupted, duplicated, or made irreconcilable?" },
+    { "rule_id": "RULE_IDENTITY_LINEAGE", "category": "traceability", "default_severity": "high", "question": "Are stable identities and lineage preserved across revisions, splits, merges, and retries?" },
+    { "rule_id": "RULE_TESTABILITY", "category": "testing", "default_severity": "medium", "question": "Does the testing approach provide executable evidence for behavior and failure modes?" },
+    { "rule_id": "RULE_OPERABILITY", "category": "operations", "default_severity": "medium", "question": "Can a user inspect, diagnose, recover, budget, and understand the system in operation?" },
+    { "rule_id": "RULE_SCOPE_CONTROL", "category": "scope", "default_severity": "medium", "question": "Does the plan avoid excluded work and unnecessary framework or platform expansion?" },
+    { "rule_id": "RULE_SEQUENCE_DEPENDENCY", "category": "delivery", "default_severity": "medium", "question": "Does implementation order respect dependencies and produce verifiable vertical increments?" },
+    { "rule_id": "RULE_EVIDENCE_QUALITY", "category": "evidence", "default_severity": "medium", "question": "Are claims supported by precise artifact and section evidence rather than inference or vague prose?" }
+  ],
+  "severity_override_policy": "Reviewer deviations from default severity require a reason tied to concrete impact. Human exceptional reclassification is auditable and does not erase the original observation."
+}

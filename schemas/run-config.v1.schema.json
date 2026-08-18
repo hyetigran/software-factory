@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://software-factory.local/schemas/run-config.v1.schema.json",
+  "title": "Resolved Run Configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "planner", "reviewer", "policy", "budgets", "recording_mode", "provider_storage", "human_actor"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "planner": { "$ref": "#/$defs/worker" },
+    "reviewer": { "$ref": "#/$defs/worker" },
+    "policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["taxonomy_hash", "component_registry_hash", "prompt_hashes", "schema_hashes", "rubric_hash", "frontier_allowlist_hash"],
+      "properties": {
+        "taxonomy_hash": { "$ref": "#/$defs/hash" },
+        "component_registry_hash": { "$ref": "#/$defs/hash" },
+        "prompt_hashes": { "type": "object", "additionalProperties": { "$ref": "#/$defs/hash" } },
+        "schema_hashes": { "type": "object", "additionalProperties": { "$ref": "#/$defs/hash" } },
+        "rubric_hash": { "$ref": "#/$defs/hash" },
+        "frontier_allowlist_hash": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "budgets": { "$ref": "#/$defs/budgets" },
+    "recording_mode": { "enum": ["record", "strict_replay"] },
+    "provider_storage": { "enum": ["minimize", "required_feature_opt_in"] },
+    "human_actor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["display_name"],
+      "properties": { "display_name": { "type": "string", "minLength": 1 } }
+    }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "worker": {
+      "type": "object", "additionalProperties": false,
+      "required": ["provider", "model_id"],
+      "properties": {
+        "provider": { "enum": ["openai", "anthropic"] },
+        "model_id": { "type": "string", "minLength": 1 },
+        "reasoning": { "type": "string" }
+      }
+    },
+    "budgets": {
+      "type": "object", "additionalProperties": false,
+      "required": ["max_live_calls", "max_physical_attempts", "max_schema_repairs_per_command", "max_transport_retries_per_command", "max_remediation_cycles", "max_closure_cycles", "max_input_tokens", "max_output_tokens", "max_cost_usd"],
+      "properties": {
+        "max_live_calls": { "type": "integer", "minimum": 1 },
+        "max_physical_attempts": { "type": "integer", "minimum": 1 },
+        "max_schema_repairs_per_command": { "type": "integer", "minimum": 0 },
+        "max_transport_retries_per_command": { "type": "integer", "minimum": 0 },
+        "max_remediation_cycles": { "type": "integer", "minimum": 0 },
+        "max_closure_cycles": { "type": "integer", "minimum": 1 },
+        "max_input_tokens": { "type": "integer", "minimum": 1 },
+        "max_output_tokens": { "type": "integer", "minimum": 1 },
+        "max_cost_usd": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    }
+  }
+}

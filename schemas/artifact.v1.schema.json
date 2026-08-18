@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://software-factory.local/schemas/artifact.v1.schema.json",
+  "title": "Artifact Metadata v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "artifact_id", "kind", "content_hash", "byte_length", "media_type", "created_by", "provenance"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "artifact_id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{2,127}$" },
+    "kind": { "enum": ["raw_requirements", "requirements_ledger", "coverage_report", "structured_plan", "rendered_plan", "external_edit", "review", "provider_request", "provider_response", "native_usage", "terminal_manifest", "terminal_report", "backup_manifest", "other"] },
+    "content_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "byte_length": { "type": "integer", "minimum": 0 },
+    "media_type": { "type": "string", "minLength": 1 },
+    "schema_id": { "type": "string" },
+    "created_by": { "type": "string", "minLength": 1 },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method"],
+      "properties": {
+        "method": { "enum": ["copied", "human_submitted", "provider_generated", "deterministic_render", "exported"] },
+        "source_path": { "type": "string" },
+        "source_artifact_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "command_id": { "type": "string" },
+        "attempt_id": { "type": "string" }
+      }
+    }
+  }
+}

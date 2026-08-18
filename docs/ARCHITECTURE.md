@@ -6,6 +6,7 @@
 **Scope:** Requirements-to-approved-plan walking skeleton
 **Deployment:** Local, single-user command-line application
 **Implementation status:** Not started
+**Architecture readiness:** Satisfied on 2026-08-18
 
 ## 1. Architecture summary
 
@@ -548,18 +549,18 @@ Automated requirements normalization moves to a later milestone.
 
 ## 25. Architecture readiness
 
-Implementation remains blocked until these executable design artifacts exist:
+The architecture-readiness gate is satisfied by these executable design artifacts:
 
-- `protocols/state-transitions.md`
-- `protocols/commands.md`
-- `protocols/audit-entries.md`
-- `protocols/providers.md`
-- versioned schemas for ledgers, plans, reviews, artifacts, configuration, and terminal manifests
-- default taxonomy, component registry, prompts, rubrics, frontier allowlist, and accepted budgets
-- database schema and migration plan
-- acceptance-test matrix mapping every PRD criterion to evidence
+- [State transitions](../protocols/state-transitions.md)
+- [Commands](../protocols/commands.md)
+- [Audit entries](../protocols/audit-entries.md)
+- [Provider contracts](../protocols/providers.md)
+- [Versioned schemas](../schemas/)
+- [Review policy assets](../config/)
+- [Database schema](../database/schema.v1.sql) and [migration protocol](../database/MIGRATIONS.md)
+- [Acceptance-test matrix](./ACCEPTANCE-TEST-MATRIX.md)
 
-Exact model IDs and budget values are configuration decisions recorded with the readiness baseline, not hardcoded architecture assumptions.
+Exact initial model IDs, budget values, executable name, and package identity are recorded in versioned configuration rather than hardcoded in application policy. Implementation may now begin with Increment 1.
 
 ## 26. Decision records
 

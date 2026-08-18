@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://software-factory.local/schemas/requirements-ledger.v1.schema.json",
+  "title": "Requirements Ledger v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "ledger_id", "version", "source_artifact_id", "requirements", "source_exclusions"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "ledger_id": { "$ref": "#/$defs/id" },
+    "version": { "type": "integer", "minimum": 1 },
+    "source_artifact_id": { "$ref": "#/$defs/id" },
+    "requirements": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/requirement" }
+    },
+    "source_exclusions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/exclusion" }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{2,127}$" },
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_byte", "end_byte"],
+      "properties": {
+        "start_byte": { "type": "integer", "minimum": 0 },
+        "end_byte": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requirement_id", "display_id", "statement", "status", "source_ranges", "lineage_roots"],
+      "properties": {
+        "requirement_id": { "$ref": "#/$defs/id" },
+        "display_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "statement": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["active", "removed", "replaced"] },
+        "source_ranges": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/range" } },
+        "lineage_roots": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "predecessor_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "change_kind": { "enum": ["original", "updated", "split", "merged", "replacement"] }
+      }
+    },
+    "exclusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exclusion_id", "source_range", "reason"],
+      "properties": {
+        "exclusion_id": { "$ref": "#/$defs/id" },
+        "source_range": { "$ref": "#/$defs/range" },
+        "reason": { "type": "string", "minLength": 1 },
+        "approved_by": { "$ref": "#/$defs/id" }
+      }
+    }
+  }
+}

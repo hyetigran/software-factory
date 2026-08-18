@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "product_name": "Software Factory",
+  "npm_package": "@hyetigran/software-factory",
+  "executable": "factory",
+  "supported_platforms": ["darwin", "linux"],
+  "node_support": "active and maintenance LTS releases",
+  "workspace_directory": ".factory",
+  "source_input": {
+    "media_type": "text/markdown; charset=utf-8",
+    "max_bytes": 1048576,
+    "automatic_chunking": false
+  },
+  "notes": "Registry availability and organization publishing rights must be verified before the first release. Changing the executable after release is a public-contract change."
+}

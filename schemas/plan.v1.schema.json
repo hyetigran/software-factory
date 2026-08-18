@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://software-factory.local/schemas/plan.v1.schema.json",
+  "title": "Canonical Implementation Plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "plan_id", "version", "title", "summary", "components", "sections", "requirement_coverage", "section_transitions"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "plan_id": { "$ref": "#/$defs/id" },
+    "version": { "type": "integer", "minimum": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "summary": { "type": "string", "minLength": 1 },
+    "components": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/component" } },
+    "sections": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/section" } },
+    "requirement_coverage": { "type": "array", "items": { "$ref": "#/$defs/coverage" } },
+    "section_transitions": { "type": "array", "items": { "$ref": "#/$defs/transition" } }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{2,127}$" },
+    "component": {
+      "type": "object", "additionalProperties": false,
+      "required": ["component_id", "name", "responsibility"],
+      "properties": {
+        "component_id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1 },
+        "responsibility": { "type": "string", "minLength": 1 }
+      }
+    },
+    "section": {
+      "type": "object", "additionalProperties": false,
+      "required": ["section_id", "kind", "title", "body", "component_ids", "requirement_ids"],
+      "properties": {
+        "section_id": { "$ref": "#/$defs/id" },
+        "kind": { "enum": ["scope", "approach", "component", "data", "api", "failure_handling", "security", "testing", "dependency", "risk", "sequence", "other"] },
+        "title": { "type": "string", "minLength": 1 },
+        "body": { "type": "string", "minLength": 1 },
+        "component_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "requirement_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } }
+      }
+    },
+    "coverage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["requirement_id", "section_ids", "justification"],
+      "properties": {
+        "requirement_id": { "$ref": "#/$defs/id" },
+        "section_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "justification": { "type": "string", "minLength": 1 }
+      }
+    },
+    "transition": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "from_section_ids", "to_section_ids", "reason"],
+      "properties": {
+        "kind": { "enum": ["preserved", "retitled", "split", "merged", "retired", "new"] },
+        "from_section_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "to_section_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

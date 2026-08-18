@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "registry_id": "software-factory-components-v1",
+  "components": [
+    { "component_id": "SYSTEM", "name": "Whole system", "reserved": true, "description": "Cross-cutting behavior or interactions spanning multiple components." },
+    { "component_id": "UNKNOWN", "name": "Unresolved component", "reserved": true, "description": "Used only when evidence is insufficient to select a controlled component; blocks automatic reconciliation." },
+    { "component_id": "CLI", "name": "CLI", "reserved": false, "description": "Argument parsing, human output, JSON output, and exit codes." },
+    { "component_id": "APPLICATION", "name": "Application services", "reserved": false, "description": "Use cases, transaction coordination, leases, and command execution." },
+    { "component_id": "DOMAIN", "name": "Domain transition", "reserved": false, "description": "Pure workflow state, inputs, rules, gates, identities, and budgets." },
+    { "component_id": "SQLITE", "name": "SQLite persistence", "reserved": false, "description": "Authoritative tables, migrations, backups, and integrity checks." },
+    { "component_id": "ARTIFACTS", "name": "Artifact store", "reserved": false, "description": "Content-addressed objects, provenance, projections, and exports." },
+    { "component_id": "AUDIT", "name": "Audit journal", "reserved": false, "description": "Hash-chained accepted-transition and operational evidence." },
+    { "component_id": "PLANNER", "name": "Planner adapter", "reserved": false, "description": "Structured plan generation and remediation proposals." },
+    { "component_id": "REVIEWER", "name": "Reviewer adapter", "reserved": false, "description": "Baseline, remediation, and closure evaluations." },
+    { "component_id": "REPLAY", "name": "Record and replay", "reserved": false, "description": "Provider cassettes, strict replay, and explicit rerun." },
+    { "component_id": "REPORTING", "name": "Reporting", "reserved": false, "description": "Inspection read models, reports, manifests, and exports." },
+    { "component_id": "EVALUATION", "name": "Evaluation harness", "reserved": false, "description": "Seeded, live, and blinded comparative evaluation." }
+  ]
+}

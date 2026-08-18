@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "allowlist_id": "frontier-models-2026-08-18",
+  "verified_on": "2026-08-18",
+  "default_assignments": {
+    "planner": { "provider": "openai", "model_id": "gpt-5.6-terra" },
+    "reviewer": { "provider": "anthropic", "model_id": "claude-sonnet-5" }
+  },
+  "models": [
+    { "provider": "openai", "model_id": "gpt-5.6-sol", "tier": "frontier", "canonical_id_expected": true },
+    { "provider": "openai", "model_id": "gpt-5.6-terra", "tier": "frontier", "canonical_id_expected": true },
+    { "provider": "anthropic", "model_id": "claude-fable-5", "tier": "frontier", "canonical_id_expected": true },
+    { "provider": "anthropic", "model_id": "claude-opus-5", "tier": "frontier", "canonical_id_expected": true },
+    { "provider": "anthropic", "model_id": "claude-sonnet-5", "tier": "frontier", "canonical_id_expected": true }
+  ],
+  "sources": [
+    "https://platform.openai.com/pricing",
+    "https://platform.openai.com/docs/api-reference/models",
+    "https://platform.claude.com/docs/en/about-claude/models/overview",
+    "https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions"
+  ],
+  "policy": "Initialization must verify model availability through the provider models endpoint where available. Requested and returned IDs are recorded. Unavailable IDs halt; aliases are not substituted. Updating this allowlist changes review-policy identity."
+}

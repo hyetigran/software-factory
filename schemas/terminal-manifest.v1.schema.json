@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://software-factory.local/schemas/terminal-manifest.v1.schema.json",
+  "title": "Terminal Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "outcome", "state_version", "input_artifacts", "output_artifacts", "configuration_hash", "policy_hash", "workers", "budget", "gates", "findings", "waivers", "decisions", "audit_chain_head"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "parent_run_id": { "type": "string" },
+    "outcome": { "enum": ["approved", "approved_with_waivers", "halted", "cancelled"] },
+    "state_version": { "type": "integer", "minimum": 1 },
+    "input_artifacts": { "$ref": "#/$defs/artifacts" },
+    "output_artifacts": { "$ref": "#/$defs/artifacts" },
+    "configuration_hash": { "$ref": "#/$defs/hash" },
+    "policy_hash": { "$ref": "#/$defs/hash" },
+    "workers": { "type": "array", "items": { "$ref": "#/$defs/worker" } },
+    "budget": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ceilings_artifact_id", "native_usage_artifact_ids", "possible_duplicate_calls"],
+      "properties": {
+        "ceilings_artifact_id": { "type": "string" },
+        "native_usage_artifact_ids": { "type": "array", "items": { "type": "string" } },
+        "possible_duplicate_calls": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "gates": { "type": "array", "items": { "$ref": "#/$defs/record" } },
+    "findings": { "type": "array", "items": { "$ref": "#/$defs/record" } },
+    "waivers": { "type": "array", "items": { "$ref": "#/$defs/record" } },
+    "decisions": { "type": "array", "items": { "$ref": "#/$defs/record" } },
+    "audit_chain_head": { "$ref": "#/$defs/hash" },
+    "halt_reason": { "type": "string" },
+    "cancel_reason": { "type": "string" }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["artifact_id", "content_hash"],
+        "properties": {
+          "artifact_id": { "type": "string" },
+          "content_hash": { "$ref": "#/$defs/hash" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "record": { "type": "object", "required": ["id", "status"], "properties": { "id": { "type": "string" }, "status": { "type": "string" }, "evidence_artifact_ids": { "type": "array", "items": { "type": "string" } } }, "additionalProperties": false },
+    "worker": { "type": "object", "required": ["role", "provider", "requested_model", "returned_model"], "properties": { "role": { "enum": ["planner", "reviewer"] }, "provider": { "enum": ["openai", "anthropic"] }, "requested_model": { "type": "string" }, "returned_model": { "type": "string" } }, "additionalProperties": false }
+  }
+}
