@@ -1,1064 +1,365 @@
-# Software Factory — Milestone 1 Product Requirements Document
+# Software Factory — Milestone 1 Product Requirements
 
-**Status:** Draft — under design review
-**Version:** 1.0
+**Status:** Approved design baseline
+**Version:** 2.0
 **Product:** Local Software Factory CLI
 **Milestone:** Requirements-to-approved-plan walking skeleton
 **Primary user:** A single developer operating locally
 
-## 1. Executive Summary
+## 1. Product hypothesis
 
-The Software Factory is a local command-line application that automates a currently manual workflow for turning raw product requirements into an independently reviewed, approved implementation plan.
+Milestone 1 must prove that a real requirements document can reliably become a traceable, independently reviewed implementation plan. The product is a local command-line workflow, not a general automation platform.
 
-The first milestone will coordinate a planning model and an independent reviewing model, preserve every artifact and decision, maintain a persistent findings ledger, run bounded remediation and closure-review loops, and recover safely after interruption.
+The workflow succeeds only when it produces one of four honest terminal outcomes:
 
-Milestone 1 intentionally stops at an approved plan or an evidence-rich halt report. It does not generate architecture, tickets, or code. Those stages will be added only after the requirements-to-plan loop works on a real project.
+- **Approved:** every required gate passed and the human accepted the plan.
+- **Approved with waivers:** every gate passed partly through explicit human risk acceptance, and the human acknowledged those waivers again at approval.
+- **Halted:** a declared bound was exhausted or a condition requires changed inputs, policy, models, or budgets.
+- **Cancelled:** the human stopped the run.
 
-The product is deliberately local and operationally simple:
+A baseline review alone produces a provisional baseline-reviewed plan. It is never described as qualified or approved.
 
-- TypeScript on Node.js
-- Command-line interface
-- SQLite for run state and event history
-- Markdown and JSON artifacts stored in the project
-- Project-local provider recordings
-- No web application, server, cloud deployment, or multi-user support
+## 2. User problem
 
-## 2. Problem Statement
+The current manual workflow requires repeated transfers among requirements, planning models, review models, and local documents. That process loses evidence and makes it difficult to answer:
 
-The current workflow requires repeated manual handoffs among requirements, a planning model, an independent review model, local documentation-review skills, issue generation, and an implementation agent. The manual process works, but it has several weaknesses:
+- Which source statement justified a plan decision?
+- Did a finding disappear because it was fixed, omitted, merged, waived, or renamed?
+- Did the reviewer independently verify the Planner's remediation claim?
+- Did a retry repeat a provider call or accept duplicate work?
+- Which model, prompt, taxonomy, schema, and budget produced an outcome?
+- Can an interrupted run continue without inventing or losing state?
+- Did the review improve the plan, or merely add activity?
 
-- Copying artifacts between tools is repetitive and error-prone.
-- Review findings can drift, disappear, be duplicated, or be reclassified without an audit trail.
-- A planner can claim to have resolved an issue without independent verification.
-- A crash or interrupted session does not have a formal recovery protocol.
-- Human edits can invalidate downstream artifacts without the workflow noticing.
-- Model aliases, prompt changes, and provider behavior can alter review outcomes silently.
-- Retry loops can consume unbounded time, tokens, and money.
-- The user cannot reliably reconstruct why a plan passed, failed, or halted.
+The Software Factory makes these questions inspectable while keeping every loop and external action bounded.
 
-The software factory must automate the workflow without hiding these uncertainties behind orchestration terminology. It must make every decision inspectable and every external action recoverable.
+## 3. Milestone goal and success
 
-## 3. Product Goal
+Milestone 1 is successful when:
 
-Create a reliable local workflow that accepts a real requirements document and reaches one of two honest outcomes:
+1. A real requirements document reaches an approved plan or evidence-rich terminal report.
+2. Transactional state survives interruption without losing an accepted transition or accepting a duplicate logical result.
+3. Requirements, plan sections, findings, observations, waivers, commands, artifacts, and human decisions retain stable identity and provenance.
+4. A Planner cannot certify its own remediation.
+5. Every retry, repair, remediation, closure cycle, provider call, token, and charge is bounded and reported.
+6. Strict replay returns recorded provider results without network access.
+7. Review-quality evaluation meets the thresholds in section 16.
 
-1. **Approved plan** — the plan has passed the configured review and closure gates.
-2. **Halt report** — the workflow stopped within configured budgets and produced enough evidence for a human to determine whether the plan or the reviewer is unstable.
+## 4. User and supported environment
 
-## 4. Success Criteria
+The primary user supplies source requirements, authors or reviews the requirements ledger, selects providers and pinned models, inspects evidence, approves exclusions and waivers, and accepts or rejects the final plan.
 
-Milestone 1 is successful when it can:
+Milestone 1 supports:
 
-1. Process a real, non-synthetic requirements document end to end.
-2. Preserve the original requirements as immutable source material.
-3. Accept a manually authored or reviewed requirements ledger.
-4. Generate a structured plan and a readable Markdown projection.
-5. Perform an independent baseline review.
-6. Maintain finding identity across wording changes, plan rewrites, requirement lineage changes, and remediation cycles.
-7. Prevent a planner from certifying its own remediation.
-8. Bound transport retries, schema repairs, remediation cycles, closure reviews, provider calls, token use, and spend.
-9. Stop and resume without losing findings, duplicating completed logical commands, changing reconstructed state, or duplicating artifact identities.
-10. End with an approved plan or an evidence-rich halt report.
+- macOS and Linux;
+- active and maintenance Node.js LTS releases;
+- one project per workspace;
+- many historical runs but only one nonterminal run;
+- UTF-8 Markdown source documents up to 1 MiB, subject to model-context preflight;
+- OpenAI and Anthropic production adapters; and
+- a versioned npm package exposing one CLI executable.
 
-## 5. User and Operating Environment
+Automated chunking is excluded. Inputs that cannot fit the selected model context fail preflight without truncation.
 
-### 5.1 Primary user
+## 5. Product principles
 
-A single developer who:
+1. **The approved ledger is normative.** Raw requirements are immutable provenance used to validate coverage, not a second planning contract.
+2. **Human authority is explicit.** Humans approve source exclusions, waivers, independence overrides, exceptional reclassifications, and final plans.
+3. **Review authority is separated.** The Planner proposes; the Reviewer evaluates; the orchestrator owns identities and lifecycle transitions.
+4. **Transactional state is authoritative.** An immutable audit journal explains accepted transitions but does not reconstruct current state.
+5. **Structured artifacts are canonical.** Markdown is a readable projection, not a second source of truth.
+6. **Stable identity outlives wording.** Mutable prose never serves as a primary key.
+7. **Every loop terminates.** Exhaustion produces evidence rather than an indefinite retry.
+8. **Local-first is not offline-only.** Operational state and recordings remain local by default; live calls disclose content to configured providers.
+9. **Evidence types stay distinct.** Deterministic facts, model judgments, and human decisions are labeled.
+10. **A vertical product precedes a framework.** General workflow, plug-in, distributed, and code-generation features are deferred.
 
-- Supplies requirements.
-- Reviews and approves the requirements ledger.
-- Chooses model providers and exact model snapshots.
-- Inspects plans and findings.
-- Approves waivers or exceptional severity changes.
-- Starts, resumes, retries, and cancels runs.
-
-### 5.2 Operating environment
-
-- Local workstation
-- Node.js runtime
-- Git-managed project directory
-- SQLite database stored inside the project’s `.factory/` directory
-- Provider credentials supplied through environment variables or an operating-system credential store
-
-## 6. Product Principles
-
-1. **Plain software over buzzwords.** The system is a CLI, state machine, event log, adapters, and files.
-2. **Decision and execution are separate.** Workflow decisions must be testable without APIs or file writes.
-3. **The event history is authoritative.** Current-state tables and reports are rebuildable projections.
-4. **Semantic identity outlives prose.** Requirement, section, component, finding, artifact, and command identities must not depend on mutable wording.
-5. **The reviewer verifies remediation.** The planner may propose a fix but cannot close its own finding.
-6. **Subjective and objective evidence are labeled.** A model judgment must not masquerade as a deterministic rule.
-7. **All loops terminate.** Exhausted budgets produce a halt report rather than an indefinite retry.
-8. **A real vertical workflow comes before horizontal framework features.**
-
-## 7. Milestone 1 Scope
-
-### 7.1 Included workflow
+## 6. Milestone workflow
 
 ```text
-Raw requirements
-    ↓
-Manual requirements ledger submission
-    ↓
-Human requirements approval
-    ↓
-Structured plan generation
-    ↓
-Anchored Markdown rendering
-    ↓
-Independent baseline review
-    ↓
-Persistent findings ledger
-    ↓
-Bounded remediation loop
-    ↓
-Bounded full-document closure loop
-    ↓
-Approved plan or halt report
+Register immutable raw requirements
+  -> submit and validate requirements ledger
+  -> approve coverage and source exclusions
+  -> generate or submit canonical structured plan
+  -> render anchored Markdown
+  -> independent baseline review
+  -> bounded remediation and verification
+  -> bounded full-document closure review
+  -> qualified or qualified_with_waivers
+  -> explicit human approval or rejection
+  -> approved plan, halt report, or cancellation report
 ```
 
-### 7.2 Included capabilities
+## 7. Scope
 
-- Project initialization
-- Run creation and status inspection
-- Raw requirements registration
-- Manual requirements-ledger submission
-- Human requirements approval
-- Structured plan generation
-- Stable plan-section identity
-- Independent baseline review
-- Persistent findings and review observations
-- Remediation claims and independent verification
-- Diff-based remediation review
-- Full-document closure review
-- Explicit pass/fail gates
-- Event history and crash recovery
-- Artifact versioning and human-edit detection
-- Provider request recording and strict replay seam
-- Separate retry and spend budgets
-- Read-only inspection during long-running provider calls
-- Final plan approval or halt reporting
+### Included
 
-### 7.3 Explicit non-goals
+- Workspace initialization and project configuration
+- Raw-requirements registration in immutable content-addressed storage
+- Versioned manual requirements-ledger submission
+- Deterministic coverage, lineage, and schema validation
+- Human approval of ledgers and source exclusions
+- Structured plan generation and human structured-plan submission
+- Stable plan-section and component identity
+- Markdown rendering and external-edit detection
+- OpenAI and Anthropic adapters
+- Independent baseline, remediation, and closure review
+- Persistent findings, observations, reconciliation, waivers, and severity history
+- Transactional state, planned commands, mutation leases, and hash-chained audit entries
+- Bounded retry, repair, remediation, closure, call, token, and cost policies
+- Content-addressed artifacts and project-local provider recordings
+- Strict replay and explicit live rerun
+- Terminal reports, machine-readable manifests, inspection, and export
+- Crash recovery, migration backup, corruption detection, and read-only diagnostics
+- A separate review-quality evaluation harness
 
-Milestone 1 will not include:
+### Excluded
 
-- Automated architecture generation
-- Cursor skill automation
-- GitHub issue generation or publication
-- Codex CLI or Claude Code implementation
-- Product-repository modification
-- Product build, lint, test, or security execution
-- Web application or desktop GUI
-- Background server
-- Cloud hosting
-- Multiple users
-- Distributed workers or queues
-- Parallel effects
-- A generalized workflow language
-- A plug-in marketplace
-- A generalized dependency graph
-- Cross-run cache lookup
-- An evaluation dashboard
+- Automated requirements normalization
+- Automated chunking or summarization of oversized inputs
+- Architecture or ticket generation
+- Repository modification, code generation, build, lint, test, or security execution
+- GitHub publication
+- Web, desktop, or background-server interfaces
+- Cloud-hosted orchestration, remote databases, queues, or distributed workers
+- Multiple users, parallel mutations, or parallel provider effects
+- Generalized workflow languages, dependency graphs, or plug-in marketplaces
+- Cross-run semantic caches
+- Application-level encryption or managed encryption keys
+- Windows support
 
-## 8. Definitions
+## 8. Requirements source and ledger
 
-### 8.1 Artifact
+### PRD-001 — Register immutable source
 
-An immutable version of an input or output, such as raw requirements, a requirements ledger, a structured plan, a rendered plan, a review result, a findings projection, or a halt report.
+Starting a run copies the exact source bytes into content-addressed storage and records their hash and original path. The run never rereads the external path as authoritative input.
 
-### 8.2 Worker
+Changed raw requirements start a new child run linked to the prior run. They never mutate an existing run.
 
-A role that performs one task, such as planning or reviewing. In implementation, a worker is invoked through an adapter.
+### PRD-002 — Accept a manual ledger
 
-### 8.3 Adapter
+The user submits versioned, schema-valid JSON containing stable requirement identity, display ID, statement, lifecycle status, source ranges, and lineage roots. The factory renders a Markdown review projection and deterministic source-coverage report.
 
-A boundary that performs an external or nondeterministic action, including an LLM request, filesystem operation, clock read, or human submission.
+### PRD-003 — Require complete coverage
 
-### 8.4 Gate
+Every relevant source span must map to an active requirement or a human-approved source exclusion with a reason. Planning is blocked until schema, identity, lineage, and mapping checks pass and the human approves the ledger.
 
-A decision that determines whether the workflow can advance. A gate consumes evidence from deterministic checks, model judgments, ledger policy, or human decisions.
+### PRD-004 — Support ledger revision
 
-### 8.5 Finding
+A revised ledger creates a new version in the same active run, requires renewed approval, and invalidates downstream qualification. Findings remain historical, remap mechanically through lineage where possible, and require human disposition when blocking associations become ambiguous or orphaned.
 
-A persistent semantic concern identified during review.
+## 9. Canonical plan
 
-### 8.6 Finding observation
+### PRD-005 — Generate structured plans
 
-The appearance or evaluation of a finding against a specific artifact version in a specific review cycle.
+The Planner consumes only the approved requirements ledger as normative input and returns schema-valid structured data covering scope, approach, components, data and API considerations, failure handling, security, testing, dependencies, risks, sequence, and justified requirement coverage.
 
-### 8.7 Closure review
+### PRD-006 — Permit human structured submissions
 
-A full-document review performed after all known blocking findings have been resolved or waived. It protects against local remediations introducing global inconsistencies or against prior reviewer omissions.
+The user may submit a schema-valid structured plan without using the Planner. A submission preserves existing section IDs and supplies an explicit transition map for preserved, retitled, split, merged, retired, and new sections. The orchestrator validates continuity and assigns IDs only to declared new sections.
 
-### 8.8 Logical command
+### PRD-007 — Render projections
 
-A stable instruction caused by a specific event and input state, regardless of how many physical execution attempts are needed.
+The factory deterministically renders anchored Markdown from the canonical structured plan. An external Markdown edit is preserved as an artifact, blocks downstream progression, and must be reconciled by restoring a verified render or submitting canonical structured JSON.
 
-## 9. Functional Requirements
+## 10. Independent review and findings
 
-### REQ-001 — Initialize a factory workspace
+### PRD-008 — Enforce independent roles
 
-The user shall be able to initialize a project-local factory workspace.
+The Planner and Reviewer use different providers by default and normally use models from the configured frontier-model allowlist. OpenAI and Anthropic roles are configurable per run. A human may explicitly override the independence policy; the reduced independence appears in every gate and terminal report.
 
-The workspace shall contain, at minimum:
+### PRD-009 — Perform baseline review
 
-```text
-.factory/
-    state.db
-    objects/
-    cassettes/
-    locks/
-    exports/
-docs/factory/
-```
+The Reviewer receives the approved ledger, canonical plan, rendered plan, controlled component registry, review policy, and evidence references. It returns structured observations under the pinned schema and taxonomy.
 
-### REQ-002 — Start a run from raw requirements
+### PRD-010 — Keep finding identity authoritative
 
-The user shall be able to start a run by supplying a raw requirements file.
+The orchestrator assigns stable finding IDs. A fingerprint made from controlled policy fields proposes reconciliation candidates but is neither a primary key nor a uniqueness constraint. Reviewer prose never determines identity.
 
-The factory shall:
+The Reviewer may reference supplied IDs and classify each prior finding as reproduced, resolved, or uncertain. It reports new concerns without minting IDs. Ambiguous reconciliation requires explicit Reviewer accounting or human disposition.
 
-- Preserve the raw requirements as immutable source material.
-- Compute and record a content hash.
-- Assign the run a stable identity.
-- Record the configuration, prompt versions, rubric versions, model snapshots, and budgets that apply to the run.
+### PRD-011 — Separate findings and observations
 
-### REQ-003 — Accept a manual requirements ledger
+A finding is the persistent concern. An observation is one evaluation of that concern against one artifact version in one review cycle. All wording, severity, evidence, and status history remains inspectable.
 
-Milestone 1 shall use a manual adapter for requirements normalization.
+### PRD-012 — Verify remediation independently
 
-The user shall be able to submit a structured requirements ledger containing:
+The Planner submits a claim, affected requirement and section IDs, and evidence for each proposed remediation. A claim cannot change finding status. The Reviewer verifies the revised artifact and the orchestrator applies policy-controlled transitions.
 
-- Stable requirement ID
-- Human-readable display ID
-- Requirement statement
-- Status
-- Source artifact reference
-- Source ranges
-- Lineage roots
+### PRD-013 — Require closure review
 
-### REQ-004 — Approve requirements before planning
+When no unwaived blocking findings remain, a full-document review checks for global inconsistency, regressions, and previously omitted concerns. Closure has its own bounded budget. Failure never restarts an unbounded baseline loop.
 
-The factory shall not generate a plan until the requirements ledger has passed deterministic validation and received explicit human approval.
+### PRD-014 — Support explicit waivers
 
-Deterministic checks shall include:
+The human may waive any severity with a reason. A waiver accepts risk without claiming resolution and is invalidated by relevant requirement, plan-section, evidence, or review-policy changes.
 
-- Schema validity
-- Unique active requirement IDs
-- No reuse of retired IDs
-- Source support for every active requirement
-- Mapping or explicit exclusion of relevant source spans
+A gate satisfied through a waiver produces `qualified_with_waivers`. Final approval displays every active waiver and requires distinct acknowledgment of unresolved risk.
 
-### REQ-005 — Preserve requirement lineage
+## 11. Run lifecycle and human decisions
 
-The persisted requirement protocol shall support:
+### PRD-015 — Distinguish qualification and approval
 
-- Update
-- Removal
-- Replacement
-- Split
-- Merge
+Passing every required deterministic, remediation, and closure gate produces `qualified` or `qualified_with_waivers`. Only explicit human acceptance produces `approved`.
 
-Split and merge successors shall preserve lineage roots so downstream finding identity can survive requirement restructuring.
+If the human rejects a qualified plan and budgets remain, the factory records the reason, resumes planning in the same run, and repeats affected review and closure stages.
 
-Polished split-and-merge user experience may be deferred, but the identity protocol must exist in Milestone 1.
+### PRD-016 — Make halt and cancellation terminal
 
-### REQ-006 — Generate a structured implementation plan
+A halted or cancelled run never resumes. Further work starts a child run that references immutable parent evidence and declares changed inputs, policy, models, or budgets without copying content.
 
-The planning worker shall return schema-valid structured data rather than free-form Markdown.
+Cancellation during a call records the request, attempts provider cancellation, retains any eventual response as evidence, and never applies that response to workflow state.
 
-The plan shall include:
+### PRD-017 — Pin policy and budgets
 
-- Title and summary
-- Scope
-- Proposed approach
-- Major components
-- Data and API considerations where applicable
-- Error handling
-- Security considerations
-- Testing approach
-- Dependencies
-- Risks
-- Implementation sequence
-- Requirement coverage with justification
-- Stable component references
-- Structured sections
+Built-in defaults, project configuration, and explicit CLI overrides resolve into a complete run configuration. Secrets are excluded. The review policy becomes immutable before the first provider-backed command.
 
-### REQ-007 — Render human-readable anchored Markdown
+After execution begins, a policy, model, prompt, schema, rubric, or budget increase requires a child run. Unused ceilings may be reduced for safety. A missing pinned model halts the run rather than selecting a floating alias.
 
-The factory shall render the canonical structured plan into Markdown.
+## 12. Reliability and recovery
 
-The orchestrator, not the model, shall own persistent section identities and insert section markers into the projection.
+### PRD-018 — Commit accepted transitions atomically
 
-A model shall not be relied upon to preserve invisible HTML comments during rewrites.
+Authoritative state, planned commands, and corresponding audit entries commit together or not at all. Provider calls and long filesystem work never occur inside a SQLite transaction.
 
-### REQ-008 — Preserve section continuity
+### PRD-019 — Preserve one logical result
 
-Every plan revision shall account for each previous section identity as one of:
+Logical command identity remains stable across physical attempts. Unknown external outcomes may be retried with the same application correlation key. Because synchronous providers do not guarantee idempotency, the factory reports possible duplicate calls while accepting at most one logical result.
 
-- Preserved
-- Retitled
-- Merged
-- Split
-- Retired
-- Newly created
+Every physical call, token, and charge counts against hard budgets.
 
-A deterministic continuity check shall reject silent identity loss or ID reuse.
+### PRD-020 — Classify failures
 
-A human deletion of an anchor shall create a reconciliation condition rather than silently retiring the section.
+- Deterministic validation requires user correction.
+- Transient transport failures use bounded retry.
+- Schema-invalid outputs use separately bounded repair attempts.
+- Refusal is a provider/content-policy outcome.
+- Truncation is a limit or budget outcome.
+- Substantive review failure uses remediation.
+- Unknown external outcome uses recovery reconciliation.
 
-### REQ-009 — Maintain a controlled component registry
+### PRD-021 — Detect corruption and migrate safely
 
-The plan shall contain a small component registry with stable component IDs.
+Audit entries are hash-chained and ordered by monotonic sequence and state version; wall-clock timestamps are informational. Failed verification enters read-only diagnostic mode.
 
-Reviewers shall select component IDs from this registry rather than inventing free-text component names.
+Schema migration creates a verified backup of SQLite plus a manifest of every referenced object hash, runs numbered transactional migrations, and refuses mutation from a CLI older than the database schema.
 
-The registry shall include reserved cross-cutting values such as:
+## 13. Provider behavior and privacy
 
-- `SYSTEM`
-- `CROSS_CUTTING`
-- `PROCESS`
+### PRD-022 — Record provider evidence
 
-### REQ-010 — Perform an independent baseline review
+Adapters record normalized and raw requests, endpoint and behavior-affecting API metadata, requested and returned models, response and HTTP request IDs, provider-native usage, completion/refusal status, and raw responses. Credential values are never recorded.
 
-After plan generation, the factory shall invoke an independently configured reviewer.
+### PRD-023 — Distinguish replay and rerun
 
-The reviewer shall receive:
+Strict replay returns a matching local recording without network access and fails on a missing recording. A rerun performs a fresh provider call, may differ despite a pinned model, produces a new physical attempt, and consumes budget.
 
-- The approved requirements ledger
-- The complete structured plan
-- The rendered plan
-- The review taxonomy
-- The component registry
-- Any prior recurrence context
+### PRD-024 — Disclose the network boundary
 
-The reviewer shall return structured output conforming to a versioned schema.
+Before the first live run, the user acknowledges which content is transmitted to configured providers and that provider retention policies apply. Adapters minimize provider-side storage where supported. Optional SDK telemetry is disabled by default.
 
-### REQ-011 — Maintain an orchestrator-owned findings ledger
+Operational state, artifacts, and recordings remain local by default, use restrictive filesystem permissions, and are Git-ignored. Built-in encryption is not promised; the CLI prominently documents reliance on OS account and filesystem protection.
 
-The factory shall own finding IDs, fingerprints, and status transitions.
+Credentials may come only from environment variables or OS credential-store references and never appear in resolved configuration, SQLite, artifacts, logs, recordings, or exports.
 
-The reviewer shall not mint or modify semantic fingerprints.
+## 14. CLI and reporting
 
-The planner shall not resolve, retire, waive, or reclassify findings.
+### PRD-025 — Support human and automated use
 
-### REQ-012 — Separate findings from observations
+Every command has human-readable output, stable exit-code classes, and a `--json` form. Read-only inspection remains available while a provider command holds the logical mutation lease.
 
-A persistent finding shall represent the semantic concern.
+The minimum command families are:
 
-A finding observation shall record:
+- initialize and configure;
+- start, inspect, list, cancel, and create child runs;
+- submit, validate, approve, reject, waive, and reconcile;
+- execute next work, retry, rerun, and strict replay;
+- inspect state, audit entries, artifacts, findings, usage, and gates; and
+- export terminal reports and deliberate shareable artifacts.
 
-- Artifact version
-- Review cycle
-- Requirement references
-- Section references
-- Evidence
-- Description
-- Reviewer verdict
+### PRD-026 — Export terminal evidence
 
-This separation shall allow a finding to survive plan rewrites and anchor changes.
+Every terminal run exports a human-readable report and machine-readable manifest. The manifest identifies input and artifact hashes, resolved configuration and policy hashes, providers and models, budgets and actual usage, gate evidence, findings and waivers, human actors and decisions, lineage, and outcome. Large or sensitive payloads are referenced by artifact identity rather than embedded.
 
-### REQ-013 — Compute controlled semantic fingerprints
+## 15. Nonfunctional requirements
 
-The orchestrator shall compute each fingerprint from controlled, versioned inputs:
+- Excluding provider latency, normal inspection and state-transition commands target p95 below 500 ms for supported workloads.
+- One logical mutation lease and one effectful command are allowed at a time.
+- Read operations use independent SQLite connections and never require a long-lived write transaction.
+- Normal commands delete no immutable history. Explicit purge may remove verified unreferenced objects or entire terminal runs after confirmation.
+- `.factory/` operational state, objects, cassettes, locks, and credentials are Git-ignored. Deliberate exports and product documentation may be committed.
+- Generated or user-provided artifact text is untrusted data and never directly authorizes shell execution.
+- No inbound network listener or undisclosed outbound telemetry exists.
 
-- Review taxonomy version
-- Rule ID
-- Taxonomy-derived category ID
-- Stable component ID
-- Canonical requirement-lineage roots
+## 16. Quality evaluation
 
-Free-text descriptions, titles, anchors, and reviewer-authored labels shall not participate in identity.
+Evaluation is a separate harness built on public application interfaces, not a production run stage.
 
-### REQ-014 — Reconcile every existing finding
+Milestone acceptance requires:
 
-Every remediation or regenerated-plan review shall explicitly account for all prior unresolved or superseded-pending findings.
+- at least five seeded cases containing at least 20 planted defects and 20 planted non-defects;
+- detection of 100% of planted critical/high defects;
+- at least 80% detection across all planted defects;
+- false findings on no more than 10% of planted non-defects;
+- three real requirements documents compared with unrevised baseline plans; and
+- a higher blinded human rubric score for factory plans.
 
-A schema-valid review shall not be accepted when an existing finding is omitted.
+The versioned rubric covers correctness, completeness, traceability, feasibility, risk handling, and clarity. A scorer must not have authored either compared plan; the primary user may administer but cannot be the sole scorer when they authored a plan.
 
-Resolved findings may be supplied to reviewers as compact recurrence stubs containing, at minimum:
+## 17. Delivery sequence
 
-- Finding ID
-- Fingerprint
-- One-line summary
+### Increment 1 — Baseline-reviewed vertical slice
 
-### REQ-015 — Submit planner remediation claims
+Register source, submit and approve a ledger, generate a structured plan, render Markdown, run an independent baseline review, persist evidence, and export a provisional result. This increment cannot approve a plan.
 
-For each open finding, the planner shall submit:
+### Increment 2 — Qualification and approval
 
-- A remediation explanation
-- The changed structured sections
-- Relevant requirement references
-- Relevant component references
-- Any continuity intent
+Add finding reconciliation, remediation claims, independent verification, closure review, waivers, rejection, final human approval, and terminal reports.
 
-The planner’s claim shall not alter finding status by itself.
+### Increment 3 — Recovery and security hardening
 
-### REQ-016 — Independently verify remediation
+Add unknown-outcome recovery, mutation leases, migration backups, audit-chain verification, corruption diagnostics, cancellation, child runs, privacy acknowledgment, and deletion safeguards.
 
-The reviewer shall determine whether each remediation is:
+### Increment 4 — Replay and evaluation
 
-- Accepted
-- Rejected
-- Still open
-- Recurred
-- No longer applicable
+Add strict replay, explicit rerun, seeded evaluation, blinded real-plan comparison, and acceptance evidence.
 
-The orchestrator shall apply the resulting state transition according to policy.
+## 18. Architecture-readiness gate
 
-### REQ-017 — Detect false-remediation evidence
+Implementation begins only after the repository contains mutually consistent versions of:
 
-When a planner claims to have changed a section whose normalized content hash did not change, the factory shall record this as evidence and include it in the remediation review.
+- this PRD and the architecture document;
+- accepted ADRs;
+- a state-transition table;
+- an audit-entry and command catalog;
+- versioned JSON schemas;
+- the default review taxonomy and component registry;
+- OpenAI and Anthropic adapter contracts; and
+- an acceptance-test matrix.
 
-This deterministic evidence shall not automatically prove failure because a valid fix may occur elsewhere; the reviewer shall judge the substance.
+Exact model IDs, taxonomy contents, component values, repair and cycle counts, token/cost defaults, cassette retention, and the executable package name must be selected and recorded in those readiness artifacts. Conservative budget defaults require explicit user acceptance before the first live run.
 
-### REQ-018 — Run a full-document closure review
+## 19. Acceptance criteria
 
-Once known blocking findings are cleared, the factory shall perform a full-document closure review.
+Milestone 1 is accepted when all of the following are demonstrated:
 
-Closure shall pass only when:
+1. A supported source document can complete the full workflow through explicit human approval.
+2. A baseline-only result cannot be mislabeled qualified or approved.
+3. Ledger revisions invalidate downstream qualification while preserving lineage and finding history.
+4. Direct Markdown edits block progression until reconciled canonically.
+5. The Planner cannot change finding status, waive risk, or approve its own work.
+6. Ambiguous finding fingerprints never silently merge concerns.
+7. Waived blockers produce a distinct state and require renewed acknowledgment.
+8. Crash tests at every command boundary preserve one accepted logical result and honest physical-call accounting.
+9. State and audit entries never commit independently.
+10. Missing artifacts, broken audit chains, and unsafe schema versions block mutation.
+11. Strict replay never performs a live call; rerun is explicit and budgeted.
+12. Provider refusal, truncation, schema failure, transport failure, and substantive failure follow distinct policies.
+13. Read-only inspection remains available during provider calls.
+14. Every loop and provider resource stops at its accepted bound.
+15. Terminal manifests contain the evidence required by PRD-026.
+16. The quality-evaluation thresholds in section 16 pass.
 
-- No open critical findings remain.
-- No open high findings remain.
-- No prior finding was omitted.
-- No new critical or high finding is created.
-- Requirement coverage passes.
-- The result is schema-valid.
+## 20. Document authority
 
-### REQ-019 — Bound the closure loop
-
-The closure loop shall have its own budget, separate from main remediation cycles.
-
-The default workflow shall permit:
-
-- Closure review 1
-- One closure remediation when needed
-- Closure review 2
-- Pass or halt
-
-A second failed closure review shall halt rather than restart an unbounded loop.
-
-### REQ-020 — Keep baseline-omission classification as telemetry
-
-A reviewer may classify a new issue as a probable baseline omission or as introduced by a later diff.
-
-This classification shall be recorded for trend analysis only and shall not change gate behavior.
-
-### REQ-021 — Label evidence types
-
-Every gate rule shall declare its evidence type:
-
-- Deterministic
-- LLM judgment
-- Ledger policy
-- Human decision
-
-A gate report shall display these types so the user can distinguish mechanically verified facts from subjective judgments.
-
-### REQ-022 — Preserve an append-only event history
-
-Every meaningful state transition shall be represented as a versioned event.
-
-The raw event history shall be immutable.
-
-Current-state tables and exported ledgers shall be rebuildable projections.
-
-### REQ-023 — Persist trigger events and planned commands atomically
-
-An incoming triggering event and all `CommandPlanned` events caused by it shall be appended in one SQLite transaction.
-
-If the transaction fails, neither the trigger nor its planned child commands shall persist.
-
-No provider call or long-running filesystem effect shall occur inside this transaction.
-
-### REQ-024 — Use deterministic logical command identity
-
-A command key shall be derived from:
-
-- Run ID
-- Triggering event sequence
-- Command type
-- Command ordinal
-- Input digest
-
-The command key shall support:
-
-- External idempotency markers
-- Provider idempotency where available
-- Duplicate detection
-- Replay assertions
-- Correlation of physical attempts
-
-The key shall be defense-in-depth; atomic event-and-plan persistence shall provide primary crash safety.
-
-### REQ-025 — Separate logical commands from physical attempts
-
-One logical command may have multiple physical attempts when a response is lost, a transport fails, or the user forces a retry.
-
-Every attempt shall remain correlated with its logical command.
-
-### REQ-026 — Reconstruct state by replay
-
-Replaying the event history under a compatible engine and upcaster chain shall reconstruct the same current state and logical commands.
-
-The pure decision and state-transition functions shall not read clocks, random values, environment variables, files, databases, or networks.
-
-### REQ-027 — Version event schemas
-
-Every event type shall carry a schema version.
-
-Old events shall be interpreted through pure upcasters.
-
-A run without a safe upcast path shall become read-only rather than being resumed under ambiguous semantics.
-
-### REQ-028 — Permit one mutating process
-
-Only one mutating CLI process may operate on a project at a time.
-
-A project-level writer lock shall protect mutating commands.
-
-### REQ-029 — Keep read-only inspection available
-
-Read-only commands such as `status`, `inspect`, `events`, `artifacts`, and `findings` shall remain available while a long provider call is in progress.
-
-The writer lock shall not block read-only database access.
-
-### REQ-030 — Permit one in-flight effectful command
-
-Milestone 1 shall allow only one effectful command in `started` state at a time.
-
-Parallel execution is out of scope.
-
-### REQ-031 — Version every artifact
-
-The factory shall never silently overwrite an artifact.
-
-Each human edit, model output, deterministic render, or regeneration shall create a new immutable artifact version with recorded provenance.
-
-### REQ-032 — Detect human edits and invalidate downstream decisions
-
-Before executing a dependent stage, the factory shall verify canonical working-file hashes.
-
-An external edit shall:
-
-1. Produce an `ArtifactExternallyModified` event.
-2. Register a new human-origin artifact version.
-3. Apply Milestone 1’s hardcoded invalidation rules.
-4. Preserve the findings ledger and apply explicit lifecycle transitions.
-
-### REQ-033 — Use hardcoded Milestone 1 invalidation rules
-
-Milestone 1 shall use a simple fixed invalidation table rather than a generalized graph.
-
-At minimum:
-
-- Raw requirements changes invalidate requirements approval, plan, reviews, and final approval.
-- Requirements-ledger changes invalidate plan, reviews, and final approval.
-- Plan changes invalidate reviews and final approval.
-- Review prompt, rubric, taxonomy, or model changes invalidate review results and final approval while preserving the plan.
-- Gate-policy changes invalidate gate decisions and final approval while preserving evidence.
-
-### REQ-034 — Preserve findings during invalidation and regeneration
-
-Invalidation shall not delete finding identity or history.
-
-When a plan lineage is regenerated:
-
-- Open findings become `superseded_pending`.
-- Resolved findings remain resolved and enter a recurrence watchlist.
-- The next baseline review reconciles prior findings.
-
-### REQ-035 — Remap findings through requirement lineage
-
-Finding-to-requirement associations shall be mechanically remapped through requirement lineage.
-
-A finding referencing a removed requirement without a successor shall become orphaned.
-
-An orphaned critical or high finding shall block approval until a human maps, waives, or retires it with a reason.
-
-### REQ-036 — Record and replay provider interactions
-
-All provider calls shall occur behind adapters with a recording seam.
-
-A cassette request identity shall include:
-
-- Adapter and adapter version
-- Provider
-- Exact model snapshot
-- System-prompt hash
-- User-prompt hash
-- Input artifact hashes
-- Tool configuration
-- Output-schema version
-- Generation parameters
-
-Project-derived cassettes shall remain under `.factory/cassettes/` and be ignored by Git by default.
-
-### REQ-037 — Fail strict replay on an unrecorded request
-
-In strict replay mode:
-
-- A matching cassette shall return its recorded response.
-- A missing cassette shall fail with `UNRECORDED_REQUEST`.
-- Replay shall never silently call a live provider.
-
-### REQ-038 — Provide a separate live-evaluation mode
-
-A changed prompt, rubric, schema, taxonomy, or model snapshot creates a new request and cannot be evaluated by an old cassette.
-
-The product shall therefore support a distinct live-evaluation mode for seeded cases.
-
-Replay tests verify software behavior against known responses. Live evaluations verify semantic behavior of changed requests.
-
-### REQ-039 — Pin model identity
-
-The factory shall record:
-
-- Provider
-- Requested model identifier
-- Returned model identifier when available
-- Prompt hash
-- Rubric hash
-- Output-schema version
-- Provider request ID
-
-Floating aliases shall be rejected for reproducible production workflows when an exact snapshot is available.
-
-A model-identity change shall invalidate semantic baselines and relevant cached decisions.
-
-### REQ-040 — Enforce independent budgets
-
-The factory shall support separate configurable budgets for:
-
-- Transport retries per call
-- Schema repairs per call
-- Main remediation cycles
-- Closure reviews
-- Provider calls per run
-- Input tokens per run
-- Output tokens per run
-- Total cost per run
-
-Schema-invalid output shall not consume a substantive remediation cycle.
-
-### REQ-041 — Halt before knowingly exceeding a hard budget
-
-Before planning a provider command, the decision engine shall compare recorded and reserved usage against configured ceilings.
-
-When the next command could exceed a hard ceiling, the factory shall halt rather than dispatch the command.
-
-### REQ-042 — Generate a churn-aware halt report
-
-A halted review run shall produce structured JSON and readable Markdown reports containing:
-
-- Halt reason
-- Open and orphaned findings
-- New findings per cycle
-- Resolved and reopened findings
-- Findings recurring across plan generations
-- Severity-reclassification attempts
-- Baseline-omission classifications
-- Remediation claims and rejected remediations
-- Retry and review-budget use
-- Provider calls, tokens, and cost
-- Schema and transport failures
-- Model, prompt, rubric, and taxonomy versions
-- Recommended human decisions
-
-### REQ-043 — Provide explicit CLI operations
-
-Milestone 1 shall support, at minimum:
-
-```bash
-factory init
-factory start <requirements-file>
-factory submit <artifact-file>
-factory approve <stage>
-factory reject <stage>
-factory resume
-factory retry <command-or-stage>
-factory retry <command-or-stage> --force
-factory cancel
-factory status
-factory inspect <subject>
-factory events
-factory artifacts
-```
-
-### REQ-044 — Define retry behavior against existing successful work
-
-A normal retry with unchanged logical command identity and an existing successful result shall be a no-op.
-
-A deliberate rerun shall require `--force` and shall produce auditable `ForceRetryRequested` and `CacheBypassed` events.
-
-Generalized cross-run memoization may be implemented later using identity fields persisted from Milestone 1.
-
-### REQ-045 — Protect credentials and proprietary content
-
-The factory shall not write provider credentials to:
-
-- Events
-- Logs
-- Artifacts
-- Prompts
-- Cassettes
-- Debug exports
-
-Requirements, plans, findings, provider recordings, and halt reports shall remain local unless the user explicitly exports or commits them.
-
-### REQ-046 — Treat artifact contents as untrusted data
-
-Prompt construction shall clearly separate factory instructions, taxonomies, and schemas from user-provided or model-generated artifact content.
-
-Model-generated text shall never directly authorize shell execution in Milestone 1.
-
-## 10. Gate Requirements
-
-### 10.1 Requirements gate
-
-The requirements stage passes when:
-
-- The ledger is schema-valid.
-- Active IDs are unique.
-- Retired IDs are not reused.
-- Every active requirement has source support.
-- Relevant source content is mapped or explicitly excluded.
-- Human approval is recorded.
-
-### 10.2 Baseline review gate
-
-The baseline result is accepted as valid evidence when:
-
-- The review schema is valid.
-- Every referenced requirement, section, rule, category, and component exists.
-- Every prior unresolved finding is reconciled.
-- Fingerprints are computed by the orchestrator.
-
-The workflow advances to remediation or closure based on the resulting ledger state.
-
-### 10.3 Remediation gate
-
-A remediation cycle completes when:
-
-- Every open finding has a remediation claim.
-- Section continuity validates.
-- The reviewer accounts for every existing finding.
-- No silent severity downgrade occurs.
-- New findings are added with cycle attribution.
-
-### 10.4 Closure gate
-
-The plan passes when:
-
-- No unresolved critical or high findings remain.
-- No prior finding is omitted.
-- The full-document closure review creates no new critical or high finding.
-- Requirement coverage is present and judged sufficient.
-- All required deterministic checks pass.
-- Any required human decision is recorded.
-
-## 11. Review Taxonomy Requirements
-
-The review taxonomy shall be versioned and shall define controlled rules and categories.
-
-The initial taxonomy should cover at least:
-
-- Requirement omission
-- Requirement contradiction
-- Scope ambiguity
-- Missing acceptance criteria
-- Data integrity
-- Security and privacy
-- Authentication and authorization
-- Error handling
-- Reliability and recovery
-- Rollback strategy
-- Observability
-- Performance
-- Testing sufficiency
-- Deployment and migration
-- Dependency risk
-- Maintainability
-
-Rules should be narrow enough that one semantic fingerprint represents one concern class.
-
-## 12. Artifact Requirements
-
-Milestone 1 shall produce or register the following artifacts as applicable:
-
-```text
-raw-requirements.md
-requirements-ledger.json
-plan.json
-plan.md
-plan-anchor-map.json
-baseline-review.json
-remediation-response.json
-remediation-review.json
-closure-review.json
-findings-ledger.json
-review-report.md
-halt-report.json
-halt-report.md
-run-export.json
-```
-
-Every artifact shall record:
-
-- Artifact ID
-- Type
-- Schema version
-- Content hash
-- Origin
-- Producer
-- Input artifact identities and hashes
-- Prompt, rubric, taxonomy, model, worker, and tool versions where applicable
-- Creation event sequence
-
-## 13. Nonfunctional Requirements
-
-### NFR-001 — Recoverability
-
-The product shall recover from termination between completed commands without losing committed state.
-
-### NFR-002 — Deterministic core
-
-Given the same compatible state and event, the pure core shall emit the same state transition and command specifications.
-
-### NFR-003 — Traceability
-
-The user shall be able to trace:
-
-```text
-Source requirement
-→ Requirement identity
-→ Plan section
-→ Review finding
-→ Review observation
-→ Remediation
-→ Gate decision
-→ Final approval or halt
-```
-
-### NFR-004 — Explainability
-
-Every workflow decision shall have inspectable evidence and an identified evidence type.
-
-### NFR-005 — Local privacy
-
-No inbound network listener shall exist. Network calls shall be limited to explicitly configured provider adapters.
-
-### NFR-006 — Operational simplicity
-
-The product shall not require a server, container platform, external database, message queue, or cloud service.
-
-### NFR-007 — Bounded resource use
-
-A run shall never intentionally exceed configured call, token, cost, or cycle budgets.
-
-### NFR-008 — Compatibility policy
-
-Historical runs shall remain readable. Resumption shall require a complete, safe upcast path for all events.
-
-### NFR-009 — Read availability
-
-Read-only inspection shall remain available during long-running effects.
-
-### NFR-010 — Audit integrity
-
-Historical events and artifact versions shall not be silently rewritten.
-
-## 14. Default Budget Configuration
-
-Initial defaults may be:
-
-```yaml
-budgets:
-  transport_retries_per_call: 2
-  schema_repairs_per_call: 2
-  main_remediation_cycles: 3
-  closure_reviews: 2
-  provider_calls_per_run: 12
-  input_tokens_per_run: 300000
-  output_tokens_per_run: 60000
-  cost_ceiling_usd: 100
-```
-
-These are configurable defaults, not architectural constants.
-
-## 15. Testing and Validation Requirements
-
-### 15.1 Pure transition tests
-
-Tests shall feed synthetic events and states into the decision and state-transition functions without network, database, filesystem, clock, or randomness.
-
-### 15.2 Transaction tests
-
-Tests shall verify that a trigger event and all resulting planned commands commit or roll back together.
-
-### 15.3 Kill-and-restart tests
-
-The process shall be terminated at multiple boundaries, including:
-
-- Before transactional commit
-- After transactional commit
-- After command start
-- During a provider call
-- After artifact creation but before success-event submission
-- After result-event submission
-
-The following properties must hold:
-
-1. No finding is lost.
-2. No completed logical command is re-planned.
-3. Replayed state remains identical.
-4. No artifact version is duplicated under a new identity.
-
-### 15.4 Priority ledger protocol tests
-
-The highest-priority tests shall cover:
-
-1. Omitted existing finding
-2. Silent severity downgrade
-3. Duplicate finding expressed with different prose
-4. Legitimate new finding during remediation
-5. Resolved finding recurring after rewrite
-6. Requirement split preserving finding identity
-7. Component display-name change preserving finding identity
-8. Orphaned blocker requiring human disposition
-9. Closure finding a missed blocker
-10. Closure budget exhaustion
-11. False-remediation claim with unchanged cited section
-12. Reviewer incorrectly accepting false remediation
-13. Stable section identity through rewrite
-14. Missing Markdown marker creating reconciliation rather than silent retirement
-
-### 15.5 Seeded live-evaluation cases
-
-The initial live-evaluation corpus shall include:
-
-- Missing rollback strategy
-- Contradictory requirements
-- Clean decoy
-- Recurrence after rewrite
-- False-remediation trap
-
-The corpus shall use planted defects and planted non-defects so assertions are computable.
-
-## 16. Milestone 1 Delivery Sequence
-
-### Increment 1 — Walking skeleton
-
-Implement:
-
-- Versioned event envelope
-- SQLite event store
-- Transactional append-and-plan
-- Pure decision and transition functions
-- Mutation lock with read-only access
-- One in-flight command
-- Artifact identity and provenance
-- Manual requirements submission
-- Requirements approval
-- Planner adapter
-- Structured plan and rendered anchors
-- Baseline reviewer
-- Finding/observation ledger v0
-- Plan approval
-- Status and inspection commands
-- Provider recording seam
-
-A real requirements document must reach an approved plan or coherent halt.
-
-### Increment 2 — Remediation and closure
-
-Add:
-
-- Planner remediation claims
-- Structured plan diff
-- Section continuity intents
-- Remediation review
-- Finding reconciliation
-- Main and closure budgets
-- Churn-aware halt reporting
-- False-remediation tests
-
-### Increment 3 — Automated requirements normalization
-
-Add:
-
-- Source-span proposals
-- Update/new/removed reconciliation
-- Human comparison view
-- Split and merge workflows
-
-### Increment 4 — Replay and seeded evaluation harness
-
-Add:
-
-- Strict replay runner
-- Synthetic cassettes
-- Live seeded-evaluation runner
-- Approved baseline replacement
-- Golden event transcripts
-
-## 17. Milestone 1 Acceptance Criteria
-
-Milestone 1 is complete when:
-
-1. A real requirements document enters the factory.
-2. The user submits and approves a requirements ledger.
-3. The planner produces a schema-valid structured plan.
-4. The factory renders stable plan-section identities.
-5. The reviewer produces structured findings using controlled rule and component identifiers.
-6. The orchestrator computes every fingerprint.
-7. A planner cannot resolve its own finding.
-8. Existing findings cannot disappear through reviewer omission.
-9. Requirement lineage does not silently duplicate findings.
-10. Plan regeneration preserves recurring concerns.
-11. Triggering events and planned commands commit atomically.
-12. Event replay reconstructs the same state.
-13. Read-only inspection works during provider calls.
-14. A second mutating process is rejected.
-15. Review and closure loops terminate within budget.
-16. Provider-call, token, and cost ceilings are enforced.
-17. Strict replay fails on an unrecorded request.
-18. Human edits create new artifact versions and invalidate the correct downstream decisions.
-19. Kill-and-restart tests preserve all four recovery properties.
-20. The run ends with an approved plan or evidence-rich halt report.
-
-## 18. Risks and Mitigations
-
-| Risk | Mitigation |
-|---|---|
-| Reviewer severity drift | Immutable discovery severity; explicit reclassification events and authority. |
-| Findings churn | Persistent ledger, reconciliation requirements, recurrence matching, bounded closure. |
-| Reviewer vocabulary changes | Controlled rule taxonomy, component registry, and orchestrator-computed fingerprints. |
-| Requirement restructuring duplicates findings | Canonical lineage roots in fingerprint computation. |
-| Plan anchors disappear during rewrite | Structured plan output and orchestrator-owned Markdown rendering. |
-| Crash after event but before decisions | Atomic append of trigger event and resulting planned commands. |
-| Provider response lost after remote completion | Stable logical command, recorded physical attempts, visible duplicate cost. |
-| Prompt or model drift | Exact version recording, strict replay, and separate live seeded evaluation. |
-| Runaway cost | Call, token, output, and cost ceilings checked before dispatch. |
-| Framework work displaces useful workflow | Real requirements document through the walking skeleton before horizontal expansion. |
-
-## 19. Deferred Decisions
-
-The following must be selected before the first production run but do not block the product definition:
-
-- Planning provider and exact model snapshot
-- Independent-review provider and exact model snapshot
-- Initial review taxonomy contents
-- Initial component registry
-- Run-level token and cost ceilings
-- Git policy for human-facing artifacts
-- Cassette-retention policy
-- CLI package and executable name
-
-## 20. Development Guardrail
-
-> No horizontal infrastructure feature may be added unless the active vertical workflow requires it or it defines persisted identity or a cross-component protocol that cannot safely be introduced later.
-
-The next implementation artifact after this PRD and its architecture is the event log of a real run—not another framework design document.
+This PRD defines product behavior, externally meaningful guarantees, constraints, acceptance criteria, and non-goals. Architecture must conform or explicitly propose a PRD change. Implementation details belong in architecture documents and ADRs.
