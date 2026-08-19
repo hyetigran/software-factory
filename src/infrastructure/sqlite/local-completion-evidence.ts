@@ -107,24 +107,21 @@ export class LocalCompletionEvidence {
   }
 
   assertUsage(request: CompleteAttemptRequest): void {
-    const usage: unknown = JSON.parse(
-      this.readStagedArtifactBytes(request.nativeUsageArtifact).toString(
-        "utf8",
-      ),
+    const usageBytes = this.readStagedArtifactBytes(
+      request.nativeUsageArtifact,
+    );
+    const expectedBytes = Buffer.from(
+      canonicalJson({
+        commandId: request.commandId,
+        attemptId: request.attemptId,
+        calls: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsdMicros: 0,
+      }),
     );
     if (
-      usage === null ||
-      typeof usage !== "object" ||
-      Array.isArray(usage) ||
-      canonicalJson(usage) !==
-        canonicalJson({
-          commandId: request.commandId,
-          attemptId: request.attemptId,
-          calls: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          costUsdMicros: 0,
-        }) ||
+      !usageBytes.equals(expectedBytes) ||
       canonicalJson(request.actualUsage) !==
         canonicalJson({
           calls: 0,

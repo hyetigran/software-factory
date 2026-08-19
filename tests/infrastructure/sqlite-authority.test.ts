@@ -766,10 +766,26 @@ describe("SQLite authority", () => {
         attemptId: "attempt_execute_1",
       },
     });
-    const invalidUsage = await store.stageArtifact(Buffer.from("{}"), {
-      ...usage,
-      artifactId: "artifact_invalid_usage",
-    });
+    const invalidUsage = await store.stageArtifact(
+      Buffer.from(
+        JSON.stringify(
+          {
+            commandId: "command_execute",
+            attemptId: "attempt_execute_1",
+            calls: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            costUsdMicros: 0,
+          },
+          null,
+          2,
+        ),
+      ),
+      {
+        ...usage,
+        artifactId: "artifact_invalid_usage",
+      },
+    );
     await expect(
       authority.completeAttempt({
         runId: "run_execute",
