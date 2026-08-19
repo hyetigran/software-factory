@@ -505,7 +505,12 @@ export class SqliteAuthority implements AuthorityPort {
       "workspace_local",
       options.artifactStore,
     );
-    authority.migrate();
+    try {
+      authority.migrate();
+    } catch (error) {
+      database.close();
+      throw error;
+    }
     return authority;
   }
 
@@ -571,13 +576,57 @@ export class SqliteAuthority implements AuthorityPort {
     }
   }
 
+  private verifyPostMigrationObjectsAndIndexes(
+    expectedObjectHashes: string[],
+  ): void {
+    const currentHashes = (
+      this.database
+        .prepare("SELECT content_hash FROM artifacts ORDER BY content_hash")
+        .all() as Array<{ content_hash: string }>
+    ).map(({ content_hash }) => content_hash);
+    if (canonicalJson(currentHashes) !== canonicalJson(expectedObjectHashes)) {
+      throw new AuthorityIntegrityError(
+        "Migration changed the referenced-object manifest",
+      );
+    }
+    for (const contentHash of currentHashes) {
+      const bytes = readFileSync(
+        resolve(dirname(this.databasePath), "objects", contentHash),
+      );
+      if (sha256(bytes) !== contentHash) {
+        throw new AuthorityIntegrityError(
+          `Post-migration object verification failed: ${contentHash}`,
+        );
+      }
+    }
+    const duplicateCommands = this.database
+      .prepare(
+        `SELECT 1 FROM logical_commands
+         GROUP BY run_id, command_key HAVING count(*) > 1 LIMIT 1`,
+      )
+      .get();
+    const activeRuns = this.database
+      .prepare(
+        `SELECT 1 FROM runs
+         WHERE state NOT IN ('approved','approved_with_waivers','halted','cancelled')
+         GROUP BY workspace_id HAVING count(*) > 1 LIMIT 1`,
+      )
+      .get();
+    if (duplicateCommands !== undefined || activeRuns !== undefined) {
+      throw new AuthorityIntegrityError(
+        "Post-migration uniqueness verification failed",
+      );
+    }
+  }
+
   private migrate(): void {
     const initialized = this.database
       .prepare(
         "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'schema_metadata'",
       )
       .get();
-    if (initialized === undefined) {
+    const newlyInitialized = initialized === undefined;
+    if (newlyInitialized) {
       const moduleDirectory = dirname(fileURLToPath(import.meta.url));
       const schemaPath = resolve(
         moduleDirectory,
@@ -588,109 +637,125 @@ export class SqliteAuthority implements AuthorityPort {
     let version = this.database
       .prepare("SELECT schema_version FROM schema_metadata WHERE singleton = 1")
       .get() as { schema_version: number } | undefined;
-    this.database
-      .prepare(
-        `INSERT OR IGNORE INTO workspaces
-          (workspace_id, created_at, audit_chain_head, next_audit_sequence)
-         VALUES (?, ?, ?, 1)`,
-      )
-      .run(this.workspaceId, this.now(), ZERO_HASH);
-    if (version?.schema_version === 1) {
-      this.verifyLegacyAuthority();
-      const integrity = this.database
-        .prepare("PRAGMA integrity_check")
-        .all() as Array<{ integrity_check: string }> | undefined;
-      const foreignKeys = this.database
-        .prepare("PRAGMA foreign_key_check")
-        .all();
-      if (
-        integrity?.length !== 1 ||
-        integrity[0]?.integrity_check !== "ok" ||
-        foreignKeys.length > 0
-      ) {
-        throw new AuthorityIntegrityError(
-          "Schema v1 failed the pre-migration integrity gate",
-        );
-      }
-      const backupId = `schema-1-to-2-${this.now().replaceAll(/[^0-9A-Za-z]/gu, "")}`;
-      const backupDirectory = resolve(
-        dirname(this.databasePath),
-        "backups",
-        backupId,
-      );
-      mkdirSync(backupDirectory, { recursive: true, mode: 0o700 });
-      const backupPath = resolve(backupDirectory, "state.db");
-      this.database.exec(
-        `VACUUM main INTO '${backupPath.replaceAll("'", "''")}'`,
-      );
-      const backupBytes = readFileSync(backupPath);
-      const objectHashes = (
-        this.database
-          .prepare("SELECT content_hash FROM artifacts ORDER BY content_hash")
-          .all() as Array<{ content_hash: string }>
-      ).map(({ content_hash }) => content_hash);
-      for (const contentHash of objectHashes) {
-        const objectPath = resolve(
-          dirname(this.databasePath),
-          "objects",
-          contentHash,
-        );
-        let bytes: Buffer;
-        try {
-          bytes = readFileSync(objectPath);
-        } catch (error) {
-          throw new AuthorityIntegrityError(
-            `Migration object is missing: ${contentHash}`,
-            { cause: error },
-          );
-        }
-        if (sha256(bytes) !== contentHash) {
-          throw new AuthorityIntegrityError(
-            `Migration object is corrupt: ${contentHash}`,
-          );
-        }
-      }
-      const chain = this.database
+    if (newlyInitialized) {
+      this.database
         .prepare(
-          "SELECT audit_chain_head FROM workspaces WHERE workspace_id = ?",
+          `INSERT INTO workspaces
+            (workspace_id, created_at, audit_chain_head, next_audit_sequence)
+           VALUES (?, ?, ?, 1)`,
         )
-        .get(this.workspaceId) as { audit_chain_head: string } | undefined;
-      const manifestPath = resolve(backupDirectory, "manifest.json");
-      const manifest = canonicalJson({
-        backupId,
-        databaseHash: sha256(backupBytes),
-        fromSchemaVersion: 1,
-        objectHashes,
-        auditChainHead: chain?.audit_chain_head ?? ZERO_HASH,
-        cliVersion: (
-          JSON.parse(
-            readFileSync(
-              resolve(
-                dirname(fileURLToPath(import.meta.url)),
-                "../../../package.json",
-              ),
-              "utf8",
-            ),
-          ) as { version: string }
-        ).version,
-        createdAt: this.now(),
-      });
-      writeFileSync(manifestPath, manifest, { mode: 0o600, flag: "wx" });
-      const verifiedManifest = JSON.parse(manifest) as {
-        databaseHash: string;
-      };
-      if (sha256(readFileSync(backupPath)) !== verifiedManifest.databaseHash) {
-        throw new AuthorityIntegrityError(
-          "Migration backup verification failed",
-        );
-      }
-      const moduleDirectory = dirname(fileURLToPath(import.meta.url));
-      const migrationPath = resolve(
-        moduleDirectory,
-        "../../../database/migrations/0002_run_state_snapshots.sql",
-      );
-      this.database.exec("BEGIN IMMEDIATE");
+        .run(this.workspaceId, this.now(), ZERO_HASH);
+    }
+    if (version?.schema_version === 1) {
+      this.database.exec("PRAGMA wal_checkpoint(TRUNCATE); BEGIN IMMEDIATE");
       try {
+        this.verifyLegacyAuthority();
+        const integrity = this.database
+          .prepare("PRAGMA integrity_check")
+          .all() as Array<{ integrity_check: string }> | undefined;
+        const foreignKeys = this.database
+          .prepare("PRAGMA foreign_key_check")
+          .all();
+        if (
+          integrity?.length !== 1 ||
+          integrity[0]?.integrity_check !== "ok" ||
+          foreignKeys.length > 0
+        ) {
+          throw new AuthorityIntegrityError(
+            "Schema v1 failed the pre-migration integrity gate",
+          );
+        }
+        const backupId = `schema-1-to-2-${this.now().replaceAll(/[^0-9A-Za-z]/gu, "")}`;
+        const backupDirectory = resolve(
+          dirname(this.databasePath),
+          "backups",
+          backupId,
+        );
+        mkdirSync(backupDirectory, { recursive: true, mode: 0o700 });
+        const backupPath = resolve(backupDirectory, "state.db");
+        const backupBytes = readFileSync(this.databasePath);
+        writeFileSync(backupPath, backupBytes, { mode: 0o600, flag: "wx" });
+        const objectHashes = (
+          this.database
+            .prepare("SELECT content_hash FROM artifacts ORDER BY content_hash")
+            .all() as Array<{ content_hash: string }>
+        ).map(({ content_hash }) => content_hash);
+        for (const contentHash of objectHashes) {
+          const objectPath = resolve(
+            dirname(this.databasePath),
+            "objects",
+            contentHash,
+          );
+          let bytes: Buffer;
+          try {
+            bytes = readFileSync(objectPath);
+          } catch (error) {
+            throw new AuthorityIntegrityError(
+              `Migration object is missing: ${contentHash}`,
+              { cause: error },
+            );
+          }
+          if (sha256(bytes) !== contentHash) {
+            throw new AuthorityIntegrityError(
+              `Migration object is corrupt: ${contentHash}`,
+            );
+          }
+        }
+        const chain = this.database
+          .prepare(
+            "SELECT audit_chain_head FROM workspaces WHERE workspace_id = ?",
+          )
+          .get(this.workspaceId) as { audit_chain_head: string } | undefined;
+        const manifestPath = resolve(backupDirectory, "manifest.json");
+        const manifest = canonicalJson({
+          backupId,
+          databaseHash: sha256(backupBytes),
+          fromSchemaVersion: 1,
+          objectHashes,
+          auditChainHead: chain?.audit_chain_head ?? ZERO_HASH,
+          cliVersion: (
+            JSON.parse(
+              readFileSync(
+                resolve(
+                  dirname(fileURLToPath(import.meta.url)),
+                  "../../../package.json",
+                ),
+                "utf8",
+              ),
+            ) as { version: string }
+          ).version,
+          createdAt: this.now(),
+        });
+        writeFileSync(manifestPath, manifest, { mode: 0o600, flag: "wx" });
+        const verifiedManifest = JSON.parse(
+          readFileSync(manifestPath, "utf8"),
+        ) as {
+          backupId: string;
+          databaseHash: string;
+          fromSchemaVersion: number;
+          objectHashes: string[];
+          auditChainHead: string;
+          cliVersion: string;
+        };
+        if (
+          verifiedManifest.backupId !== backupId ||
+          verifiedManifest.fromSchemaVersion !== 1 ||
+          verifiedManifest.auditChainHead !==
+            (chain?.audit_chain_head ?? ZERO_HASH) ||
+          canonicalJson(verifiedManifest.objectHashes) !==
+            canonicalJson(objectHashes) ||
+          verifiedManifest.cliVersion.length === 0 ||
+          sha256(readFileSync(backupPath)) !== verifiedManifest.databaseHash
+        ) {
+          throw new AuthorityIntegrityError(
+            "Migration backup verification failed",
+          );
+        }
+        const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+        const migrationPath = resolve(
+          moduleDirectory,
+          "../../../database/migrations/0002_run_state_snapshots.sql",
+        );
         this.database.exec(readFileSync(migrationPath, "utf8"));
         this.database
           .prepare(
@@ -726,7 +791,11 @@ export class SqliteAuthority implements AuthorityPort {
               stateVersionAfter: run.state_version,
               factType: "migration_completed",
               schemaVersion: 1 as const,
-              actor: { kind: "system", component: "sqlite_migration" },
+              actor: {
+                kind: "system",
+                component: "sqlite_migration",
+                version: verifiedManifest.cliVersion,
+              },
               reason: "Migrated authoritative database schema",
               evidence: [],
               recordedAt: this.now(),
@@ -774,6 +843,7 @@ export class SqliteAuthority implements AuthorityPort {
             .run(sequence, previousEntryHash, this.workspaceId);
         }
         this.verifyAuditChain();
+        this.verifyPostMigrationObjectsAndIndexes(objectHashes);
         const postIntegrity = this.database
           .prepare("PRAGMA integrity_check")
           .all() as Array<{ integrity_check: string }>;
