@@ -2346,6 +2346,21 @@ describe("transition", () => {
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 
+  it("rejects a same-provider pinned Reviewer without an override", () => {
+    const reviewerAssignment = {
+      provider: "openai" as const,
+      modelId: "gpt-reviewer-pinned",
+    };
+
+    expect(() =>
+      transition(
+        planningState(),
+        { ...planGeneratedInput(), reviewerAssignment },
+        { policyHash, reviewerAssignment },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
   it("accepts a policy-authorized reduced-independence review assignment", () => {
     const approved = requirementsApprovedState();
     const override = transition(approved, independenceOverrideGrantedInput(), {

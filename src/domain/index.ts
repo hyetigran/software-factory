@@ -1573,6 +1573,10 @@ function acceptGeneratedPlan(
     input.reviewerAssignment,
     expectedReviewerAssignment,
   );
+  const providerIndependenceSatisfied =
+    input.reviewerAssignment.provider !==
+      previousState.activePlanning.plannerAssignment.provider ||
+    override !== undefined;
   const reducedIndependence = override !== undefined;
 
   if (
@@ -1588,6 +1592,7 @@ function acceptGeneratedPlan(
     !input.reviewerAssignmentAuthorized ||
     !reviewerValid ||
     !reviewerAssignmentMatchesPolicy ||
+    !providerIndependenceSatisfied ||
     input.reviewPolicyArtifact.contentHash !== policy.policyHash ||
     !artifactsValid ||
     !input.auditChainVerified ||
