@@ -145,6 +145,7 @@ export type LedgerApprovalRequested = {
   validatedStateVersion: number;
   validatedLedgerVersionId: string;
   validatedLedgerContentHash: string;
+  validatedPolicyHash: string;
   ledgerSchemaValid: boolean;
   lineageValid: boolean;
   identityValid: boolean;
@@ -240,6 +241,7 @@ export type RenderLedgerApproval = {
     ledgerArtifactId: string;
     coverageReportArtifactId: string;
     coverageValidatedStateVersion: number;
+    coverageValidatedPolicyHash: string;
     approvalGateId: string;
     sourceExclusions: SourceExclusion[];
     approvedBy: HumanActor;
@@ -334,6 +336,7 @@ export type LedgerApprovedFact = {
     coverageReportArtifactId: string;
     coverageReportContentHash: string;
     coverageValidatedStateVersion: number;
+    coverageValidatedPolicyHash: string;
     approvalGateId: string;
     approvedBy: HumanActor;
   };
@@ -877,6 +880,7 @@ function approveLedger(
     input.validatedLedgerVersionId !== previousState.currentLedger.versionId ||
     input.validatedLedgerContentHash !==
       previousState.currentLedger.contentHash ||
+    input.validatedPolicyHash !== policy.policyHash ||
     (previousState.policyLocked &&
       previousState.policyHash !== policy.policyHash) ||
     !input.ledgerSchemaValid ||
@@ -927,6 +931,7 @@ function approveLedger(
       ledgerArtifactId: previousState.currentLedger.artifactId,
       coverageReportArtifactId: input.coverageReportArtifactId,
       coverageValidatedStateVersion: input.validatedStateVersion,
+      coverageValidatedPolicyHash: input.validatedPolicyHash,
       approvalGateId: input.approvalGateId,
       sourceExclusions,
       approvedBy: input.actor,
@@ -976,6 +981,7 @@ function approveLedger(
           coverageReportArtifactId: input.coverageReportArtifactId,
           coverageReportContentHash: input.coverageReportContentHash,
           coverageValidatedStateVersion: input.validatedStateVersion,
+          coverageValidatedPolicyHash: input.validatedPolicyHash,
           approvalGateId: input.approvalGateId,
           approvedBy: input.actor,
         },

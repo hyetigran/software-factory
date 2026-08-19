@@ -98,6 +98,7 @@ function ledgerApprovalRequestedInput(): LedgerApprovalRequested {
     validatedStateVersion: 3,
     validatedLedgerVersionId: "ledger_01JTEST",
     validatedLedgerContentHash: ledgerContentHash,
+    validatedPolicyHash: policyHash,
     ledgerSchemaValid: true,
     lineageValid: true,
     identityValid: true,
@@ -1162,7 +1163,7 @@ describe("transition", () => {
       {
         commandId: "command_render_approval_01JTEST",
         commandKey:
-          "07e06d18282d44fe0093ef47e13250afdecbec706aab6399bdaa72b7faf6f62d",
+          "33fd71d7b4745bfdd6362fde282f095826f005b895fac8532cbd906d45156690",
         commandType: "render_ledger_approval",
         schemaVersion: 1,
         runId: exclusionApproved.runId,
@@ -1186,6 +1187,7 @@ describe("transition", () => {
           ledgerArtifactId: "artifact_ledger_01JTEST",
           coverageReportArtifactId: "artifact_coverage_01JTEST",
           coverageValidatedStateVersion: 3,
+          coverageValidatedPolicyHash: policyHash,
           approvalGateId: "gate_requirements_approval_01JTEST",
           sourceExclusions: exclusionApproved.sourceExclusions,
           approvedBy: ledgerApprovalRequestedInput().actor,
@@ -1213,6 +1215,7 @@ describe("transition", () => {
         coverageReportArtifactId: "artifact_coverage_01JTEST",
         coverageReportContentHash,
         coverageValidatedStateVersion: 3,
+        coverageValidatedPolicyHash: policyHash,
         approvalGateId: "gate_requirements_approval_01JTEST",
         approvedBy: ledgerApprovalRequestedInput().actor,
       },
@@ -1245,7 +1248,7 @@ describe("transition", () => {
       payload: {
         commandId: "command_render_approval_01JTEST",
         commandKey:
-          "07e06d18282d44fe0093ef47e13250afdecbec706aab6399bdaa72b7faf6f62d",
+          "33fd71d7b4745bfdd6362fde282f095826f005b895fac8532cbd906d45156690",
         commandType: "render_ledger_approval",
         reservation: {
           calls: 0,
@@ -1428,12 +1431,14 @@ describe("transition", () => {
 
   it("adopts an unlocked policy change in approval state and evidence", () => {
     const revisedPolicyHash = "2".repeat(64);
+    const approval = {
+      ...ledgerApprovalRequestedInput(),
+      validatedPolicyHash: revisedPolicyHash,
+    };
 
-    const result = transition(
-      approvalReadyDraft(),
-      ledgerApprovalRequestedInput(),
-      { policyHash: revisedPolicyHash },
-    );
+    const result = transition(approvalReadyDraft(), approval, {
+      policyHash: revisedPolicyHash,
+    });
 
     expect(result.nextState).toEqual(
       expect.objectContaining({
@@ -1445,6 +1450,14 @@ describe("transition", () => {
     expect(result.commands).toEqual([
       expect.objectContaining({ policyHash: revisedPolicyHash }),
     ]);
+  });
+
+  it("rejects coverage evidence validated under an earlier policy", () => {
+    expect(() =>
+      transition(approvalReadyDraft(), ledgerApprovalRequestedInput(), {
+        policyHash: "2".repeat(64),
+      }),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 
   it("rejects coverage evidence produced for an earlier ledger revision", () => {
