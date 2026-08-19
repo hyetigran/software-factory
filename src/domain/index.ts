@@ -64,12 +64,23 @@ type AdvancedStateBase = RunStateBase & {
   };
 };
 
+export type PlannerAssignment = {
+  provider: "openai" | "anthropic";
+  modelId: string;
+};
+
+export type ActivePlanning = {
+  purposeId: string;
+  plannerAssignment: PlannerAssignment;
+  reservedBudget: BudgetReservation;
+};
+
 export type AdvancedRunState = AdvancedStateBase &
   (
     | { state: "requirements_approved"; policyLocked: boolean }
+    | { state: "planning"; policyLocked: true; activePlanning: ActivePlanning }
     | {
         state:
-          | "planning"
           | "baseline_review"
           | "remediation"
           | "closure"
@@ -162,6 +173,33 @@ export type LedgerApprovalRequested = {
   actor: HumanActor;
 };
 
+export type PlanningRequested = {
+  type: "PlanningRequested";
+  runId: string;
+  expectedStateVersion: number;
+  planPurposeId: string;
+  plannerAssignment: PlannerAssignment;
+  plannerModelAllowed: boolean;
+  modelIdentityPinned: boolean;
+  policyAccepted: boolean;
+  budgetsAccepted: boolean;
+  providerBoundaryAcknowledged: boolean;
+  promptArtifactId: string;
+  promptContentHash: string;
+  promptArtifactVerified: boolean;
+  outputSchemaArtifactId: string;
+  outputSchemaContentHash: string;
+  outputSchemaArtifactVerified: boolean;
+  budgetReservation: BudgetReservation;
+  availableBudget: BudgetReservation;
+  auditChainVerified: boolean;
+  databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
+  generateCommandId: string;
+  actor: HumanActor;
+};
+
 export type BudgetReservation = {
   calls: number;
   inputTokens: number;
@@ -248,6 +286,28 @@ export type RenderLedgerApproval = {
   };
 };
 
+export type GeneratePlan = {
+  commandId: string;
+  commandKey: string;
+  commandType: "generate_plan";
+  schemaVersion: 1;
+  runId: string;
+  triggeringStateVersion: number;
+  purposeId: string;
+  inputArtifactHashes: string[];
+  policyHash: string;
+  provider: PlannerAssignment["provider"];
+  modelId: string;
+  budgetReservation: BudgetReservation;
+  payload: {
+    ledgerVersionId: string;
+    ledgerArtifactId: string;
+    promptArtifactId: string;
+    outputSchemaArtifactId: string;
+    providerStorage: "minimize";
+  };
+};
+
 export type RunStartedFact = {
   type: "run_started";
   actor: HumanActor;
@@ -285,7 +345,8 @@ export type CommandPlannedFact = {
       | "render_source_registration_report"
       | "validate_ledger"
       | "render_ledger"
-      | "render_ledger_approval";
+      | "render_ledger_approval"
+      | "generate_plan";
     reservation: BudgetReservation;
   };
 };
@@ -342,6 +403,30 @@ export type LedgerApprovedFact = {
   };
 };
 
+export type PlanningRequestedFact = {
+  type: "planning_requested";
+  actor: HumanActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    planPurposeId: string;
+    plannerAssignment: PlannerAssignment;
+    policyHash: string;
+    budgetReservation: BudgetReservation;
+  };
+};
+
+export type BudgetReservedFact = {
+  type: "budget_reserved";
+  actor: SystemActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    commandId: string;
+    reservation: BudgetReservation;
+  };
+};
+
 export type TransitionResult = {
   nextState: NonterminalRunState;
   commands: Array<
@@ -349,6 +434,7 @@ export type TransitionResult = {
     | ValidateLedger
     | RenderLedger
     | RenderLedgerApproval
+    | GeneratePlan
   >;
   auditFacts: Array<
     | RunStartedFact
@@ -357,6 +443,8 @@ export type TransitionResult = {
     | DownstreamInvalidatedFact
     | SourceExclusionApprovedFact
     | LedgerApprovedFact
+    | PlanningRequestedFact
+    | BudgetReservedFact
     | CommandPlannedFact
   >;
 };
@@ -367,6 +455,8 @@ type LocalCommand =
   | RenderLedger
   | RenderLedgerApproval;
 
+type PlannedCommand = LocalCommand | GeneratePlan;
+
 function zeroBudgetReservation(): BudgetReservation {
   return {
     calls: 0,
@@ -376,7 +466,7 @@ function zeroBudgetReservation(): BudgetReservation {
   };
 }
 
-function planLocalCommand<T extends LocalCommand>(
+function planCommand<T extends PlannedCommand>(
   commandId: string,
   commandWithoutIdentity: Omit<T, "commandId" | "commandKey">,
 ): T {
@@ -397,7 +487,7 @@ function artifactEvidence(
 }
 
 function commandPlannedFact(
-  command: LocalCommand,
+  command: PlannedCommand,
   reason: string,
   evidence: ArtifactEvidenceReference[],
 ): CommandPlannedFact {
@@ -437,7 +527,8 @@ export function transition(
     | RunStarted
     | LedgerSubmitted
     | SourceExclusionApproved
-    | LedgerApprovalRequested,
+    | LedgerApprovalRequested
+    | PlanningRequested,
   policy: PinnedRunPolicy,
 ): TransitionResult {
   switch (input.type) {
@@ -449,6 +540,8 @@ export function transition(
       return approveSourceExclusion(previousState, input, policy);
     case "LedgerApprovalRequested":
       return approveLedger(previousState, input, policy);
+    case "PlanningRequested":
+      return requestPlanning(previousState, input, policy);
     default:
       throw new DomainTransitionError(
         "INVALID_TRANSITION",
@@ -504,7 +597,7 @@ function startRun(
       sourceArtifactId: input.sourceArtifactId,
     },
   };
-  const command = planLocalCommand<RenderSourceRegistrationReport>(
+  const command = planCommand<RenderSourceRegistrationReport>(
     input.renderCommandId,
     commandWithoutIdentity,
   );
@@ -643,11 +736,11 @@ function submitLedger(
       ledgerArtifactId: input.ledgerArtifactId,
     },
   };
-  const validateCommand = planLocalCommand<ValidateLedger>(
+  const validateCommand = planCommand<ValidateLedger>(
     input.validateCommandId,
     validateWithoutIdentity,
   );
-  const renderCommand = planLocalCommand<RenderLedger>(
+  const renderCommand = planCommand<RenderLedger>(
     input.renderCommandId,
     renderWithoutIdentity,
   );
@@ -815,7 +908,7 @@ function approveSourceExclusion(
       sourceExclusions,
     },
   };
-  const command = planLocalCommand<ValidateLedger>(
+  const command = planCommand<ValidateLedger>(
     input.validateCommandId,
     commandWithoutIdentity,
   );
@@ -937,7 +1030,7 @@ function approveLedger(
       approvedBy: input.actor,
     },
   };
-  const command = planLocalCommand<RenderLedgerApproval>(
+  const command = planCommand<RenderLedgerApproval>(
     input.renderCommandId,
     commandWithoutIdentity,
   );
@@ -991,6 +1084,172 @@ function approveLedger(
         coverageEvidence,
         sourceEvidence,
       ]),
+    ],
+  };
+}
+
+function requestPlanning(
+  previousState: NonterminalRunState | null,
+  input: PlanningRequested,
+  policy: PinnedRunPolicy,
+): TransitionResult {
+  if (
+    previousState === null ||
+    previousState.state !== "requirements_approved" ||
+    previousState.runId !== input.runId
+  ) {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      "PlanningRequested requires an approved requirements ledger",
+    );
+  }
+
+  const reservation = input.budgetReservation;
+  const available = input.availableBudget;
+  const reservationValid =
+    reservation.calls === 1 &&
+    Number.isInteger(reservation.inputTokens) &&
+    reservation.inputTokens > 0 &&
+    Number.isInteger(reservation.outputTokens) &&
+    reservation.outputTokens > 0 &&
+    Number.isInteger(reservation.costUsdMicros) &&
+    reservation.costUsdMicros > 0;
+  const capacityValid =
+    Number.isInteger(available.calls) &&
+    Number.isInteger(available.inputTokens) &&
+    Number.isInteger(available.outputTokens) &&
+    Number.isInteger(available.costUsdMicros) &&
+    available.calls >= reservation.calls &&
+    available.inputTokens >= reservation.inputTokens &&
+    available.outputTokens >= reservation.outputTokens &&
+    available.costUsdMicros >= reservation.costUsdMicros;
+  const sha256 = /^[a-f0-9]{64}$/;
+  const actor = input.actor;
+  const actorAuthorized =
+    actor.kind === "human" &&
+    typeof actor.displayName === "string" &&
+    actor.displayName.length > 0 &&
+    typeof actor.osAccount === "string" &&
+    actor.osAccount.length > 0;
+
+  if (
+    input.expectedStateVersion !== previousState.stateVersion ||
+    policy.policyHash !== previousState.policyHash ||
+    !input.policyAccepted ||
+    !input.budgetsAccepted ||
+    !input.providerBoundaryAcknowledged ||
+    !input.plannerModelAllowed ||
+    !input.modelIdentityPinned ||
+    !input.promptArtifactVerified ||
+    !input.outputSchemaArtifactVerified ||
+    input.planPurposeId.length === 0 ||
+    input.plannerAssignment.modelId.length === 0 ||
+    (input.plannerAssignment.provider !== "openai" &&
+      input.plannerAssignment.provider !== "anthropic") ||
+    input.promptArtifactId.length === 0 ||
+    input.outputSchemaArtifactId.length === 0 ||
+    !sha256.test(input.promptContentHash) ||
+    !sha256.test(input.outputSchemaContentHash) ||
+    !input.auditChainVerified ||
+    !input.databaseIntegrityVerified ||
+    !input.schemaCompatible ||
+    !input.mutationLeaseAvailable ||
+    !actorAuthorized ||
+    !reservationValid ||
+    !capacityValid
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "PlanningRequested requires accepted policy, verified provider inputs, and sufficient reserved budget",
+    );
+  }
+
+  const nextStateVersion = previousState.stateVersion + 1;
+  const commandWithoutIdentity = {
+    commandType: "generate_plan" as const,
+    schemaVersion: 1 as const,
+    runId: input.runId,
+    triggeringStateVersion: nextStateVersion,
+    purposeId: input.planPurposeId,
+    inputArtifactHashes: [
+      previousState.currentLedger.contentHash,
+      input.promptContentHash,
+      input.outputSchemaContentHash,
+    ],
+    policyHash: policy.policyHash,
+    provider: input.plannerAssignment.provider,
+    modelId: input.plannerAssignment.modelId,
+    budgetReservation: input.budgetReservation,
+    payload: {
+      ledgerVersionId: previousState.currentLedger.versionId,
+      ledgerArtifactId: previousState.currentLedger.artifactId,
+      promptArtifactId: input.promptArtifactId,
+      outputSchemaArtifactId: input.outputSchemaArtifactId,
+      providerStorage: "minimize" as const,
+    },
+  };
+  const command = planCommand<GeneratePlan>(
+    input.generateCommandId,
+    commandWithoutIdentity,
+  );
+  const evidence = [
+    artifactEvidence(
+      previousState.currentLedger.artifactId,
+      previousState.currentLedger.contentHash,
+    ),
+    artifactEvidence(input.promptArtifactId, input.promptContentHash),
+    artifactEvidence(
+      input.outputSchemaArtifactId,
+      input.outputSchemaContentHash,
+    ),
+  ];
+  const systemActor: SystemActor = {
+    kind: "system",
+    component: "domain-transition",
+    version: "0.0.0",
+  };
+
+  return {
+    nextState: {
+      ...previousState,
+      state: "planning",
+      stateVersion: nextStateVersion,
+      policyLocked: true,
+      activePlanning: {
+        purposeId: input.planPurposeId,
+        plannerAssignment: input.plannerAssignment,
+        reservedBudget: input.budgetReservation,
+      },
+    },
+    commands: [command],
+    auditFacts: [
+      {
+        type: "planning_requested",
+        actor: input.actor,
+        reason: "Request a plan from the assigned Planner",
+        evidence,
+        payload: {
+          planPurposeId: input.planPurposeId,
+          plannerAssignment: input.plannerAssignment,
+          policyHash: policy.policyHash,
+          budgetReservation: input.budgetReservation,
+        },
+      },
+      commandPlannedFact(
+        command,
+        "Generate plan with the assigned Planner",
+        evidence,
+      ),
+      {
+        type: "budget_reserved",
+        actor: systemActor,
+        reason: "Reserve the maximum budget before provider dispatch",
+        evidence,
+        payload: {
+          commandId: command.commandId,
+          reservation: command.budgetReservation,
+        },
+      },
     ],
   };
 }

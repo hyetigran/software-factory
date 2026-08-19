@@ -6,6 +6,7 @@ import {
   type DraftRunState,
   type LedgerApprovalRequested,
   type LedgerSubmitted,
+  type PlanningRequested,
   type RunStarted,
   type SourceExclusionApproved,
 } from "../../src/domain/index.js";
@@ -17,6 +18,8 @@ const ledgerContentHash = "d".repeat(64);
 const planContentHash = "e".repeat(64);
 const reviewContentHash = "f".repeat(64);
 const coverageReportContentHash = "0".repeat(64);
+const plannerPromptContentHash = "3".repeat(64);
+const planSchemaContentHash = "4".repeat(64);
 
 function runStartedInput(): RunStarted {
   return {
@@ -120,28 +123,73 @@ function ledgerApprovalRequestedInput(): LedgerApprovalRequested {
   };
 }
 
+function planningRequestedInput(): PlanningRequested {
+  return {
+    type: "PlanningRequested",
+    runId: "run_01JTEST0000000000000000000",
+    expectedStateVersion: 4,
+    planPurposeId: "purpose_plan_01JTEST",
+    plannerAssignment: {
+      provider: "openai",
+      modelId: "gpt-5.6-2026-08-01",
+    },
+    plannerModelAllowed: true,
+    modelIdentityPinned: true,
+    policyAccepted: true,
+    budgetsAccepted: true,
+    providerBoundaryAcknowledged: true,
+    promptArtifactId: "artifact_planner_prompt_01JTEST",
+    promptContentHash: plannerPromptContentHash,
+    promptArtifactVerified: true,
+    outputSchemaArtifactId: "artifact_plan_schema_01JTEST",
+    outputSchemaContentHash: planSchemaContentHash,
+    outputSchemaArtifactVerified: true,
+    budgetReservation: {
+      calls: 1,
+      inputTokens: 24_000,
+      outputTokens: 12_000,
+      costUsdMicros: 8_000_000,
+    },
+    availableBudget: {
+      calls: 3,
+      inputTokens: 100_000,
+      outputTokens: 40_000,
+      costUsdMicros: 50_000_000,
+    },
+    auditChainVerified: true,
+    databaseIntegrityVerified: true,
+    schemaCompatible: true,
+    mutationLeaseAvailable: true,
+    generateCommandId: "command_generate_plan_01JTEST",
+    actor: {
+      kind: "human",
+      displayName: "Tigran",
+      osAccount: "tig",
+    },
+  };
+}
+
 function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
   const draft = transition(null, runStartedInput(), { policyHash }).nextState;
-  return {
+  const base = {
     ...draft,
-    state,
     stateVersion: 7,
-    policyLocked: true,
+    policyLocked: true as const,
     currentLedger: {
       versionId: "ledger_01JTEST",
       artifactId: "artifact_ledger_01JTEST",
       contentHash: ledgerContentHash,
-      validationStatus: "approved",
+      validationStatus: "approved" as const,
     },
     downstreamQualification: {
       artifacts: [
         {
-          kind: "artifact",
+          kind: "artifact" as const,
           artifactId: "artifact_plan_01JTEST",
           contentHash: planContentHash,
         },
         {
-          kind: "artifact",
+          kind: "artifact" as const,
           artifactId: "artifact_review_01JTEST",
           contentHash: reviewContentHash,
         },
@@ -149,6 +197,21 @@ function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
       gateIds: ["gate_closure_01JTEST", "gate_qualification_01JTEST"],
     },
   };
+  if (state === "planning") {
+    return {
+      ...base,
+      state,
+      activePlanning: {
+        purposeId: "purpose_plan_01JTEST",
+        plannerAssignment: {
+          provider: "openai",
+          modelId: "gpt-5.6-2026-08-01",
+        },
+        reservedBudget: planningRequestedInput().budgetReservation,
+      },
+    };
+  }
+  return { ...base, state };
 }
 
 function approvalReadyDraft(): DraftRunState {
@@ -161,6 +224,18 @@ function approvalReadyDraft(): DraftRunState {
   }).nextState;
   if (result.state !== "draft") {
     throw new Error("expected draft state");
+  }
+  return result;
+}
+
+function requirementsApprovedState(): AdvancedRunState {
+  const result = transition(
+    approvalReadyDraft(),
+    ledgerApprovalRequestedInput(),
+    { policyHash },
+  ).nextState;
+  if (result.state !== "requirements_approved") {
+    throw new Error("expected requirements_approved state");
   }
   return result;
 }
@@ -1480,5 +1555,258 @@ describe("transition", () => {
     expect(() =>
       transition(revised.nextState, staleCoverageApproval, { policyHash }),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("requests provider-backed planning with a reserved budget", () => {
+    const approved = requirementsApprovedState();
+
+    const result = transition(approved, planningRequestedInput(), {
+      policyHash,
+    });
+
+    expect(result.nextState).toEqual({
+      ...approved,
+      state: "planning",
+      stateVersion: 5,
+      policyLocked: true,
+      activePlanning: {
+        purposeId: "purpose_plan_01JTEST",
+        plannerAssignment: {
+          provider: "openai",
+          modelId: "gpt-5.6-2026-08-01",
+        },
+        reservedBudget: planningRequestedInput().budgetReservation,
+      },
+    });
+    expect(result.commands).toEqual([
+      expect.objectContaining({
+        commandId: "command_generate_plan_01JTEST",
+        commandType: "generate_plan",
+        triggeringStateVersion: 5,
+        purposeId: "purpose_plan_01JTEST",
+        inputArtifactHashes: [
+          ledgerContentHash,
+          plannerPromptContentHash,
+          planSchemaContentHash,
+        ],
+        policyHash,
+        provider: "openai",
+        modelId: "gpt-5.6-2026-08-01",
+        budgetReservation: planningRequestedInput().budgetReservation,
+        payload: {
+          ledgerVersionId: "ledger_01JTEST",
+          ledgerArtifactId: "artifact_ledger_01JTEST",
+          promptArtifactId: "artifact_planner_prompt_01JTEST",
+          outputSchemaArtifactId: "artifact_plan_schema_01JTEST",
+          providerStorage: "minimize",
+        },
+      }),
+    ]);
+    expect(result.auditFacts[0]).toEqual({
+      type: "planning_requested",
+      actor: planningRequestedInput().actor,
+      reason: "Request a plan from the assigned Planner",
+      evidence: [
+        {
+          kind: "artifact",
+          artifactId: "artifact_ledger_01JTEST",
+          contentHash: ledgerContentHash,
+        },
+        {
+          kind: "artifact",
+          artifactId: "artifact_planner_prompt_01JTEST",
+          contentHash: plannerPromptContentHash,
+        },
+        {
+          kind: "artifact",
+          artifactId: "artifact_plan_schema_01JTEST",
+          contentHash: planSchemaContentHash,
+        },
+      ],
+      payload: {
+        planPurposeId: "purpose_plan_01JTEST",
+        plannerAssignment: {
+          provider: "openai",
+          modelId: "gpt-5.6-2026-08-01",
+        },
+        policyHash,
+        budgetReservation: planningRequestedInput().budgetReservation,
+      },
+    });
+    const command = result.commands[0];
+    expect(command?.commandKey).toMatch(/^[a-f0-9]{64}$/);
+    expect(
+      transition(approved, planningRequestedInput(), { policyHash }).commands[0]
+        ?.commandKey,
+    ).toBe(command?.commandKey);
+    expect(result.auditFacts.slice(1)).toEqual([
+      {
+        type: "command_planned",
+        actor: {
+          kind: "system",
+          component: "domain-transition",
+          version: "0.0.0",
+        },
+        reason: "Generate plan with the assigned Planner",
+        evidence: result.auditFacts[0]?.evidence,
+        payload: {
+          commandId: "command_generate_plan_01JTEST",
+          commandKey: command?.commandKey,
+          commandType: "generate_plan",
+          reservation: planningRequestedInput().budgetReservation,
+        },
+      },
+      {
+        type: "budget_reserved",
+        actor: {
+          kind: "system",
+          component: "domain-transition",
+          version: "0.0.0",
+        },
+        reason: "Reserve the maximum budget before provider dispatch",
+        evidence: result.auditFacts[0]?.evidence,
+        payload: {
+          commandId: "command_generate_plan_01JTEST",
+          reservation: planningRequestedInput().budgetReservation,
+        },
+      },
+    ]);
+  });
+
+  it.each([
+    ["stale state version", { expectedStateVersion: 3 }],
+    ["unaccepted policy", { policyAccepted: false }],
+    ["unaccepted budgets", { budgetsAccepted: false }],
+    [
+      "unacknowledged provider boundary",
+      { providerBoundaryAcknowledged: false },
+    ],
+    ["unallowlisted Planner model", { plannerModelAllowed: false }],
+    ["floating model identity", { modelIdentityPinned: false }],
+    ["unverified prompt artifact", { promptArtifactVerified: false }],
+    ["unverified schema artifact", { outputSchemaArtifactVerified: false }],
+    ["invalid prompt hash", { promptContentHash: "not-a-sha256" }],
+    ["invalid schema hash", { outputSchemaContentHash: "" }],
+    ["missing prompt identity", { promptArtifactId: "" }],
+    ["missing schema identity", { outputSchemaArtifactId: "" }],
+    ["missing purpose", { planPurposeId: "" }],
+    [
+      "missing model identity",
+      { plannerAssignment: { provider: "openai", modelId: "" } },
+    ],
+    ["unverified audit chain", { auditChainVerified: false }],
+    ["failed database integrity", { databaseIntegrityVerified: false }],
+    ["incompatible schema", { schemaCompatible: false }],
+    ["conflicting mutation lease", { mutationLeaseAvailable: false }],
+    [
+      "unauthorized actor",
+      { actor: { kind: "system", component: "test", version: "1" } },
+    ],
+    [
+      "zero call reservation",
+      {
+        budgetReservation: {
+          calls: 0,
+          inputTokens: 24_000,
+          outputTokens: 12_000,
+          costUsdMicros: 8_000_000,
+        },
+      },
+    ],
+    [
+      "fractional reservation",
+      {
+        budgetReservation: {
+          calls: 1,
+          inputTokens: 1.5,
+          outputTokens: 12_000,
+          costUsdMicros: 8_000_000,
+        },
+      },
+    ],
+    [
+      "insufficient calls",
+      {
+        availableBudget: {
+          calls: 0,
+          inputTokens: 100_000,
+          outputTokens: 40_000,
+          costUsdMicros: 50_000_000,
+        },
+      },
+    ],
+    [
+      "insufficient input tokens",
+      {
+        availableBudget: {
+          calls: 3,
+          inputTokens: 23_999,
+          outputTokens: 40_000,
+          costUsdMicros: 50_000_000,
+        },
+      },
+    ],
+    [
+      "insufficient output tokens",
+      {
+        availableBudget: {
+          calls: 3,
+          inputTokens: 100_000,
+          outputTokens: 11_999,
+          costUsdMicros: 50_000_000,
+        },
+      },
+    ],
+    [
+      "insufficient cost",
+      {
+        availableBudget: {
+          calls: 3,
+          inputTokens: 100_000,
+          outputTokens: 40_000,
+          costUsdMicros: 7_999_999,
+        },
+      },
+    ],
+  ])("rejects PlanningRequested with %s", (_name, override) => {
+    const input = {
+      ...planningRequestedInput(),
+      ...override,
+    } as PlanningRequested;
+
+    expect(() =>
+      transition(requirementsApprovedState(), input, { policyHash }),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("rejects PlanningRequested under a policy different from the approved policy", () => {
+    expect(() =>
+      transition(requirementsApprovedState(), planningRequestedInput(), {
+        policyHash: "f".repeat(64),
+      }),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it.each([
+    ["no run", null],
+    ["a draft run", approvalReadyDraft()],
+    ["a later nonterminal state", advancedRunState("baseline_review")],
+  ])("rejects PlanningRequested from %s", (_name, state) => {
+    expect(() =>
+      transition(state, planningRequestedInput(), { policyHash }),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
+  });
+
+  it("rejects PlanningRequested for a different run", () => {
+    expect(() =>
+      transition(
+        requirementsApprovedState(),
+        {
+          ...planningRequestedInput(),
+          runId: "run_other",
+        },
+        { policyHash },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
   });
 });
