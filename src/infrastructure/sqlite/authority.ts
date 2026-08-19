@@ -892,6 +892,13 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
       this.verifyAuditChain();
       this.verifyStagedArtifact(request.resultArtifact);
       this.verifyStagedArtifact(request.nativeUsageArtifact);
+      if (Object.keys(request.providerEvidence).length !== 0) {
+        throw new TypeError(
+          "Operational local completion cannot carry provider evidence",
+        );
+      }
+      this.persistArtifactMetadata(request.resultArtifact);
+      this.persistArtifactMetadata(request.nativeUsageArtifact);
       const row = this.database
         .prepare(
           `SELECT c.run_id, c.status AS command_status, c.accepted_attempt_id,
@@ -1039,8 +1046,6 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
       ) {
         throw new TypeError("Actual usage exceeds the reserved maximum");
       }
-      this.persistArtifactMetadata(request.resultArtifact);
-      this.persistArtifactMetadata(request.nativeUsageArtifact);
       const completedAt = this.now();
       const rerunExplicitlyExpected =
         this.database
