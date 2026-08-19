@@ -902,9 +902,15 @@ export type GenerateRemediation = {
   providerRequestPolicy: ProviderRequestPolicy;
   payload: {
     ledgerVersionId: string;
+    ledgerArtifactId: string;
     planVersionId: string;
     planArtifactId: string;
     reviewArtifactId: string;
+    renderedPlanArtifactId: string;
+    taxonomyArtifactId: string;
+    componentRegistryArtifactId: string;
+    reviewPolicyArtifactId: string;
+    evidenceArtifactIds: string[];
     promptArtifactId: string;
     outputSchemaArtifactId: string;
     blockingFindingIds: string[];
@@ -928,6 +934,7 @@ export type ClosureReview = {
   providerRequestPolicy: ProviderRequestPolicy;
   payload: {
     ledgerVersionId: string;
+    ledgerArtifactId: string;
     planVersionId: string;
     planArtifactId: string;
     baselineReviewArtifactId: string;
@@ -1414,6 +1421,22 @@ function artifactEvidence(
   contentHash: string,
 ): ArtifactEvidenceReference {
   return { kind: "artifact", artifactId, contentHash };
+}
+
+function uniqueArtifactEvidence(
+  artifacts: ArtifactEvidenceReference[],
+): ArtifactEvidenceReference[] {
+  const byId = new Map<string, ArtifactEvidenceReference>();
+  for (const artifact of artifacts) {
+    const existing = byId.get(artifact.artifactId);
+    if (existing !== undefined && existing.contentHash !== artifact.contentHash)
+      throw new DomainTransitionError(
+        "PRECONDITION_FAILED",
+        "Artifact identity maps to conflicting content",
+      );
+    byId.set(artifact.artifactId, artifact);
+  }
+  return [...byId.values()];
 }
 
 function verifiedArtifactInputIsValid(
@@ -2933,6 +2956,45 @@ function acceptPlanForBaseline(
       planArtifactId: input.planArtifact.artifactId,
     },
   });
+  const baselineInputEvidence = uniqueArtifactEvidence([
+    artifactEvidence(
+      previousState.currentLedger.artifactId,
+      previousState.currentLedger.contentHash,
+    ),
+    artifactEvidence(
+      input.planArtifact.artifactId,
+      input.planArtifact.contentHash,
+    ),
+    artifactEvidence(
+      input.sectionTransitionMapArtifact.artifactId,
+      input.sectionTransitionMapArtifact.contentHash,
+    ),
+    artifactEvidence(
+      input.provenanceArtifact.artifactId,
+      input.provenanceArtifact.contentHash,
+    ),
+    artifactEvidence(
+      input.reviewerPromptArtifact.artifactId,
+      input.reviewerPromptArtifact.contentHash,
+    ),
+    artifactEvidence(
+      input.reviewSchemaArtifact.artifactId,
+      input.reviewSchemaArtifact.contentHash,
+    ),
+    artifactEvidence(
+      input.taxonomyArtifact.artifactId,
+      input.taxonomyArtifact.contentHash,
+    ),
+    artifactEvidence(
+      input.componentRegistryArtifact.artifactId,
+      input.componentRegistryArtifact.contentHash,
+    ),
+    artifactEvidence(
+      input.reviewPolicyArtifact.artifactId,
+      input.reviewPolicyArtifact.contentHash,
+    ),
+    ...previousState.downstreamQualification.artifacts,
+  ]);
   const reviewCommand = planCommand<BaselineReview>(input.reviewCommandId, {
     commandType: "baseline_review",
     schemaVersion: 1,
@@ -2940,20 +3002,9 @@ function acceptPlanForBaseline(
     triggeringStateVersion: nextStateVersion + 1,
     prerequisiteCommandIds: [input.renderCommandId],
     purposeId: reviewPurposeId,
-    inputArtifactHashes: [
-      previousState.currentLedger.contentHash,
-      input.planArtifact.contentHash,
-      input.sectionTransitionMapArtifact.contentHash,
-      input.provenanceArtifact.contentHash,
-      input.reviewerPromptArtifact.contentHash,
-      input.reviewSchemaArtifact.contentHash,
-      input.taxonomyArtifact.contentHash,
-      input.componentRegistryArtifact.contentHash,
-      input.reviewPolicyArtifact.contentHash,
-      ...previousState.downstreamQualification.artifacts.map(
-        ({ contentHash }) => contentHash,
-      ),
-    ],
+    inputArtifactHashes: baselineInputEvidence.map(
+      ({ contentHash }) => contentHash,
+    ),
     policyHash: policy.policyHash,
     provider: input.reviewerAssignment.provider,
     modelId: input.reviewerAssignment.modelId,
@@ -3230,16 +3281,37 @@ function planAfterBaselineReview(
   findingIds: string[],
   blockingIds: Set<string>,
 ): GenerateRemediation | ClosureReview {
-  const commonInputArtifactHashes = [
-    state.currentLedger.contentHash,
-    state.currentPlan.contentHash,
-    input.reviewArtifact.contentHash,
-    input.renderedPlanArtifact.contentHash,
-    state.reviewContext.taxonomy.contentHash,
-    state.reviewContext.componentRegistry.contentHash,
-    state.reviewContext.policy.contentHash,
-    ...state.reviewContext.evidence.map(({ contentHash }) => contentHash),
-  ];
+  const commonInputEvidence = uniqueArtifactEvidence([
+    artifactEvidence(
+      state.currentLedger.artifactId,
+      state.currentLedger.contentHash,
+    ),
+    artifactEvidence(
+      state.currentPlan.artifactId,
+      state.currentPlan.contentHash,
+    ),
+    artifactEvidence(
+      input.reviewArtifact.artifactId,
+      input.reviewArtifact.contentHash,
+    ),
+    artifactEvidence(
+      input.renderedPlanArtifact.artifactId,
+      input.renderedPlanArtifact.contentHash,
+    ),
+    artifactEvidence(
+      state.reviewContext.taxonomy.artifactId,
+      state.reviewContext.taxonomy.contentHash,
+    ),
+    artifactEvidence(
+      state.reviewContext.componentRegistry.artifactId,
+      state.reviewContext.componentRegistry.contentHash,
+    ),
+    artifactEvidence(
+      state.reviewContext.policy.artifactId,
+      state.reviewContext.policy.contentHash,
+    ),
+    ...state.reviewContext.evidence,
+  ]);
   const commonCommand = {
     schemaVersion: 1 as const,
     runId: input.runId,
@@ -3252,11 +3324,17 @@ function planAfterBaselineReview(
     ? planCommand<GenerateRemediation>(input.nextCommandId, {
         ...commonCommand,
         commandType: "generate_remediation",
-        inputArtifactHashes: [
-          ...commonInputArtifactHashes,
-          input.remediationPromptArtifact.contentHash,
-          input.remediationSchemaArtifact.contentHash,
-        ],
+        inputArtifactHashes: uniqueArtifactEvidence([
+          ...commonInputEvidence,
+          artifactEvidence(
+            input.remediationPromptArtifact.artifactId,
+            input.remediationPromptArtifact.contentHash,
+          ),
+          artifactEvidence(
+            input.remediationSchemaArtifact.artifactId,
+            input.remediationSchemaArtifact.contentHash,
+          ),
+        ]).map(({ contentHash }) => contentHash),
         purposeId: `${input.runId}:plan:${state.currentPlan.versionId}:remediation:1`,
         provider: policy.plannerAssignment.provider,
         modelId: policy.plannerAssignment.modelId,
@@ -3275,9 +3353,18 @@ function planAfterBaselineReview(
         ),
         payload: {
           ledgerVersionId: state.currentLedger.versionId,
+          ledgerArtifactId: state.currentLedger.artifactId,
           planVersionId: state.currentPlan.versionId,
           planArtifactId: state.currentPlan.artifactId,
           reviewArtifactId: input.reviewArtifact.artifactId,
+          renderedPlanArtifactId: input.renderedPlanArtifact.artifactId,
+          taxonomyArtifactId: state.reviewContext.taxonomy.artifactId,
+          componentRegistryArtifactId:
+            state.reviewContext.componentRegistry.artifactId,
+          reviewPolicyArtifactId: state.reviewContext.policy.artifactId,
+          evidenceArtifactIds: state.reviewContext.evidence.map(
+            ({ artifactId }) => artifactId,
+          ),
           promptArtifactId: input.remediationPromptArtifact.artifactId,
           outputSchemaArtifactId: input.remediationSchemaArtifact.artifactId,
           blockingFindingIds: input.reconciliation.blockingFindingIds,
@@ -3287,11 +3374,17 @@ function planAfterBaselineReview(
     : planCommand<ClosureReview>(input.nextCommandId, {
         ...commonCommand,
         commandType: "closure_review",
-        inputArtifactHashes: [
-          ...commonInputArtifactHashes,
-          state.reviewContext.prompt.contentHash,
-          state.reviewContext.schema.contentHash,
-        ],
+        inputArtifactHashes: uniqueArtifactEvidence([
+          ...commonInputEvidence,
+          artifactEvidence(
+            state.reviewContext.prompt.artifactId,
+            state.reviewContext.prompt.contentHash,
+          ),
+          artifactEvidence(
+            state.reviewContext.schema.artifactId,
+            state.reviewContext.schema.contentHash,
+          ),
+        ]).map(({ contentHash }) => contentHash),
         purposeId: `${input.runId}:plan:${state.currentPlan.versionId}:closure:1`,
         provider: state.activeReview.reviewerAssignment.provider,
         modelId: state.activeReview.reviewerAssignment.modelId,
@@ -3310,6 +3403,7 @@ function planAfterBaselineReview(
         ),
         payload: {
           ledgerVersionId: state.currentLedger.versionId,
+          ledgerArtifactId: state.currentLedger.artifactId,
           planVersionId: state.currentPlan.versionId,
           planArtifactId: state.currentPlan.artifactId,
           baselineReviewArtifactId: input.reviewArtifact.artifactId,

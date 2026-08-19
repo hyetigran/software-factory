@@ -16,6 +16,7 @@ export type ProviderRequest = {
   outputSchema: object;
   outputSchemaArtifactId: string;
   outputSchemaContentHash: string;
+  outputSchemaCanonicalHash?: string;
   maxOutputTokens: number;
   reasoning?: string;
   timeoutMs: number;

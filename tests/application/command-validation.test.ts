@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import type { PersistableCommand } from "../../src/application/authority-port.js";
 import { commandIsValid } from "../../src/application/command-validation.js";
+import { providerCommandPayloadIsValid } from "../../src/application/provider-command-specification.js";
 import { canonicalJson } from "../../src/domain/canonical-json.js";
 
 function command(
@@ -35,6 +36,51 @@ function command(
 }
 
 describe("command validation", () => {
+  it.each([
+    [
+      "baseline_review",
+      {
+        ledgerVersionId: "ledger-v1",
+        ledgerArtifactId: "ledger",
+        planVersionId: "plan-v1",
+        planArtifactId: "plan",
+        renderPlanCommandId: "render",
+        reviewerPromptArtifactId: "prompt",
+        reviewSchemaArtifactId: "schema",
+        taxonomyArtifactId: "taxonomy",
+        componentRegistryArtifactId: "components",
+        reviewPolicyArtifactId: "policy",
+        evidenceArtifactIds: ["evidence"],
+        independence: { reduced: true, overrideEvidence: null },
+        providerStorage: "minimize",
+      },
+    ],
+    [
+      "closure_review",
+      {
+        ledgerVersionId: "ledger-v1",
+        ledgerArtifactId: "ledger",
+        planVersionId: "plan-v1",
+        planArtifactId: "plan",
+        baselineReviewArtifactId: "review",
+        renderedPlanArtifactId: "rendered",
+        reviewerPromptArtifactId: "prompt",
+        reviewSchemaArtifactId: "schema",
+        taxonomyArtifactId: "taxonomy",
+        componentRegistryArtifactId: "components",
+        reviewPolicyArtifactId: "policy",
+        evidenceArtifactIds: ["evidence"],
+        findingIds: [],
+        independence: {
+          reduced: true,
+          overrideEvidence: { artifactId: "override", contentHash: "bad" },
+        },
+        providerStorage: "minimize",
+      },
+    ],
+  ])("rejects invalid reduced independence for %s", (commandType, payload) => {
+    expect(providerCommandPayloadIsValid(commandType, payload)).toBe(false);
+  });
   it("accepts exact operational command payloads", () => {
     expect(
       commandIsValid(command("verify_integrity", { scope: "workspace" })),

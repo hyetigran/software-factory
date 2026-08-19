@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
 import type { StagedArtifactRegistration } from "../../application/artifact-port.js";
@@ -10,6 +9,7 @@ import {
   type StartedCommandAttempt,
 } from "../../application/execution-port.js";
 import type { ProviderRequest } from "../../application/provider-port.js";
+import { providerCommandSpecification } from "../../application/provider-command-specification.js";
 import {
   resolvedConfigurationIsValid,
   type ResolvedConfigurationSnapshot,
@@ -262,12 +262,27 @@ export class SqlitePreparedRequestRegistration {
         );
       }
       this.assertArtifactIdentity(input, row.owner_process);
+      const [promptBytes, schemaBytes, ...inputBytes] = await Promise.all([
+        this.dependencies.artifactStore.readVerified(
+          effectivePolicy.promptContentHash,
+        ),
+        this.dependencies.artifactStore.readVerified(
+          effectivePolicy.outputSchemaContentHash,
+        ),
+        ...input.providerRequest.inputArtifacts.map(({ contentHash }) =>
+          this.dependencies.artifactStore.readVerified(contentHash),
+        ),
+      ]);
       this.assertInputs(
         input.providerRequest,
         command,
         effectivePolicy,
         repairOverlay,
+        requestPolicy.promptArtifactId,
         requestPolicy.promptContentHash,
+        promptBytes,
+        schemaBytes,
+        inputBytes,
       );
       const existing = database
         .prepare(
@@ -334,7 +349,11 @@ export class SqlitePreparedRequestRegistration {
     command: PersistableCommand,
     policy: EffectiveProviderRequestPolicy,
     repairOverlay: SchemaRepairOverlay | null,
+    originalPromptArtifactId: string,
     originalPromptHash: string,
+    promptBytes: Uint8Array,
+    schemaBytes: Uint8Array,
+    inputBytes: Uint8Array[],
   ): void {
     if (
       repairOverlay !== null &&
@@ -349,11 +368,10 @@ export class SqlitePreparedRequestRegistration {
       );
     }
     if (
-      createHash("sha256").update(request.systemPrompt).digest("hex") !==
-        request.systemPromptContentHash ||
-      createHash("sha256")
-        .update(canonicalJson(request.outputSchema))
-        .digest("hex") !== request.outputSchemaContentHash ||
+      Buffer.from(promptBytes).toString("utf8") !== request.systemPrompt ||
+      canonicalJson(
+        JSON.parse(Buffer.from(schemaBytes).toString("utf8")) as unknown,
+      ) !== canonicalJson(request.outputSchema) ||
       policy.promptArtifactId !== request.systemPromptArtifactId ||
       policy.promptContentHash !== request.systemPromptContentHash ||
       policy.outputSchemaArtifactId !== request.outputSchemaArtifactId ||
@@ -372,23 +390,103 @@ export class SqlitePreparedRequestRegistration {
       },
       ...request.inputArtifacts,
     ];
+    const specification = providerCommandSpecification(command.commandType);
+    if (specification === null)
+      throw new TypeError("Provider command specification is missing");
+    const payload = command.payload as Record<string, unknown>;
+    const ordinaryIds = specification.inputArtifactFields.flatMap((field) => {
+      const value = payload[field];
+      if (typeof value === "string") return [value];
+      if (
+        Array.isArray(value) &&
+        value.every((item) => typeof item === "string")
+      )
+        return value;
+      throw new AuthorityIntegrityError(
+        "Provider command artifact identity is invalid",
+      );
+    });
     const hashes = artifacts.map(({ contentHash }) => contentHash);
+    const prerequisiteArtifacts = (command.prerequisiteCommandIds ?? []).map(
+      (commandId) => {
+        const row = this.dependencies.database
+          .prepare(
+            `SELECT result.artifact_id, result.content_hash
+               FROM logical_commands prerequisite
+               JOIN command_attempts attempt
+                 ON attempt.attempt_id = prerequisite.accepted_attempt_id
+               JOIN artifacts result
+                 ON result.artifact_id = attempt.result_artifact_id
+              WHERE prerequisite.command_id = ?
+                AND prerequisite.run_id = ?
+                AND prerequisite.status = 'succeeded'`,
+          )
+          .get(commandId, command.runId) as
+          { artifact_id: string; content_hash: string } | undefined;
+        if (row === undefined)
+          throw new AuthorityIntegrityError(
+            "Provider request prerequisite evidence is missing",
+          );
+        return { artifactId: row.artifact_id, contentHash: row.content_hash };
+      },
+    );
     if (
-      new Set(hashes).size !== hashes.length ||
+      prerequisiteArtifacts.some(
+        (expected) =>
+          !request.inputArtifacts.some(
+            (actual) =>
+              actual.artifactId === expected.artifactId &&
+              actual.contentHash === expected.contentHash,
+          ),
+      )
+    )
+      throw new TypeError(
+        "Provider request does not contain exact prerequisite evidence",
+      );
+    const expectedInputIds = [
+      ...new Set([
+        ...ordinaryIds.filter(
+          (artifactId) =>
+            artifactId !== policy.promptArtifactId &&
+            artifactId !== policy.outputSchemaArtifactId &&
+            (repairOverlay === null || artifactId !== originalPromptArtifactId),
+        ),
+        ...prerequisiteArtifacts.map(({ artifactId }) => artifactId),
+        ...(repairOverlay === null
+          ? []
+          : [repairOverlay.invalidResponseArtifactId]),
+      ]),
+    ].sort();
+    const actualInputIds = request.inputArtifacts
+      .map(({ artifactId }) => artifactId)
+      .sort();
+    if (canonicalJson(actualInputIds) !== canonicalJson(expectedInputIds))
+      throw new TypeError(
+        "Provider request input identities do not match command",
+      );
+    const commandHashes = [...command.inputArtifactHashes];
+    if (repairOverlay !== null) {
+      const promptIndex = commandHashes.indexOf(originalPromptHash);
+      if (promptIndex < 0)
+        throw new AuthorityIntegrityError(
+          "Original provider prompt is missing from command inputs",
+        );
+      commandHashes.splice(promptIndex, 1);
+    }
+    if (
       canonicalJson([...hashes].sort()) !==
-        canonicalJson(
-          [
-            ...command.inputArtifactHashes.filter(
-              (hash) => repairOverlay === null || hash !== originalPromptHash,
-            ),
-            ...(repairOverlay === null
-              ? []
-              : [
-                  repairOverlay.promptContentHash,
-                  repairOverlay.invalidResponseContentHash,
-                ]),
-          ].sort(),
-        )
+      canonicalJson(
+        [
+          ...commandHashes,
+          ...(repairOverlay === null
+            ? []
+            : [
+                repairOverlay.promptContentHash,
+                repairOverlay.invalidResponseContentHash,
+              ]),
+          ...prerequisiteArtifacts.map(({ contentHash }) => contentHash),
+        ].sort(),
+      )
     ) {
       throw new TypeError("Provider request inputs do not match command");
     }
@@ -402,5 +500,15 @@ export class SqlitePreparedRequestRegistration {
         );
       }
     }
+    if (
+      request.inputArtifacts.some(
+        (artifact, index) =>
+          Buffer.from(inputBytes[index] ?? []).toString("utf8") !==
+          artifact.content,
+      )
+    )
+      throw new TypeError(
+        "Provider request input bytes do not match authoritative artifacts",
+      );
   }
 }

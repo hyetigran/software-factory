@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { canonicalJson } from "../domain/canonical-json.js";
 import type { PersistableCommand } from "./authority-port.js";
+import { providerCommandPayloadIsValid } from "./provider-command-specification.js";
 
 function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
@@ -93,6 +94,8 @@ function sourceExclusions(value: unknown): boolean {
 
 function payloadIsValid(commandType: string, value: object): boolean {
   const payload = value as Record<string, unknown>;
+  const providerPayload = providerCommandPayloadIsValid(commandType, payload);
+  if (providerPayload !== null) return providerPayload;
   const stringFields = (keys: string[]): boolean =>
     keys.every(
       (key) =>
@@ -129,6 +132,7 @@ function payloadIsValid(commandType: string, value: object): boolean {
         hasExactKeys(value, [
           "ledgerVersionId",
           "ledgerArtifactId",
+          "ledgerArtifactId",
           "coverageReportArtifactId",
           "sourceArtifactId",
           "coverageValidatedStateVersion",
@@ -140,6 +144,7 @@ function payloadIsValid(commandType: string, value: object): boolean {
         stringFields([
           "ledgerVersionId",
           "ledgerArtifactId",
+          "ledgerArtifactId",
           "coverageReportArtifactId",
           "sourceArtifactId",
           "coverageValidatedPolicyHash",
@@ -149,118 +154,10 @@ function payloadIsValid(commandType: string, value: object): boolean {
         sourceExclusions(payload.sourceExclusions) &&
         humanActor(payload.approvedBy)
       );
-    case "generate_plan":
-      return (
-        hasExactKeys(value, [
-          "ledgerVersionId",
-          "ledgerArtifactId",
-          "promptArtifactId",
-          "outputSchemaArtifactId",
-          "providerStorage",
-        ]) &&
-        stringFields([
-          "ledgerVersionId",
-          "ledgerArtifactId",
-          "promptArtifactId",
-          "outputSchemaArtifactId",
-        ]) &&
-        payload.providerStorage === "minimize"
-      );
     case "render_plan":
       return (
         hasExactKeys(value, ["planVersionId", "planArtifactId"]) &&
         stringFields(["planVersionId", "planArtifactId"])
-      );
-    case "baseline_review":
-      return (
-        hasExactKeys(value, [
-          "ledgerVersionId",
-          "ledgerArtifactId",
-          "planVersionId",
-          "planArtifactId",
-          "renderPlanCommandId",
-          "reviewerPromptArtifactId",
-          "reviewSchemaArtifactId",
-          "taxonomyArtifactId",
-          "componentRegistryArtifactId",
-          "reviewPolicyArtifactId",
-          "evidenceArtifactIds",
-          "independence",
-          "providerStorage",
-        ]) &&
-        stringFields([
-          "ledgerVersionId",
-          "ledgerArtifactId",
-          "planVersionId",
-          "planArtifactId",
-          "renderPlanCommandId",
-          "reviewerPromptArtifactId",
-          "reviewSchemaArtifactId",
-          "taxonomyArtifactId",
-          "componentRegistryArtifactId",
-          "reviewPolicyArtifactId",
-        ]) &&
-        stringSet(payload.evidenceArtifactIds) &&
-        independence(payload.independence) &&
-        payload.providerStorage === "minimize"
-      );
-    case "generate_remediation":
-      return (
-        hasExactKeys(value, [
-          "ledgerVersionId",
-          "planVersionId",
-          "planArtifactId",
-          "reviewArtifactId",
-          "promptArtifactId",
-          "outputSchemaArtifactId",
-          "blockingFindingIds",
-          "providerStorage",
-        ]) &&
-        stringFields([
-          "ledgerVersionId",
-          "planVersionId",
-          "planArtifactId",
-          "reviewArtifactId",
-          "promptArtifactId",
-          "outputSchemaArtifactId",
-        ]) &&
-        stringSet(payload.blockingFindingIds) &&
-        payload.providerStorage === "minimize"
-      );
-    case "closure_review":
-      return (
-        hasExactKeys(value, [
-          "ledgerVersionId",
-          "planVersionId",
-          "planArtifactId",
-          "baselineReviewArtifactId",
-          "renderedPlanArtifactId",
-          "reviewerPromptArtifactId",
-          "reviewSchemaArtifactId",
-          "taxonomyArtifactId",
-          "componentRegistryArtifactId",
-          "reviewPolicyArtifactId",
-          "evidenceArtifactIds",
-          "findingIds",
-          "independence",
-          "providerStorage",
-        ]) &&
-        stringFields([
-          "ledgerVersionId",
-          "planVersionId",
-          "planArtifactId",
-          "baselineReviewArtifactId",
-          "renderedPlanArtifactId",
-          "reviewerPromptArtifactId",
-          "reviewSchemaArtifactId",
-          "taxonomyArtifactId",
-          "componentRegistryArtifactId",
-          "reviewPolicyArtifactId",
-        ]) &&
-        stringSet(payload.evidenceArtifactIds) &&
-        stringSet(payload.findingIds, false) &&
-        independence(payload.independence) &&
-        payload.providerStorage === "minimize"
       );
     case "export_terminal":
       return (

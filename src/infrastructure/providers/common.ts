@@ -40,9 +40,10 @@ export function assertProviderRequest(
         createHash("sha256").update(content).digest("hex") !== contentHash,
     ) ||
     request.outputSchemaArtifactId.trim().length === 0 ||
-    createHash("sha256")
-      .update(canonicalJson(request.outputSchema))
-      .digest("hex") !== request.outputSchemaContentHash ||
+    (request.outputSchemaCanonicalHash !== undefined &&
+      createHash("sha256")
+        .update(canonicalJson(request.outputSchema))
+        .digest("hex") !== request.outputSchemaCanonicalHash) ||
     capability === null ||
     capability.canonicalModelId.trim().length === 0 ||
     !Number.isInteger(capability.contextWindowTokens) ||
