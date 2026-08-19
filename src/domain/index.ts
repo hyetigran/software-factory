@@ -72,7 +72,6 @@ export type PlannerAssignment = {
 export type ActivePlanning = {
   purposeId: string;
   plannerAssignment: PlannerAssignment;
-  reservedBudget: BudgetReservation;
 };
 
 export type AdvancedRunState = AdvancedStateBase &
@@ -416,17 +415,6 @@ export type PlanningRequestedFact = {
   };
 };
 
-export type BudgetReservedFact = {
-  type: "budget_reserved";
-  actor: SystemActor;
-  reason: string;
-  evidence: ArtifactEvidenceReference[];
-  payload: {
-    commandId: string;
-    reservation: BudgetReservation;
-  };
-};
-
 export type TransitionResult = {
   nextState: NonterminalRunState;
   commands: Array<
@@ -444,7 +432,6 @@ export type TransitionResult = {
     | SourceExclusionApprovedFact
     | LedgerApprovedFact
     | PlanningRequestedFact
-    | BudgetReservedFact
     | CommandPlannedFact
   >;
 };
@@ -1203,12 +1190,6 @@ function requestPlanning(
       input.outputSchemaContentHash,
     ),
   ];
-  const systemActor: SystemActor = {
-    kind: "system",
-    component: "domain-transition",
-    version: "0.0.0",
-  };
-
   return {
     nextState: {
       ...previousState,
@@ -1218,7 +1199,6 @@ function requestPlanning(
       activePlanning: {
         purposeId: input.planPurposeId,
         plannerAssignment: input.plannerAssignment,
-        reservedBudget: input.budgetReservation,
       },
     },
     commands: [command],
@@ -1240,16 +1220,6 @@ function requestPlanning(
         "Generate plan with the assigned Planner",
         evidence,
       ),
-      {
-        type: "budget_reserved",
-        actor: systemActor,
-        reason: "Reserve the maximum budget before provider dispatch",
-        evidence,
-        payload: {
-          commandId: command.commandId,
-          reservation: command.budgetReservation,
-        },
-      },
     ],
   };
 }

@@ -207,7 +207,6 @@ function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
           provider: "openai",
           modelId: "gpt-5.6-2026-08-01",
         },
-        reservedBudget: planningRequestedInput().budgetReservation,
       },
     };
   }
@@ -1557,7 +1556,7 @@ describe("transition", () => {
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 
-  it("requests provider-backed planning with a reserved budget", () => {
+  it("requests provider-backed planning with a maximum budget", () => {
     const approved = requirementsApprovedState();
 
     const result = transition(approved, planningRequestedInput(), {
@@ -1575,7 +1574,6 @@ describe("transition", () => {
           provider: "openai",
           modelId: "gpt-5.6-2026-08-01",
         },
-        reservedBudget: planningRequestedInput().budgetReservation,
       },
     });
     expect(result.commands).toEqual([
@@ -1653,20 +1651,6 @@ describe("transition", () => {
           commandId: "command_generate_plan_01JTEST",
           commandKey: command?.commandKey,
           commandType: "generate_plan",
-          reservation: planningRequestedInput().budgetReservation,
-        },
-      },
-      {
-        type: "budget_reserved",
-        actor: {
-          kind: "system",
-          component: "domain-transition",
-          version: "0.0.0",
-        },
-        reason: "Reserve the maximum budget before provider dispatch",
-        evidence: result.auditFacts[0]?.evidence,
-        payload: {
-          commandId: "command_generate_plan_01JTEST",
           reservation: planningRequestedInput().budgetReservation,
         },
       },
