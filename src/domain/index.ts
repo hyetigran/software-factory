@@ -93,6 +93,7 @@ export type CurrentPlan = {
 export type ActiveReview = {
   cycle: number;
   commandId: string;
+  renderCommandId: string;
   reviewerAssignment: ProviderModelAssignment;
   reviewPurposeId: string;
   independence:
@@ -416,6 +417,14 @@ export type ReviewOutputValidation = {
   evidenceReferencesSupplied: boolean;
 };
 
+export type RenderedPlanResolution = {
+  validator: "verified-command-dependency-resolution-v1";
+  renderCommandId: string;
+  consumingReviewCommandId: string;
+  renderedPlanContentHash: string;
+  canonicalPlanContentHash: string;
+};
+
 export type ReviewAccepted = {
   type: "ReviewAccepted";
   runId: string;
@@ -425,6 +434,7 @@ export type ReviewAccepted = {
   originatingCommandId: string;
   reviewArtifact: VerifiedArtifactInput;
   renderedPlanArtifact: VerifiedArtifactInput;
+  renderedPlanResolution: RenderedPlanResolution;
   reviewedPlanVersionId: string;
   reviewedPlanContentHash: string;
   reviewedPolicyHash: string;
@@ -2050,6 +2060,7 @@ function acceptPlanForBaseline(
       activeReview: {
         cycle: 1,
         commandId: input.reviewCommandId,
+        renderCommandId: input.renderCommandId,
         reviewerAssignment: input.reviewerAssignment,
         reviewPurposeId,
         independence,
@@ -2189,6 +2200,211 @@ function reconcileBaselineFindings(
     : null;
 }
 
+function planAfterBaselineReview(
+  state: BaselineReviewState,
+  input: ReviewAccepted,
+  policy: PinnedRunPolicy,
+  nextStateVersion: number,
+  findingIds: string[],
+  blockingIds: Set<string>,
+): GenerateRemediation | ClosureReview {
+  const commonCommand = {
+    schemaVersion: 1 as const,
+    runId: input.runId,
+    triggeringStateVersion: nextStateVersion,
+    inputArtifactHashes: [
+      state.currentLedger.contentHash,
+      state.currentPlan.contentHash,
+      input.reviewArtifact.contentHash,
+      input.renderedPlanArtifact.contentHash,
+      state.reviewContext.prompt.contentHash,
+      state.reviewContext.schema.contentHash,
+      state.reviewContext.taxonomy.contentHash,
+      state.reviewContext.componentRegistry.contentHash,
+      state.reviewContext.policy.contentHash,
+      ...state.reviewContext.evidence.map(({ contentHash }) => contentHash),
+    ],
+    policyHash: policy.policyHash,
+    budgetReservation: input.nextCommandBudgetMaximum,
+  };
+
+  return blockingIds.size > 0
+    ? planCommand<GenerateRemediation>(input.nextCommandId, {
+        ...commonCommand,
+        commandType: "generate_remediation",
+        purposeId: `${input.runId}:plan:${state.currentPlan.versionId}:remediation:1`,
+        provider: policy.plannerAssignment.provider,
+        modelId: policy.plannerAssignment.modelId,
+        payload: {
+          ledgerVersionId: state.currentLedger.versionId,
+          planVersionId: state.currentPlan.versionId,
+          planArtifactId: state.currentPlan.artifactId,
+          reviewArtifactId: input.reviewArtifact.artifactId,
+          blockingFindingIds: input.reconciliation.blockingFindingIds,
+          providerStorage: "minimize",
+        },
+      })
+    : planCommand<ClosureReview>(input.nextCommandId, {
+        ...commonCommand,
+        commandType: "closure_review",
+        purposeId: `${input.runId}:plan:${state.currentPlan.versionId}:closure:1`,
+        provider: state.activeReview.reviewerAssignment.provider,
+        modelId: state.activeReview.reviewerAssignment.modelId,
+        payload: {
+          ledgerVersionId: state.currentLedger.versionId,
+          planVersionId: state.currentPlan.versionId,
+          planArtifactId: state.currentPlan.artifactId,
+          baselineReviewArtifactId: input.reviewArtifact.artifactId,
+          renderedPlanArtifactId: input.renderedPlanArtifact.artifactId,
+          reviewerPromptArtifactId: state.reviewContext.prompt.artifactId,
+          reviewSchemaArtifactId: state.reviewContext.schema.artifactId,
+          taxonomyArtifactId: state.reviewContext.taxonomy.artifactId,
+          componentRegistryArtifactId:
+            state.reviewContext.componentRegistry.artifactId,
+          reviewPolicyArtifactId: state.reviewContext.policy.artifactId,
+          evidenceArtifactIds: state.reviewContext.evidence.map(
+            ({ artifactId }) => artifactId,
+          ),
+          findingIds,
+          independence: state.activeReview.independence,
+          providerStorage: "minimize",
+        },
+      });
+}
+
+function projectBaselineFindings(
+  state: BaselineReviewState,
+  input: ReviewAccepted,
+  policy: PinnedRunPolicy,
+): ActiveFinding[] {
+  return input.findings.map((finding) => ({
+    findingId: finding.findingId,
+    latestObservationId: finding.observationId,
+    severity: finding.severity,
+    ruleId: finding.ruleId,
+    title: finding.title,
+    evidence: finding.evidence,
+    status: "open",
+    latestObservationContext: {
+      reviewId: input.reviewId,
+      ledgerVersionId: state.currentLedger.versionId,
+      ledgerContentHash: state.currentLedger.contentHash,
+      planVersionId: state.currentPlan.versionId,
+      planContentHash: state.currentPlan.contentHash,
+      policyHash: policy.policyHash,
+      reviewerAssignment: state.activeReview.reviewerAssignment,
+      prompt: state.reviewContext.prompt,
+      schema: state.reviewContext.schema,
+      cycle: input.reviewCycle,
+      originatingCommandId: input.originatingCommandId,
+    },
+  }));
+}
+
+function findingCreatedFacts(
+  findings: ActiveFinding[],
+  reviewEvidence: ArtifactEvidenceReference,
+): FindingCreatedFact[] {
+  return findings.map((finding) => ({
+    type: "finding_created",
+    actor: {
+      kind: "system",
+      component: "finding-reconciliation",
+      version: "0.0.0",
+    },
+    reason: "Create an authoritative finding from the accepted observation",
+    evidence: [reviewEvidence, ...finding.evidence],
+    payload: {
+      findingId: finding.findingId,
+      initialObservationId: finding.latestObservationId,
+      severity: finding.severity,
+      ruleId: finding.ruleId,
+    },
+  }));
+}
+
+function evolveAfterBaselineReview(
+  state: BaselineReviewState,
+  input: ReviewAccepted,
+  policy: PinnedRunPolicy,
+  nextStateVersion: number,
+  findings: ActiveFinding[],
+  command: GenerateRemediation | ClosureReview,
+): AdvancedRunState {
+  const renderedPlan = {
+    artifactId: input.renderedPlanArtifact.artifactId,
+    contentHash: input.renderedPlanArtifact.contentHash,
+  };
+  const activeReview: ActiveReview = {
+    ...state.activeReview,
+    cycle: command.commandType === "generate_remediation" ? 1 : 2,
+    commandId: command.commandId,
+    reviewPurposeId: command.purposeId,
+  };
+
+  return command.commandType === "generate_remediation"
+    ? {
+        ...state,
+        state: "remediation",
+        stateVersion: nextStateVersion,
+        activeFindings: findings,
+        activeReview,
+        renderedPlan,
+        activePlanning: {
+          purposeId: command.purposeId,
+          commandId: command.commandId,
+          plannerAssignment: policy.plannerAssignment,
+        },
+      }
+    : {
+        ...state,
+        state: "closure",
+        stateVersion: nextStateVersion,
+        activeFindings: findings,
+        activeReview,
+        renderedPlan,
+      };
+}
+
+function reviewAcceptedFact(
+  state: BaselineReviewState,
+  input: ReviewAccepted,
+  policy: PinnedRunPolicy,
+  observationIds: string[],
+  reviewEvidence: ArtifactEvidenceReference,
+): ReviewAcceptedFact {
+  return {
+    type: "review_accepted",
+    actor: input.actor,
+    reason: "Accept and reconcile the verified baseline review",
+    evidence: [
+      reviewEvidence,
+      artifactEvidence(
+        state.currentPlan.artifactId,
+        state.currentPlan.contentHash,
+      ),
+    ],
+    payload: {
+      reviewId: input.reviewId,
+      reviewArtifactId: input.reviewArtifact.artifactId,
+      reviewContentHash: input.reviewArtifact.contentHash,
+      ledgerVersionId: state.currentLedger.versionId,
+      ledgerContentHash: state.currentLedger.contentHash,
+      planVersionId: state.currentPlan.versionId,
+      planContentHash: state.currentPlan.contentHash,
+      cycle: input.reviewCycle,
+      policyHash: policy.policyHash,
+      reviewerAssignment: state.activeReview.reviewerAssignment,
+      promptArtifactId: state.reviewContext.prompt.artifactId,
+      promptContentHash: state.reviewContext.prompt.contentHash,
+      schemaArtifactId: state.reviewContext.schema.artifactId,
+      schemaContentHash: state.reviewContext.schema.contentHash,
+      originatingCommandId: input.originatingCommandId,
+      observationIds,
+    },
+  };
+}
+
 function acceptBaselineReview(
   previousState: NonterminalRunState | null,
   input: ReviewAccepted,
@@ -2206,6 +2422,18 @@ function acceptBaselineReview(
   }
 
   const reconciled = reconcileBaselineFindings(previousState, input);
+  const renderedPlanResolution = input.renderedPlanResolution;
+  const renderedPlanResolutionValid =
+    renderedPlanResolution.validator ===
+      "verified-command-dependency-resolution-v1" &&
+    renderedPlanResolution.renderCommandId ===
+      previousState.activeReview.renderCommandId &&
+    renderedPlanResolution.consumingReviewCommandId ===
+      previousState.activeReview.commandId &&
+    renderedPlanResolution.renderedPlanContentHash ===
+      input.renderedPlanArtifact.contentHash &&
+    renderedPlanResolution.canonicalPlanContentHash ===
+      previousState.currentPlan.contentHash;
   const reviewerAuthorized =
     input.actor.provider ===
       previousState.activeReview.reviewerAssignment.provider &&
@@ -2219,6 +2447,7 @@ function acceptBaselineReview(
     input.originatingCommandId !== previousState.activeReview.commandId ||
     !verifiedArtifactInputIsValid(input.reviewArtifact) ||
     !verifiedArtifactInputIsValid(input.renderedPlanArtifact) ||
+    !renderedPlanResolutionValid ||
     input.reviewedPlanVersionId !== previousState.currentPlan.versionId ||
     input.reviewedPlanContentHash !== previousState.currentPlan.contentHash ||
     input.reviewedPolicyHash !== previousState.policyHash ||
@@ -2244,191 +2473,43 @@ function acceptBaselineReview(
   }
 
   const { findingIds, observationIds, blockingIds } = reconciled;
-  const reconciliation = input.reconciliation;
 
   const nextStateVersion = previousState.stateVersion + 1;
-  const activeFindings: ActiveFinding[] = input.findings.map((finding) => ({
-    findingId: finding.findingId,
-    latestObservationId: finding.observationId,
-    severity: finding.severity,
-    ruleId: finding.ruleId,
-    title: finding.title,
-    evidence: finding.evidence,
-    status: "open",
-    latestObservationContext: {
-      reviewId: input.reviewId,
-      ledgerVersionId: previousState.currentLedger.versionId,
-      ledgerContentHash: previousState.currentLedger.contentHash,
-      planVersionId: previousState.currentPlan.versionId,
-      planContentHash: previousState.currentPlan.contentHash,
-      policyHash: policy.policyHash,
-      reviewerAssignment: previousState.activeReview.reviewerAssignment,
-      prompt: previousState.reviewContext.prompt,
-      schema: previousState.reviewContext.schema,
-      cycle: input.reviewCycle,
-      originatingCommandId: input.originatingCommandId,
-    },
-  }));
+  const activeFindings = projectBaselineFindings(previousState, input, policy);
   const reviewEvidence = artifactEvidence(
     input.reviewArtifact.artifactId,
     input.reviewArtifact.contentHash,
   );
-  const commonCommand = {
-    schemaVersion: 1 as const,
-    runId: input.runId,
-    triggeringStateVersion: nextStateVersion,
-    inputArtifactHashes: [
-      previousState.currentLedger.contentHash,
-      previousState.currentPlan.contentHash,
-      input.reviewArtifact.contentHash,
-      input.renderedPlanArtifact.contentHash,
-      previousState.reviewContext.prompt.contentHash,
-      previousState.reviewContext.schema.contentHash,
-      previousState.reviewContext.taxonomy.contentHash,
-      previousState.reviewContext.componentRegistry.contentHash,
-      previousState.reviewContext.policy.contentHash,
-      ...previousState.reviewContext.evidence.map(
-        ({ contentHash }) => contentHash,
-      ),
-    ],
-    policyHash: policy.policyHash,
-    budgetReservation: input.nextCommandBudgetMaximum,
-  };
-  const command =
-    blockingIds.size > 0
-      ? planCommand<GenerateRemediation>(input.nextCommandId, {
-          ...commonCommand,
-          commandType: "generate_remediation",
-          purposeId: `${input.runId}:plan:${previousState.currentPlan.versionId}:remediation:1`,
-          provider: policy.plannerAssignment.provider,
-          modelId: policy.plannerAssignment.modelId,
-          payload: {
-            ledgerVersionId: previousState.currentLedger.versionId,
-            planVersionId: previousState.currentPlan.versionId,
-            planArtifactId: previousState.currentPlan.artifactId,
-            reviewArtifactId: input.reviewArtifact.artifactId,
-            blockingFindingIds: reconciliation.blockingFindingIds,
-            providerStorage: "minimize",
-          },
-        })
-      : planCommand<ClosureReview>(input.nextCommandId, {
-          ...commonCommand,
-          commandType: "closure_review",
-          purposeId: `${input.runId}:plan:${previousState.currentPlan.versionId}:closure:1`,
-          provider: previousState.activeReview.reviewerAssignment.provider,
-          modelId: previousState.activeReview.reviewerAssignment.modelId,
-          payload: {
-            ledgerVersionId: previousState.currentLedger.versionId,
-            planVersionId: previousState.currentPlan.versionId,
-            planArtifactId: previousState.currentPlan.artifactId,
-            baselineReviewArtifactId: input.reviewArtifact.artifactId,
-            renderedPlanArtifactId: input.renderedPlanArtifact.artifactId,
-            reviewerPromptArtifactId:
-              previousState.reviewContext.prompt.artifactId,
-            reviewSchemaArtifactId:
-              previousState.reviewContext.schema.artifactId,
-            taxonomyArtifactId: previousState.reviewContext.taxonomy.artifactId,
-            componentRegistryArtifactId:
-              previousState.reviewContext.componentRegistry.artifactId,
-            reviewPolicyArtifactId:
-              previousState.reviewContext.policy.artifactId,
-            evidenceArtifactIds: previousState.reviewContext.evidence.map(
-              ({ artifactId }) => artifactId,
-            ),
-            findingIds,
-            independence: previousState.activeReview.independence,
-            providerStorage: "minimize",
-          },
-        });
-  const nextReview: ActiveReview = {
-    ...previousState.activeReview,
-    cycle: blockingIds.size > 0 ? 1 : 2,
-    commandId: command.commandId,
-    reviewPurposeId: command.purposeId,
-  };
-  const findingFacts: FindingCreatedFact[] = activeFindings.map((finding) => ({
-    type: "finding_created",
-    actor: {
-      kind: "system",
-      component: "finding-reconciliation",
-      version: "0.0.0",
-    },
-    reason: "Create an authoritative finding from the accepted observation",
-    evidence: [reviewEvidence, ...finding.evidence],
-    payload: {
-      findingId: finding.findingId,
-      initialObservationId: finding.latestObservationId,
-      severity: finding.severity,
-      ruleId: finding.ruleId,
-    },
-  }));
+  const command = planAfterBaselineReview(
+    previousState,
+    input,
+    policy,
+    nextStateVersion,
+    findingIds,
+    blockingIds,
+  );
+  const findingFacts = findingCreatedFacts(activeFindings, reviewEvidence);
+  const nextState = evolveAfterBaselineReview(
+    previousState,
+    input,
+    policy,
+    nextStateVersion,
+    activeFindings,
+    command,
+  );
+  const acceptedFact = reviewAcceptedFact(
+    previousState,
+    input,
+    policy,
+    observationIds,
+    reviewEvidence,
+  );
 
   return {
-    nextState:
-      blockingIds.size > 0
-        ? {
-            ...previousState,
-            state: "remediation",
-            stateVersion: nextStateVersion,
-            currentPlan: previousState.currentPlan,
-            activeFindings,
-            activeReview: nextReview,
-            reviewContext: previousState.reviewContext,
-            renderedPlan: {
-              artifactId: input.renderedPlanArtifact.artifactId,
-              contentHash: input.renderedPlanArtifact.contentHash,
-            },
-            activePlanning: {
-              purposeId: command.purposeId,
-              commandId: command.commandId,
-              plannerAssignment: policy.plannerAssignment,
-            },
-          }
-        : {
-            ...previousState,
-            state: "closure",
-            stateVersion: nextStateVersion,
-            currentPlan: previousState.currentPlan,
-            activeFindings,
-            activeReview: nextReview,
-            reviewContext: previousState.reviewContext,
-            renderedPlan: {
-              artifactId: input.renderedPlanArtifact.artifactId,
-              contentHash: input.renderedPlanArtifact.contentHash,
-            },
-          },
+    nextState,
     commands: [command],
     auditFacts: [
-      {
-        type: "review_accepted",
-        actor: input.actor,
-        reason: "Accept and reconcile the verified baseline review",
-        evidence: [
-          reviewEvidence,
-          artifactEvidence(
-            previousState.currentPlan.artifactId,
-            previousState.currentPlan.contentHash,
-          ),
-        ],
-        payload: {
-          reviewId: input.reviewId,
-          reviewArtifactId: input.reviewArtifact.artifactId,
-          reviewContentHash: input.reviewArtifact.contentHash,
-          ledgerVersionId: previousState.currentLedger.versionId,
-          ledgerContentHash: previousState.currentLedger.contentHash,
-          planVersionId: previousState.currentPlan.versionId,
-          planContentHash: previousState.currentPlan.contentHash,
-          cycle: input.reviewCycle,
-          policyHash: policy.policyHash,
-          reviewerAssignment: previousState.activeReview.reviewerAssignment,
-          promptArtifactId: previousState.reviewContext.prompt.artifactId,
-          promptContentHash: previousState.reviewContext.prompt.contentHash,
-          schemaArtifactId: previousState.reviewContext.schema.artifactId,
-          schemaContentHash: previousState.reviewContext.schema.contentHash,
-          originatingCommandId: input.originatingCommandId,
-          observationIds,
-        },
-      },
+      acceptedFact,
       ...findingFacts,
       commandPlannedFact(
         command,

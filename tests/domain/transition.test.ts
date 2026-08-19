@@ -431,6 +431,13 @@ function reviewAcceptedInput(blockingFindingIds: string[]): ReviewAccepted {
       contentHash: "2".repeat(64),
       verified: true,
     },
+    renderedPlanResolution: {
+      validator: "verified-command-dependency-resolution-v1",
+      renderCommandId: "command_render_plan_01JTEST",
+      consumingReviewCommandId: "command_baseline_review_01JTEST",
+      renderedPlanContentHash: "2".repeat(64),
+      canonicalPlanContentHash: planContentHash,
+    },
     reviewedPlanVersionId: "plan_version_01JTEST",
     reviewedPlanContentHash: planContentHash,
     reviewedPolicyHash: policyHash,
@@ -556,6 +563,7 @@ function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
       activeReview: {
         cycle: 1,
         commandId: "command_baseline_review_01JTEST",
+        renderCommandId: "command_render_plan_01JTEST",
         reviewerAssignment: {
           provider: "anthropic",
           modelId: "claude-frontier-pinned-20260801",
@@ -2240,6 +2248,7 @@ describe("transition", () => {
         activeReview: {
           cycle: 1,
           commandId: "command_baseline_review_01JTEST",
+          renderCommandId: "command_render_plan_01JTEST",
           reviewerAssignment: planGeneratedInput().reviewerAssignment,
           reviewPurposeId:
             "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
@@ -2777,6 +2786,15 @@ describe("transition", () => {
     ["a stale state version", { expectedStateVersion: 5 }],
     ["an invalid review", { outputValid: false }],
     ["a stale plan", { reviewedPlanContentHash: "9".repeat(64) }],
+    [
+      "a rendered artifact from another render command",
+      {
+        renderedPlanResolution: {
+          ...reviewAcceptedInput([]).renderedPlanResolution,
+          renderCommandId: "command_render_other_plan_01JTEST",
+        },
+      },
+    ],
     ["the wrong review purpose", { reviewPurposeId: "purpose_wrong" }],
     [
       "the wrong originating command",
