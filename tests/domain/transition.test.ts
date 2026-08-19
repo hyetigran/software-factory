@@ -17,6 +17,7 @@ import {
   type PlanGenerated,
   type PlanSubmitted,
   type PlanningRequested,
+  type PinnedModelUnavailable,
   type ProviderOutcomeFailed,
   type ReviewAccepted,
   type RunStarted,
@@ -3126,6 +3127,28 @@ describe("transition", () => {
         bounds: providerOutcomeFailedInput().recoveryBounds,
         manifest: { producedByCommandId: "command_terminal_report_01JTEST" },
       }),
+    );
+  });
+
+  it("uses the dedicated pinned-model-unavailable domain input", () => {
+    const input: PinnedModelUnavailable = {
+      ...providerOutcomeFailedInput(),
+      type: "PinnedModelUnavailable",
+      unavailableModelId: configuredPlannerAssignment.modelId,
+      providerConfirmedUnavailable: true,
+      failureClassification: "provider_error",
+      reason: "Pinned planner model is unavailable",
+    };
+    const result = transition(planningState(), input, pinnedPolicy);
+
+    expect(result.nextState).toEqual(
+      expect.objectContaining({
+        state: "halted",
+        haltReason: "Pinned planner model is unavailable",
+      }),
+    );
+    expect(result.commands[0].payload.failureClassification).toBe(
+      "provider_error",
     );
   });
 

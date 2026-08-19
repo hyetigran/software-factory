@@ -579,6 +579,12 @@ export type ProviderOutcomeFailed = {
   actor: SystemActor;
 };
 
+export type PinnedModelUnavailable = Omit<ProviderOutcomeFailed, "type"> & {
+  type: "PinnedModelUnavailable";
+  unavailableModelId: string;
+  providerConfirmedUnavailable: true;
+};
+
 export type ExternalEditDetected = {
   type: "ExternalEditDetected";
   runId: string;
@@ -1489,7 +1495,7 @@ function restoreProjection(
 
 export function transition(
   previousState: NonterminalRunState | null,
-  input: ProviderOutcomeFailed,
+  input: ProviderOutcomeFailed | PinnedModelUnavailable,
   policy: PinnedRunPolicy,
 ): TerminalTransitionResult;
 export function transition(
@@ -1499,7 +1505,8 @@ export function transition(
 ): TransitionResult;
 export function transition(
   previousState: NonterminalRunState | null,
-  input: NonterminalDomainInput | ProviderOutcomeFailed,
+  input:
+    NonterminalDomainInput | ProviderOutcomeFailed | PinnedModelUnavailable,
   policy: PinnedRunPolicy,
 ): TransitionResult | TerminalTransitionResult {
   if (
@@ -1533,6 +1540,8 @@ export function transition(
     case "ReviewAccepted":
       return acceptBaselineReview(previousState, input, policy);
     case "ProviderOutcomeFailed":
+      return haltAfterProviderFailure(previousState, input, policy);
+    case "PinnedModelUnavailable":
       return haltAfterProviderFailure(previousState, input, policy);
     case "IndependenceOverrideGranted":
       return grantIndependenceOverride(previousState, input, policy);
@@ -3243,7 +3252,7 @@ function acceptBaselineReview(
 
 function haltAfterProviderFailure(
   previousState: NonterminalRunState | null,
-  input: ProviderOutcomeFailed,
+  input: ProviderOutcomeFailed | PinnedModelUnavailable,
   policy: PinnedRunPolicy,
 ): TerminalTransitionResult {
   if (
@@ -3289,6 +3298,9 @@ function haltAfterProviderFailure(
     input.expectedStateVersion !== previousState.stateVersion ||
     input.failedCommandId !== activeCommand.commandId ||
     input.failedPurposeId !== activeCommand.purposeId ||
+    (input.type === "PinnedModelUnavailable" &&
+      (!input.providerConfirmedUnavailable ||
+        input.unavailableModelId.trim().length === 0)) ||
     (previousState.state === "baseline_review" &&
       !input.retryRepairExhausted) ||
     input.terminalPolicyDecision !== "halt" ||

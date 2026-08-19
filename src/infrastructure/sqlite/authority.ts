@@ -37,6 +37,7 @@ import type {
 import { schemaRepairOverlayFromUnknown } from "../../application/execution-port.js";
 import { commandIsValid } from "../../application/command-validation.js";
 import { artifactRegistrationIsValid } from "../../application/artifact-port.js";
+import { terminalFailureClassification } from "../../application/provider-failure-policy.js";
 import { decideAttemptPolicy } from "../../application/attempt-policy.js";
 import type { ContentAddressedArtifactStore } from "../artifacts/object-store.js";
 import {
@@ -564,17 +565,13 @@ export class SqliteAuthority
             ]),
           );
           const expectedClassification =
-            completion.failureClass === "refusal"
-              ? "refusal"
-              : completion.failureClass === "invalid_output" ||
-                  completion.failureClass === "schema_invalid"
-                ? "invalid_output"
-                : completion.failureClass === "provider_error"
-                  ? "provider_error"
-                  : "transport";
+            terminalFailureClassification(completion);
           if (
             data.terminalResult === undefined ||
             terminalInput === undefined ||
+            (completion.recovery === "pinned_model_unavailable"
+              ? terminalInput.type !== "PinnedModelUnavailable"
+              : terminalInput.type !== "ProviderOutcomeFailed") ||
             terminalInput.failedCommandId !== data.completion.commandId ||
             !terminalInput.attemptIds.includes(data.completion.attemptId) ||
             canonicalJson(terminalInput.attemptIds) !==

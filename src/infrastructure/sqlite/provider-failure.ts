@@ -22,6 +22,7 @@ import {
 import { isAuthenticOpenAiExecution } from "../providers/openai.js";
 import { isAuthenticAnthropicExecution } from "../providers/anthropic.js";
 import { isAuthenticReplayExecution } from "../providers/replay.js";
+import { decideProviderFailure } from "../../application/provider-failure-policy.js";
 
 type Dependencies = {
   database: DatabaseSync;
@@ -46,45 +47,6 @@ type AttemptRow = {
   configuration_content_hash: string;
 };
 
-const mapping = {
-  refusal: { status: "failed", failureClass: "refusal", recovery: "terminal" },
-  truncated: {
-    status: "failed",
-    failureClass: "invalid_output",
-    recovery: "terminal",
-  },
-  schema_invalid: {
-    status: "failed",
-    failureClass: "schema_invalid",
-    recovery: "schema_repair",
-  },
-  transport_retryable: {
-    status: "failed",
-    failureClass: "transport_retryable",
-    recovery: "transport_retry",
-  },
-  transport_nonretryable: {
-    status: "failed",
-    failureClass: "transport",
-    recovery: "terminal",
-  },
-  unknown_outcome: {
-    status: "unknown",
-    failureClass: "unknown",
-    recovery: "transport_retry",
-  },
-  model_unavailable: {
-    status: "failed",
-    failureClass: "provider_error",
-    recovery: "pinned_model_unavailable",
-  },
-  model_mismatch: {
-    status: "failed",
-    failureClass: "provider_error",
-    recovery: "terminal",
-  },
-} as const;
-
 export class SqliteProviderFailure {
   constructor(private readonly dependencies: Dependencies) {}
 
@@ -97,14 +59,6 @@ export class SqliteProviderFailure {
   } {
     const row = this.loadAttempt(request);
     const command = JSON.parse(row.specification_json) as PersistableCommand;
-    const failureKind =
-      request.execution.kind === "refused"
-        ? "refusal"
-        : request.execution.kind === "transport_failure"
-          ? request.execution.retryable
-            ? "transport_retryable"
-            : "transport_nonretryable"
-          : request.execution.kind;
     const evidence = request.execution.evidence;
     if (
       row.run_id !== request.runId ||
@@ -183,15 +137,14 @@ export class SqliteProviderFailure {
     const reservation = this.loadReservation(request.attemptId);
     const normalizedActual = this.normalizedUsage(request, reservation);
     const counts = this.recoveryCounts(request);
-    const selected = mapping[failureKind];
-    const recovery =
-      selected.recovery === "transport_retry" &&
-      counts.retriesUsed >= policy.ceilings.retries
-        ? "terminal"
-        : selected.recovery === "schema_repair" &&
-            counts.repairsUsed >= policy.ceilings.repairs
-          ? "terminal"
-          : selected.recovery;
+    const disposition = decideProviderFailure({
+      runId: request.runId,
+      commandId: request.commandId,
+      attemptId: request.attemptId,
+      execution: request.execution,
+      counts,
+      policy,
+    });
     const completedAt = this.dependencies.now();
     this.dependencies.database
       .prepare(
@@ -202,8 +155,8 @@ export class SqliteProviderFailure {
           WHERE attempt_id = ?`,
       )
       .run(
-        selected.status,
-        selected.failureClass,
+        disposition.status,
+        disposition.failureClass,
         request.outcomeArtifact.artifactId,
         request.nativeUsageArtifact?.artifactId ?? null,
         evidence.providerRequestId ?? null,
@@ -213,22 +166,8 @@ export class SqliteProviderFailure {
       );
     this.dependencies.database
       .prepare("UPDATE logical_commands SET status = ? WHERE command_id = ?")
-      .run(selected.status, request.commandId);
+      .run(disposition.status, request.commandId);
     this.reconcileUsage(request, reservation, normalizedActual, completedAt);
-    const disposition: ProviderFailureDisposition = {
-      status: selected.status,
-      runId: request.runId,
-      commandId: request.commandId,
-      attemptId: request.attemptId,
-      failureClass: selected.failureClass,
-      failureKind,
-      recovery,
-      recoveryBounds: {
-        retryLimit: policy.ceilings.retries,
-        repairLimit: policy.ceilings.repairs,
-        ...counts,
-      },
-    };
     return {
       ...disposition,
       stateVersion: row.state_version,

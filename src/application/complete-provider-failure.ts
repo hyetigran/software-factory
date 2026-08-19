@@ -16,13 +16,14 @@ import {
   transition,
   type NonterminalRunState,
   type PinnedRunPolicy,
+  type PinnedModelUnavailable,
   type ProviderOutcomeFailed,
 } from "../domain/index.js";
 
 export type CompleteProviderFailureRequest = PersistTransitionRequest & {
   completion: CompleteProviderFailureEvidence;
   executionPolicy: ExecutionPolicy;
-  terminalInput?: ProviderOutcomeFailed;
+  terminalInput?: ProviderOutcomeFailed | PinnedModelUnavailable;
   domainPolicy?: PinnedRunPolicy;
 };
 
@@ -33,7 +34,7 @@ type AcceptedFailureData = {
   completion: CompleteProviderFailureEvidence;
   executionPolicy: ExecutionPolicy;
   persistRequest: PersistTransitionRequest;
-  terminalInput?: ProviderOutcomeFailed;
+  terminalInput?: ProviderOutcomeFailed | PinnedModelUnavailable;
   terminalResult?: PersistableTransition<object>;
 };
 
