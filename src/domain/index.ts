@@ -27,6 +27,17 @@ export type CurrentLedger = {
   validationStatus: "pending" | "approved";
 };
 
+export type SourceRange = {
+  startOffset: number;
+  endOffset: number;
+};
+
+export type SourceExclusion = {
+  exclusionId: string;
+  sourceRange: SourceRange;
+  reason: string;
+};
+
 type RunStateBase = {
   runId: string;
   stateVersion: number;
@@ -36,6 +47,7 @@ type RunStateBase = {
   configurationContentHash: string;
   policyHash: string;
   blockedReason: null;
+  sourceExclusions?: SourceExclusion[];
 };
 
 export type DraftRunState = RunStateBase & {
@@ -110,6 +122,22 @@ export type LedgerSubmitted = {
   actor: HumanActor;
 };
 
+export type SourceExclusionApproved = {
+  type: "SourceExclusionApproved";
+  runId: string;
+  expectedStateVersion: number;
+  exclusionId: string;
+  sourceRange: SourceRange;
+  sourceRangeVerified: boolean;
+  reason: string;
+  auditChainVerified: boolean;
+  databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
+  validateCommandId: string;
+  actor: HumanActor;
+};
+
 export type BudgetReservation = {
   calls: number;
   inputTokens: number;
@@ -150,6 +178,7 @@ export type ValidateLedger = {
     ledgerVersionId: string;
     ledgerArtifactId: string;
     sourceArtifactId: string;
+    sourceExclusions?: SourceExclusion[];
   };
 };
 
@@ -238,6 +267,14 @@ export type DownstreamInvalidatedFact = {
   };
 };
 
+export type SourceExclusionApprovedFact = {
+  type: "source_exclusion_approved";
+  actor: HumanActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: SourceExclusion;
+};
+
 export type TransitionResult = {
   nextState: DraftRunState;
   commands: Array<
@@ -248,6 +285,7 @@ export type TransitionResult = {
     | SourceRegisteredFact
     | LedgerSubmittedFact
     | DownstreamInvalidatedFact
+    | SourceExclusionApprovedFact
     | CommandPlannedFact
   >;
 };
@@ -266,7 +304,7 @@ export class DomainTransitionError extends Error {
 
 export function transition(
   previousState: NonterminalRunState | null,
-  input: RunStarted | LedgerSubmitted,
+  input: RunStarted | LedgerSubmitted | SourceExclusionApproved,
   policy: PinnedRunPolicy,
 ): TransitionResult {
   switch (input.type) {
@@ -274,6 +312,8 @@ export function transition(
       return startRun(previousState, input, policy);
     case "LedgerSubmitted":
       return submitLedger(previousState, input, policy);
+    case "SourceExclusionApproved":
+      return approveSourceExclusion(previousState, input, policy);
     default:
       throw new DomainTransitionError(
         "INVALID_TRANSITION",
@@ -474,6 +514,9 @@ function submitLedger(
       ledgerVersionId: input.ledgerVersionId,
       ledgerArtifactId: input.ledgerArtifactId,
       sourceArtifactId: previousState.sourceArtifactId,
+      ...(previousState.sourceExclusions === undefined
+        ? {}
+        : { sourceExclusions: previousState.sourceExclusions }),
     },
   };
   const renderWithoutIdentity = {
@@ -578,6 +621,9 @@ function submitLedger(
       policyHash: policy.policyHash,
       policyLocked: previousState.policyLocked,
       blockedReason: null,
+      ...(previousState.sourceExclusions === undefined
+        ? {}
+        : { sourceExclusions: previousState.sourceExclusions }),
       currentLedger: {
         versionId: input.ledgerVersionId,
         artifactId: input.ledgerArtifactId,
@@ -603,6 +649,146 @@ function submitLedger(
       },
       commandFact(validateCommand),
       commandFact(renderCommand),
+    ],
+  };
+}
+
+function approveSourceExclusion(
+  previousState: NonterminalRunState | null,
+  input: SourceExclusionApproved,
+  policy: PinnedRunPolicy,
+): TransitionResult {
+  if (
+    previousState === null ||
+    previousState.state !== "draft" ||
+    previousState.runId !== input.runId
+  ) {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      "SourceExclusionApproved requires the matching draft run",
+    );
+  }
+
+  if (
+    previousState.stateVersion !== input.expectedStateVersion ||
+    previousState.currentLedger === undefined ||
+    (previousState.policyLocked &&
+      previousState.policyHash !== policy.policyHash) ||
+    !input.sourceRangeVerified ||
+    !Number.isInteger(input.sourceRange.startOffset) ||
+    !Number.isInteger(input.sourceRange.endOffset) ||
+    input.sourceRange.startOffset < 0 ||
+    input.sourceRange.endOffset <= input.sourceRange.startOffset ||
+    input.reason.trim().length === 0 ||
+    previousState.sourceExclusions?.some(
+      (exclusion) => exclusion.exclusionId === input.exclusionId,
+    ) === true ||
+    !input.auditChainVerified ||
+    !input.databaseIntegrityVerified ||
+    !input.schemaCompatible ||
+    !input.mutationLeaseAvailable ||
+    input.actor.kind !== "human" ||
+    typeof input.actor.displayName !== "string" ||
+    input.actor.displayName.length === 0 ||
+    typeof input.actor.osAccount !== "string" ||
+    input.actor.osAccount.length === 0
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "SourceExclusionApproved requires a verified span, reason, ledger, and workspace evidence",
+    );
+  }
+
+  const sourceExclusion: SourceExclusion = {
+    exclusionId: input.exclusionId,
+    sourceRange: input.sourceRange,
+    reason: input.reason,
+  };
+  const sourceExclusions = [
+    ...(previousState.sourceExclusions ?? []),
+    sourceExclusion,
+  ];
+  const nextStateVersion = previousState.stateVersion + 1;
+  const reservation: BudgetReservation = {
+    calls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    costUsdMicros: 0,
+  };
+  const commandWithoutIdentity = {
+    commandType: "validate_ledger" as const,
+    schemaVersion: 1 as const,
+    runId: input.runId,
+    triggeringStateVersion: nextStateVersion,
+    purposeId: `${input.runId}:ledger:${previousState.currentLedger.versionId}:validate:exclusion:${input.exclusionId}`,
+    inputArtifactHashes: [
+      previousState.currentLedger.contentHash,
+      previousState.sourceContentHash,
+    ],
+    policyHash: policy.policyHash,
+    provider: "local" as const,
+    budgetReservation: reservation,
+    payload: {
+      ledgerVersionId: previousState.currentLedger.versionId,
+      ledgerArtifactId: previousState.currentLedger.artifactId,
+      sourceArtifactId: previousState.sourceArtifactId,
+      sourceExclusions,
+    },
+  };
+  const command: ValidateLedger = {
+    commandId: input.validateCommandId,
+    commandKey: createHash("sha256")
+      .update(canonicalJson(commandWithoutIdentity))
+      .digest("hex"),
+    ...commandWithoutIdentity,
+  };
+  const sourceEvidence: ArtifactEvidenceReference = {
+    kind: "artifact",
+    artifactId: previousState.sourceArtifactId,
+    contentHash: previousState.sourceContentHash,
+  };
+  const ledgerEvidence: ArtifactEvidenceReference = {
+    kind: "artifact",
+    artifactId: previousState.currentLedger.artifactId,
+    contentHash: previousState.currentLedger.contentHash,
+  };
+
+  return {
+    nextState: {
+      ...previousState,
+      stateVersion: nextStateVersion,
+      policyHash: policy.policyHash,
+      sourceExclusions,
+      currentLedger: {
+        ...previousState.currentLedger,
+        validationStatus: "pending",
+      },
+    },
+    commands: [command],
+    auditFacts: [
+      {
+        type: "source_exclusion_approved",
+        actor: input.actor,
+        reason: "Approve a source exclusion and recompute ledger coverage",
+        evidence: [sourceEvidence, ledgerEvidence],
+        payload: sourceExclusion,
+      },
+      {
+        type: "command_planned",
+        actor: {
+          kind: "system",
+          component: "domain-transition",
+          version: "0.0.0",
+        },
+        reason: "Recompute ledger coverage after source exclusion approval",
+        evidence: [sourceEvidence, ledgerEvidence],
+        payload: {
+          commandId: command.commandId,
+          commandKey: command.commandKey,
+          commandType: command.commandType,
+          reservation: command.budgetReservation,
+        },
+      },
     ],
   };
 }

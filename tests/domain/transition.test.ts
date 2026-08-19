@@ -5,6 +5,7 @@ import {
   type AdvancedRunState,
   type LedgerSubmitted,
   type RunStarted,
+  type SourceExclusionApproved,
 } from "../../src/domain/index.js";
 
 const policyHash = "a".repeat(64);
@@ -55,6 +56,29 @@ function ledgerSubmittedInput(): LedgerSubmitted {
     mutationLeaseAvailable: true,
     validateCommandId: "command_validate_ledger_01JTEST",
     renderCommandId: "command_render_ledger_01JTEST",
+    actor: {
+      kind: "human",
+      displayName: "Tigran",
+      osAccount: "tig",
+    },
+  };
+}
+
+function sourceExclusionApprovedInput(): SourceExclusionApproved {
+  return {
+    type: "SourceExclusionApproved",
+    runId: "run_01JTEST0000000000000000000",
+    expectedStateVersion: 2,
+    exclusionId: "exclusion_01JTEST",
+    sourceRange: { startOffset: 120, endOffset: 168 },
+    sourceRangeVerified: true,
+    reason:
+      "Deployment instructions are operational guidance, not a requirement",
+    auditChainVerified: true,
+    databaseIntegrityVerified: true,
+    schemaCompatible: true,
+    mutationLeaseAvailable: true,
+    validateCommandId: "command_validate_exclusion_01JTEST",
     actor: {
       kind: "human",
       displayName: "Tigran",
@@ -700,5 +724,363 @@ describe("transition", () => {
       expect.objectContaining({ policyHash: revisedPolicyHash }),
       expect.objectContaining({ policyHash: revisedPolicyHash }),
     ]);
+  });
+
+  it("approves a source exclusion and recomputes ledger coverage", () => {
+    const draft = transition(null, runStartedInput(), { policyHash }).nextState;
+    const ledgerDraft = transition(draft, ledgerSubmittedInput(), {
+      policyHash,
+    }).nextState;
+
+    const result = transition(ledgerDraft, sourceExclusionApprovedInput(), {
+      policyHash,
+    });
+
+    expect(result.nextState).toEqual({
+      ...ledgerDraft,
+      stateVersion: 3,
+      sourceExclusions: [
+        {
+          exclusionId: "exclusion_01JTEST",
+          sourceRange: { startOffset: 120, endOffset: 168 },
+          reason:
+            "Deployment instructions are operational guidance, not a requirement",
+        },
+      ],
+    });
+    expect(result.commands).toEqual([
+      {
+        commandId: "command_validate_exclusion_01JTEST",
+        commandKey:
+          "59646ad50b130f7b583ea7040676fe58982bae3ab68238dddc1df22707bbd2b0",
+        commandType: "validate_ledger",
+        schemaVersion: 1,
+        runId: ledgerDraft.runId,
+        triggeringStateVersion: 3,
+        purposeId: `${ledgerDraft.runId}:ledger:ledger_01JTEST:validate:exclusion:exclusion_01JTEST`,
+        inputArtifactHashes: [ledgerContentHash, sourceContentHash],
+        policyHash,
+        provider: "local",
+        budgetReservation: {
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsdMicros: 0,
+        },
+        payload: {
+          ledgerVersionId: "ledger_01JTEST",
+          ledgerArtifactId: "artifact_ledger_01JTEST",
+          sourceArtifactId: "artifact_source_01JTEST",
+          sourceExclusions: [
+            {
+              exclusionId: "exclusion_01JTEST",
+              sourceRange: { startOffset: 120, endOffset: 168 },
+              reason:
+                "Deployment instructions are operational guidance, not a requirement",
+            },
+          ],
+        },
+      },
+    ]);
+    expect(result.auditFacts).toEqual([
+      {
+        type: "source_exclusion_approved",
+        actor: sourceExclusionApprovedInput().actor,
+        reason: "Approve a source exclusion and recompute ledger coverage",
+        evidence: [
+          {
+            kind: "artifact",
+            artifactId: "artifact_source_01JTEST",
+            contentHash: sourceContentHash,
+          },
+          {
+            kind: "artifact",
+            artifactId: "artifact_ledger_01JTEST",
+            contentHash: ledgerContentHash,
+          },
+        ],
+        payload: {
+          exclusionId: "exclusion_01JTEST",
+          sourceRange: { startOffset: 120, endOffset: 168 },
+          reason:
+            "Deployment instructions are operational guidance, not a requirement",
+        },
+      },
+      {
+        type: "command_planned",
+        actor: {
+          kind: "system",
+          component: "domain-transition",
+          version: "0.0.0",
+        },
+        reason: "Recompute ledger coverage after source exclusion approval",
+        evidence: [
+          {
+            kind: "artifact",
+            artifactId: "artifact_source_01JTEST",
+            contentHash: sourceContentHash,
+          },
+          {
+            kind: "artifact",
+            artifactId: "artifact_ledger_01JTEST",
+            contentHash: ledgerContentHash,
+          },
+        ],
+        payload: {
+          commandId: "command_validate_exclusion_01JTEST",
+          commandKey:
+            "59646ad50b130f7b583ea7040676fe58982bae3ab68238dddc1df22707bbd2b0",
+          commandType: "validate_ledger",
+          reservation: {
+            calls: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            costUsdMicros: 0,
+          },
+        },
+      },
+    ]);
+  });
+
+  it.each<
+    [string, (validInput: SourceExclusionApproved) => SourceExclusionApproved]
+  >([
+    [
+      "a stale state version",
+      (input) => ({ ...input, expectedStateVersion: 1 }),
+    ],
+    [
+      "an unverified source range",
+      (input) => ({ ...input, sourceRangeVerified: false }),
+    ],
+    [
+      "a negative range start",
+      (input) => ({
+        ...input,
+        sourceRange: { ...input.sourceRange, startOffset: -1 },
+      }),
+    ],
+    [
+      "a non-integer range boundary",
+      (input) => ({
+        ...input,
+        sourceRange: { ...input.sourceRange, endOffset: 168.5 },
+      }),
+    ],
+    [
+      "an empty range",
+      (input) => ({
+        ...input,
+        sourceRange: { startOffset: 120, endOffset: 120 },
+      }),
+    ],
+    ["a blank reason", (input) => ({ ...input, reason: "  " })],
+    [
+      "an invalid audit chain",
+      (input) => ({ ...input, auditChainVerified: false }),
+    ],
+    [
+      "invalid database integrity",
+      (input) => ({ ...input, databaseIntegrityVerified: false }),
+    ],
+    [
+      "an incompatible schema",
+      (input) => ({ ...input, schemaCompatible: false }),
+    ],
+    [
+      "a conflicting mutation lease",
+      (input) => ({ ...input, mutationLeaseAvailable: false }),
+    ],
+    [
+      "a non-human actor",
+      (input) =>
+        ({
+          ...input,
+          actor: {
+            kind: "system",
+            component: "test-runner",
+            version: "1.0.0",
+          },
+        }) as unknown as SourceExclusionApproved,
+    ],
+    [
+      "an empty actor display name",
+      (input) => ({ ...input, actor: { ...input.actor, displayName: "" } }),
+    ],
+    [
+      "an empty actor OS account",
+      (input) => ({ ...input, actor: { ...input.actor, osAccount: "" } }),
+    ],
+  ])("rejects source exclusion approval with %s", (_name, makeInvalid) => {
+    const draft = transition(null, runStartedInput(), { policyHash }).nextState;
+    const ledgerDraft = transition(draft, ledgerSubmittedInput(), {
+      policyHash,
+    }).nextState;
+
+    expect(() =>
+      transition(ledgerDraft, makeInvalid(sourceExclusionApprovedInput()), {
+        policyHash,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it.each<
+    [string, () => unknown, "INVALID_TRANSITION" | "PRECONDITION_FAILED"]
+  >([
+    [
+      "without an active run",
+      () =>
+        transition(null, sourceExclusionApprovedInput(), {
+          policyHash,
+        }),
+      "INVALID_TRANSITION",
+    ],
+    [
+      "without a current ledger",
+      () => {
+        const draft = transition(null, runStartedInput(), {
+          policyHash,
+        }).nextState;
+        const input = {
+          ...sourceExclusionApprovedInput(),
+          expectedStateVersion: 1,
+        };
+        return transition(draft, input, { policyHash });
+      },
+      "PRECONDITION_FAILED",
+    ],
+    [
+      "for another run",
+      () => {
+        const draft = transition(null, runStartedInput(), {
+          policyHash,
+        }).nextState;
+        const ledgerDraft = transition(draft, ledgerSubmittedInput(), {
+          policyHash,
+        }).nextState;
+        const input = {
+          ...sourceExclusionApprovedInput(),
+          runId: "run_other",
+        };
+        return transition(ledgerDraft, input, { policyHash });
+      },
+      "INVALID_TRANSITION",
+    ],
+    [
+      "outside draft state",
+      () =>
+        transition(
+          advancedRunState("requirements_approved"),
+          { ...sourceExclusionApprovedInput(), expectedStateVersion: 7 },
+          { policyHash },
+        ),
+      "INVALID_TRANSITION",
+    ],
+    [
+      "with a changed locked policy",
+      () => {
+        const draft = transition(null, runStartedInput(), {
+          policyHash,
+        }).nextState;
+        const ledgerDraft = transition(draft, ledgerSubmittedInput(), {
+          policyHash,
+        }).nextState;
+        return transition(
+          { ...ledgerDraft, policyLocked: true },
+          sourceExclusionApprovedInput(),
+          { policyHash: "0".repeat(64) },
+        );
+      },
+      "PRECONDITION_FAILED",
+    ],
+    [
+      "with a duplicate exclusion ID",
+      () => {
+        const draft = transition(null, runStartedInput(), {
+          policyHash,
+        }).nextState;
+        const ledgerDraft = transition(draft, ledgerSubmittedInput(), {
+          policyHash,
+        }).nextState;
+        const first = transition(ledgerDraft, sourceExclusionApprovedInput(), {
+          policyHash,
+        });
+        return transition(
+          first.nextState,
+          { ...sourceExclusionApprovedInput(), expectedStateVersion: 3 },
+          { policyHash },
+        );
+      },
+      "PRECONDITION_FAILED",
+    ],
+  ])("rejects source exclusion approval %s", (_name, approve, expectedCode) => {
+    expect(approve).toThrowError(
+      expect.objectContaining({ code: expectedCode }),
+    );
+  });
+
+  it("accumulates exclusions and carries them into revised ledger validation", () => {
+    const draft = transition(null, runStartedInput(), { policyHash }).nextState;
+    const ledgerDraft = transition(draft, ledgerSubmittedInput(), {
+      policyHash,
+    }).nextState;
+    const first = transition(ledgerDraft, sourceExclusionApprovedInput(), {
+      policyHash,
+    });
+    const secondInput = {
+      ...sourceExclusionApprovedInput(),
+      expectedStateVersion: 3,
+      exclusionId: "exclusion_02JTEST",
+      sourceRange: { startOffset: 200, endOffset: 220 },
+      reason: "Appendix heading has no normative content",
+      validateCommandId: "command_validate_exclusion_02JTEST",
+    };
+
+    const second = transition(first.nextState, secondInput, { policyHash });
+
+    expect(second.nextState.sourceExclusions).toEqual([
+      {
+        exclusionId: "exclusion_01JTEST",
+        sourceRange: { startOffset: 120, endOffset: 168 },
+        reason:
+          "Deployment instructions are operational guidance, not a requirement",
+      },
+      {
+        exclusionId: "exclusion_02JTEST",
+        sourceRange: { startOffset: 200, endOffset: 220 },
+        reason: "Appendix heading has no normative content",
+      },
+    ]);
+    const secondCommand = second.commands[0];
+    if (secondCommand?.commandType !== "validate_ledger") {
+      throw new Error("expected validate_ledger command");
+    }
+    expect(secondCommand.payload.sourceExclusions).toEqual(
+      second.nextState.sourceExclusions,
+    );
+    expect(secondCommand.commandKey).not.toBe(first.commands[0]?.commandKey);
+
+    const ledgerRevision = {
+      ...ledgerSubmittedInput(),
+      expectedStateVersion: 4,
+      ledgerVersionId: "ledger_02JTEST",
+      ledgerArtifactId: "artifact_ledger_02JTEST",
+      validateCommandId: "command_validate_ledger_02JTEST",
+      renderCommandId: "command_render_ledger_02JTEST",
+    };
+    const revised = transition(second.nextState, ledgerRevision, {
+      policyHash,
+    });
+
+    expect(revised.nextState.sourceExclusions).toEqual(
+      second.nextState.sourceExclusions,
+    );
+    const revisedValidationCommand = revised.commands[0];
+    if (revisedValidationCommand?.commandType !== "validate_ledger") {
+      throw new Error("expected validate_ledger command");
+    }
+    expect(revisedValidationCommand.payload.sourceExclusions).toEqual(
+      second.nextState.sourceExclusions,
+    );
   });
 });
