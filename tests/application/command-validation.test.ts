@@ -69,4 +69,38 @@ describe("command validation", () => {
       ),
     ).toBe(false);
   });
+
+  it("accepts a terminal export before ledger or plan creation", () => {
+    expect(
+      commandIsValid(
+        command("export_terminal", {
+          haltedFrom: "planning",
+          reason: "provider refused",
+          failedCommandId: "command_failed",
+          failureClassification: "refusal",
+          attemptIds: ["attempt_1"],
+          evidenceArtifactIds: ["artifact_failure"],
+          unresolvedFindingIds: [],
+          sourceArtifactId: "artifact_source",
+          configurationArtifactId: "artifact_config",
+          ledgerArtifactId: null,
+          planArtifactId: null,
+          policyHash: "b".repeat(64),
+          plannerAssignment: { provider: "openai", modelId: "planner" },
+          reviewerAssignment: { provider: "anthropic", modelId: "reviewer" },
+          budgetReportArtifactId: "artifact_budget",
+          recoveryBounds: {
+            retryLimit: 1,
+            repairLimit: 1,
+            retriesUsed: 0,
+            repairsUsed: 0,
+          },
+          independence: null,
+          lineageArtifactIds: [],
+          waiverIds: [],
+          outcome: "halted",
+        }),
+      ),
+    ).toBe(true);
+  });
 });

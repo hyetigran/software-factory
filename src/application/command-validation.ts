@@ -19,10 +19,12 @@ function hasExactKeys(
   );
 }
 
-function strings(value: unknown): value is string[] {
+function stringSet(value: unknown, requireNonempty = true): value is string[] {
   return (
     Array.isArray(value) &&
-    value.every((item) => typeof item === "string" && item.length > 0)
+    (!requireNonempty || value.length > 0) &&
+    value.every((item) => typeof item === "string" && item.length > 0) &&
+    new Set(value).size === value.length
   );
 }
 
@@ -73,11 +75,16 @@ function sourceExclusions(value: unknown): boolean {
         record(item) &&
         hasExactKeys(item, ["exclusionId", "sourceRange", "reason"]) &&
         typeof item.exclusionId === "string" &&
+        item.exclusionId.length > 0 &&
         typeof item.reason === "string" &&
+        item.reason.trim().length > 0 &&
         record(item.sourceRange) &&
         hasExactKeys(item.sourceRange, ["startOffset", "endOffset"]) &&
         Number.isInteger(item.sourceRange.startOffset) &&
-        Number.isInteger(item.sourceRange.endOffset),
+        Number.isInteger(item.sourceRange.endOffset) &&
+        Number(item.sourceRange.startOffset) >= 0 &&
+        Number(item.sourceRange.endOffset) >
+          Number(item.sourceRange.startOffset),
     )
   );
 }
@@ -189,7 +196,7 @@ function payloadIsValid(commandType: string, value: object): boolean {
           "componentRegistryArtifactId",
           "reviewPolicyArtifactId",
         ]) &&
-        strings(payload.evidenceArtifactIds) &&
+        stringSet(payload.evidenceArtifactIds) &&
         independence(payload.independence) &&
         payload.providerStorage === "minimize"
       );
@@ -209,7 +216,7 @@ function payloadIsValid(commandType: string, value: object): boolean {
           "planArtifactId",
           "reviewArtifactId",
         ]) &&
-        strings(payload.blockingFindingIds) &&
+        stringSet(payload.blockingFindingIds) &&
         payload.providerStorage === "minimize"
       );
     case "closure_review":
@@ -242,8 +249,8 @@ function payloadIsValid(commandType: string, value: object): boolean {
           "componentRegistryArtifactId",
           "reviewPolicyArtifactId",
         ]) &&
-        strings(payload.evidenceArtifactIds) &&
-        Array.isArray(payload.findingIds) &&
+        stringSet(payload.evidenceArtifactIds) &&
+        stringSet(payload.findingIds, false) &&
         independence(payload.independence) &&
         payload.providerStorage === "minimize"
       );
@@ -281,11 +288,25 @@ function payloadIsValid(commandType: string, value: object): boolean {
           "policyHash",
           "budgetReportArtifactId",
         ]) &&
-        strings(payload.attemptIds) &&
-        strings(payload.evidenceArtifactIds) &&
-        Array.isArray(payload.unresolvedFindingIds) &&
-        Array.isArray(payload.lineageArtifactIds) &&
-        Array.isArray(payload.waiverIds) &&
+        ["planning", "baseline_review"].includes(String(payload.haltedFrom)) &&
+        [
+          "refusal",
+          "invalid_output",
+          "transport",
+          "provider_error",
+          "budget",
+        ].includes(String(payload.failureClassification)) &&
+        (payload.ledgerArtifactId === null ||
+          (typeof payload.ledgerArtifactId === "string" &&
+            payload.ledgerArtifactId.length > 0)) &&
+        (payload.planArtifactId === null ||
+          (typeof payload.planArtifactId === "string" &&
+            payload.planArtifactId.length > 0)) &&
+        stringSet(payload.attemptIds) &&
+        stringSet(payload.evidenceArtifactIds) &&
+        stringSet(payload.unresolvedFindingIds, false) &&
+        stringSet(payload.lineageArtifactIds, false) &&
+        stringSet(payload.waiverIds, false) &&
         assignment(payload.plannerAssignment) &&
         assignment(payload.reviewerAssignment) &&
         record(payload.recoveryBounds) &&
@@ -295,7 +316,13 @@ function payloadIsValid(commandType: string, value: object): boolean {
           "retriesUsed",
           "repairsUsed",
         ]) &&
-        Object.values(payload.recoveryBounds).every(Number.isInteger) &&
+        Object.values(payload.recoveryBounds).every(
+          (counter) => Number.isInteger(counter) && Number(counter) >= 0,
+        ) &&
+        Number(payload.recoveryBounds.retriesUsed) <=
+          Number(payload.recoveryBounds.retryLimit) &&
+        Number(payload.recoveryBounds.repairsUsed) <=
+          Number(payload.recoveryBounds.repairLimit) &&
         (payload.independence === null || independence(payload.independence)) &&
         payload.outcome === "halted"
       );
@@ -340,7 +367,7 @@ function payloadIsValid(commandType: string, value: object): boolean {
           "planArtifactId",
           "remediationArtifactId",
         ]) &&
-        strings(payload.claimIds) &&
+        stringSet(payload.claimIds) &&
         payload.providerStorage === "minimize"
       );
     default:
@@ -349,60 +376,46 @@ function payloadIsValid(commandType: string, value: object): boolean {
 }
 
 export function commandIsValid(command: PersistableCommand): boolean {
-  const commandTypes = new Set([
-    "render_source_registration_report",
-    "validate_ledger",
-    "render_ledger",
-    "render_ledger_approval",
-    "generate_plan",
-    "render_plan",
-    "baseline_review",
-    "generate_remediation",
-    "verify_remediation",
-    "closure_review",
-    "repair_schema",
-    "export_terminal",
-    "attempt_provider_cancel",
-    "backup_workspace",
-    "verify_integrity",
-  ]);
+  const executionClass: Record<string, "local" | "provider" | "cancel"> = {
+    render_source_registration_report: "local",
+    validate_ledger: "local",
+    render_ledger: "local",
+    render_ledger_approval: "local",
+    generate_plan: "provider",
+    render_plan: "local",
+    baseline_review: "provider",
+    generate_remediation: "provider",
+    verify_remediation: "provider",
+    closure_review: "provider",
+    repair_schema: "provider",
+    export_terminal: "local",
+    attempt_provider_cancel: "cancel",
+    backup_workspace: "local",
+    verify_integrity: "local",
+  };
   const commandWithoutIdentity = Object.fromEntries(
     Object.entries(command).filter(
       ([key]) => key !== "commandId" && key !== "commandKey",
     ),
   );
-  const localTypes = new Set([
-    "render_source_registration_report",
-    "validate_ledger",
-    "render_ledger",
-    "render_ledger_approval",
-    "render_plan",
-    "export_terminal",
-    "backup_workspace",
-    "verify_integrity",
-  ]);
-  const providerTypes = new Set([
-    "generate_plan",
-    "baseline_review",
-    "generate_remediation",
-    "verify_remediation",
-    "closure_review",
-    "repair_schema",
-  ]);
-  const providerShapeValid = localTypes.has(command.commandType)
-    ? command.provider === "local" &&
-      command.modelId === undefined &&
-      Object.values(command.budgetReservation).every((value) => value === 0)
-    : providerTypes.has(command.commandType)
-      ? (command.provider === "openai" || command.provider === "anthropic") &&
-        typeof command.modelId === "string" &&
-        command.modelId.length > 0 &&
-        command.budgetReservation.calls === 1
-      : command.commandType === "attempt_provider_cancel" &&
-        (command.provider === "openai" || command.provider === "anthropic");
+  const commandExecutionClass = executionClass[command.commandType];
+  const providerShapeValid =
+    commandExecutionClass === "local"
+      ? command.provider === "local" &&
+        command.modelId === undefined &&
+        Object.values(command.budgetReservation).every((value) => value === 0)
+      : commandExecutionClass === "provider"
+        ? (command.provider === "openai" || command.provider === "anthropic") &&
+          typeof command.modelId === "string" &&
+          command.modelId.length > 0 &&
+          command.budgetReservation.calls === 1
+        : commandExecutionClass === "cancel" &&
+          (command.provider === "openai" || command.provider === "anthropic");
   const prerequisiteShapeValid =
     command.commandType === "baseline_review"
-      ? command.prerequisiteCommandIds?.length === 1
+      ? command.prerequisiteCommandIds?.length === 1 &&
+        command.prerequisiteCommandIds[0] ===
+          (command.payload as Record<string, unknown>).renderPlanCommandId
       : true;
   const envelopeRequired = [
     "commandId",
@@ -431,7 +444,7 @@ export function commandIsValid(command: PersistableCommand): boolean {
     ]) &&
     command.schemaVersion === 1 &&
     command.commandId.length > 0 &&
-    commandTypes.has(command.commandType) &&
+    commandExecutionClass !== undefined &&
     command.purposeId.length > 0 &&
     /^[a-f0-9]{64}$/u.test(command.policyHash) &&
     command.inputArtifactHashes.every((hash) => /^[a-f0-9]{64}$/u.test(hash)) &&
