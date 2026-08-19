@@ -11,6 +11,7 @@ import type {
   PersistableCommand,
   PersistableTransition,
   PersistTransitionRequest,
+  ValidatedProjection,
 } from "../../application/authority-port.js";
 import type { StagedArtifactDescriptor } from "../artifacts/object-store.js";
 import type { ContentAddressedArtifactStore } from "../artifacts/object-store.js";
@@ -117,7 +118,7 @@ function commandIsValid(command: PersistableCommand): boolean {
   const prerequisiteShapeValid =
     command.commandType === "baseline_review"
       ? command.prerequisiteCommandIds?.length === 1
-      : command.prerequisiteCommandIds === undefined;
+      : true;
   const requiredPayloadKeys: Partial<Record<string, string[]>> = {
     render_source_registration_report: ["sourceArtifactId"],
     validate_ledger: ["ledgerVersionId", "ledgerArtifactId"],
@@ -160,6 +161,31 @@ function commandIsValid(command: PersistableCommand): boolean {
 function stateIsTerminal(state: JsonObject): boolean {
   return ["approved", "approved_with_waivers", "halted", "cancelled"].includes(
     String(state.state),
+  );
+}
+
+function reviewProjectionIsComplete(
+  state: JsonObject,
+  projection: ValidatedProjection,
+): boolean {
+  const findings = Array.isArray(state.activeFindings)
+    ? (state.activeFindings as Array<Record<string, unknown>>)
+    : [];
+  const findingIds = findings.map(({ findingId }) => String(findingId));
+  const observationIds = findings.map(({ latestObservationId }) =>
+    String(latestObservationId),
+  );
+  const projectedFindingIds =
+    projection.findingFingerprints?.map(({ findingId }) => findingId) ?? [];
+  const projectedObservationIds =
+    projection.observationAssociations?.map(
+      ({ observationId }) => observationId,
+    ) ?? [];
+  return (
+    new Set(projectedFindingIds).size === findingIds.length &&
+    new Set(projectedObservationIds).size === observationIds.length &&
+    findingIds.every((id) => projectedFindingIds.includes(id)) &&
+    observationIds.every((id) => projectedObservationIds.includes(id))
   );
 }
 
@@ -565,6 +591,7 @@ export class SqliteAuthority implements AuthorityPort {
     await this.verifyIntegrity();
     this.database.exec("BEGIN IMMEDIATE");
     let active = true;
+    let persisted = false;
     const assertActive = (): void => {
       if (!active) throw new Error("Authority transaction is no longer active");
     };
@@ -578,12 +605,26 @@ export class SqliteAuthority implements AuthorityPort {
         result: PersistableTransition<TState>,
       ): void => {
         assertActive();
+        if (persisted) {
+          throw new Error("Authority transaction accepts exactly one input");
+        }
         this.persistAcceptedTransition(request, result);
+        persisted = true;
       },
     };
     try {
       this.verifyAuditChain();
       const result = work(transaction);
+      if (result !== null && typeof result === "object" && "then" in result) {
+        throw new TypeError(
+          "Authority transaction callback must be synchronous",
+        );
+      }
+      if (!persisted) {
+        throw new Error(
+          "Authority transaction requires exactly one accepted input",
+        );
+      }
       this.database.exec("COMMIT");
       active = false;
       return result;
@@ -634,14 +675,21 @@ export class SqliteAuthority implements AuthorityPort {
     if (
       (factTypes.has("ledger_submitted") &&
         (projection?.ledgerVersionId === undefined ||
-          projection.requirements === undefined)) ||
+          projection.ledgerContentHash === undefined ||
+          projection.requirements === undefined ||
+          projection.requirements.length === 0)) ||
       (factTypes.has("plan_version_accepted") &&
         (projection?.planVersionId === undefined ||
+          projection.planContentHash === undefined ||
           projection.planSections === undefined ||
-          projection.sectionTransitions === undefined)) ||
+          projection.planSections.length === 0 ||
+          projection.sectionTransitions === undefined ||
+          projection.sectionTransitions.length === 0)) ||
       (factTypes.has("review_accepted") &&
-        (projection?.findingFingerprints === undefined ||
-          projection.observationAssociations === undefined))
+        (projection?.reviewContentHash === undefined ||
+          projection.findingFingerprints === undefined ||
+          projection.observationAssociations === undefined ||
+          !reviewProjectionIsComplete(nextState, projection)))
     ) {
       throw new TypeError(
         "Accepted transition requires a bound deterministic projection",
@@ -709,15 +757,15 @@ export class SqliteAuthority implements AuthorityPort {
         canonicalJson(command),
         this.now(),
       );
-      if (request.validatedProjection !== undefined) {
-        persistValidatedProjection(
-          this.database,
-          request.runId,
-          nextState,
-          request.validatedProjection,
-          this.now(),
-        );
-      }
+    }
+    if (request.validatedProjection !== undefined) {
+      persistValidatedProjection(
+        this.database,
+        request.runId,
+        nextState,
+        request.validatedProjection,
+        this.now(),
+      );
     }
 
     const metadata = this.database

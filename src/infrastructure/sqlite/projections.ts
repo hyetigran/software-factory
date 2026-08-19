@@ -223,6 +223,25 @@ export function projectAuthoritativeState(
     ? state.activeFindings
     : [];
   const baselineReview = object(state.baselineReview);
+  if (
+    baselineReview !== null &&
+    facts.some(({ type }) => type === "review_accepted")
+  ) {
+    const planVersionId = string(baselineReview.planVersionId);
+    database
+      .prepare(
+        `INSERT INTO gates
+          (gate_id, run_id, gate_type, status, evidence_artifact_id, evaluated_at)
+         VALUES (?, ?, 'baseline', ?, ?, ?)`,
+      )
+      .run(
+        `${runId}:gate:baseline:${String(planVersionId)}`,
+        runId,
+        state.state === "remediation" ? "failed" : "passed",
+        string(baselineReview.artifactId),
+        recordedAt,
+      );
+  }
   for (const findingValue of findings) {
     const finding = object(findingValue);
     if (finding === null) continue;
@@ -293,15 +312,43 @@ export function persistValidatedProjection(
   projection: ValidatedProjection,
   recordedAt: string,
 ): void {
+  const currentLedger = object(state.currentLedger);
+  const currentPlan = object(state.currentPlan);
+  const baselineReview = object(state.baselineReview);
   if (
     projection.validator !== "deterministic-authority-projection-v1" ||
     projection.stateVersion !== state.stateVersion ||
     (projection.ledgerVersionId !== undefined &&
-      projection.ledgerVersionId !== object(state.currentLedger)?.versionId) ||
+      projection.ledgerVersionId !== currentLedger?.versionId) ||
+    (projection.ledgerContentHash !== undefined &&
+      projection.ledgerContentHash !== currentLedger?.contentHash) ||
     (projection.planVersionId !== undefined &&
-      projection.planVersionId !== object(state.currentPlan)?.versionId)
+      projection.planVersionId !== currentPlan?.versionId) ||
+    (projection.planContentHash !== undefined &&
+      projection.planContentHash !== currentPlan?.contentHash) ||
+    (projection.reviewContentHash !== undefined &&
+      projection.reviewContentHash !== baselineReview?.contentHash) ||
+    !projection.schemaValid ||
+    !projection.controlledIdsValid ||
+    !projection.referencesComplete ||
+    !projection.identitiesUnique
   ) {
     throw new TypeError("Validated projection is not bound to accepted state");
+  }
+  const requirementIds = new Set(
+    (projection.requirements ?? []).map(({ requirementId }) => requirementId),
+  );
+  const sectionIds = new Set(
+    (projection.planSections ?? []).map(({ sectionId }) => sectionId),
+  );
+  if (
+    requirementIds.size !== (projection.requirements?.length ?? 0) ||
+    sectionIds.size !== (projection.planSections?.length ?? 0) ||
+    (projection.planSections ?? []).some(({ requirementIds: references }) =>
+      references.some((id) => !requirementIds.has(id)),
+    )
+  ) {
+    throw new TypeError("Validated projection identities are incomplete");
   }
   if (projection.ledgerVersionId !== undefined) {
     for (const requirement of projection.requirements ?? []) {

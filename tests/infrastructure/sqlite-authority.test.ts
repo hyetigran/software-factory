@@ -14,6 +14,7 @@ import { commitTransition } from "../../src/application/commit-transition.js";
 import { canonicalJson } from "../../src/domain/canonical-json.js";
 import {
   transition,
+  type LedgerSubmitted,
   type NonterminalRunState,
   type RunStarted,
 } from "../../src/domain/index.js";
@@ -168,13 +169,94 @@ describe("SQLite authority", () => {
       transition: (previousState) => transition(previousState, input, policy),
     });
 
+    const store = await ContentAddressedArtifactStore.open(
+      resolve(path, "../.."),
+    );
+    const ledger = await store.stageArtifact(
+      Buffer.from('{"requirements":[]}'),
+      {
+        artifactId: "artifact_ledger",
+        kind: "requirements_ledger",
+        mediaType: "application/json",
+        schemaId: "requirements-ledger.v1",
+        createdBy: "human:tig",
+        provenance: {
+          method: "human_submitted",
+          sourceArtifactIds: ["artifact_source"],
+        },
+      },
+    );
+    await authority.registerArtifact(ledger);
+    const ledgerInput: LedgerSubmitted = {
+      type: "LedgerSubmitted",
+      runId: input.runId,
+      expectedStateVersion: 1,
+      ledgerVersionId: "ledger_v1",
+      ledgerArtifactId: ledger.artifactId,
+      ledgerContentHash: ledger.contentHash,
+      ledgerObjectVerified: true,
+      ledgerSchemaValid: true,
+      sourceReferencesValid: true,
+      auditChainVerified: true,
+      databaseIntegrityVerified: true,
+      schemaCompatible: true,
+      mutationLeaseAvailable: true,
+      validateCommandId: "command_validate_ledger",
+      renderCommandId: "command_render_ledger",
+      actor: input.actor,
+    };
+    await commitTransition<NonterminalRunState>(authority, {
+      runId: input.runId,
+      expectedStateVersion: 1,
+      validatedProjection: {
+        validator: "deterministic-authority-projection-v1",
+        stateVersion: 2,
+        ledgerVersionId: ledgerInput.ledgerVersionId,
+        ledgerContentHash: ledger.contentHash,
+        schemaValid: true,
+        controlledIdsValid: true,
+        referencesComplete: true,
+        identitiesUnique: true,
+        requirements: [
+          {
+            requirementId: "req_1",
+            displayId: "REQ-001",
+            status: "active",
+            statement: "The factory persists atomically.",
+            sourceRanges: [{ startOffset: 0, endOffset: 10 }],
+            lineageRoots: ["req_1"],
+            predecessorIds: [],
+          },
+        ],
+      },
+      transition: (previousState) =>
+        transition(previousState, ledgerInput, policy),
+    });
+
     expect(authority.loadRun(input.runId)).toEqual(
-      expect.objectContaining({ state: "draft", stateVersion: 1 }),
+      expect.objectContaining({ state: "draft", stateVersion: 2 }),
     );
     expect(
       authority.listAuditEntries().map(({ factType }) => factType),
-    ).toEqual(["run_started", "source_registered", "command_planned"]);
+    ).toEqual([
+      "run_started",
+      "source_registered",
+      "command_planned",
+      "ledger_submitted",
+      "command_planned",
+      "command_planned",
+    ]);
     authority.close();
+    const reopened = await openAuthority(path);
+    expect(
+      reopened.loadRun<NonterminalRunState>(input.runId)?.stateVersion,
+    ).toBe(2);
+    reopened.close();
+    const raw = new DatabaseSync(path, { readOnly: true });
+    expect(
+      raw.prepare("SELECT count(*) AS count FROM requirements").get(),
+    ).toEqual({ count: 1 });
+    raw.close();
   });
 
   it("atomically persists state, commands, and a verifiable audit chain", async () => {
@@ -201,6 +283,10 @@ describe("SQLite authority", () => {
     let retained: AuthorityTransaction | undefined;
     await authority.transaction((transaction) => {
       retained = transaction;
+      transaction.persist(
+        { runId: "run_one", expectedStateVersion: 0 },
+        transitionResult("run_one", 1),
+      );
     });
     expect(() => retained?.loadRun("run_one")).toThrow(
       "transaction is no longer active",

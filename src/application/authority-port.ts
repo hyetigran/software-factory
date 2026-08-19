@@ -46,7 +46,14 @@ export type ValidatedProjection = {
   validator: "deterministic-authority-projection-v1";
   stateVersion: number;
   ledgerVersionId?: string;
+  ledgerContentHash?: string;
   planVersionId?: string;
+  planContentHash?: string;
+  reviewContentHash?: string;
+  schemaValid: boolean;
+  controlledIdsValid: boolean;
+  referencesComplete: boolean;
+  identitiesUnique: boolean;
   requirements?: Array<{
     requirementId: string;
     displayId: string;
