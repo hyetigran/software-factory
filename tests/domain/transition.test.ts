@@ -3467,6 +3467,7 @@ describe("transition", () => {
         Promise.resolve(
           work({
             loadRun: <TState extends object>() => state as unknown as TState,
+            settleProviderCompletion: () => ({ status: "eligible" as const }),
             persist: vi.fn(),
             persistProviderCompletion: <TState extends object>(
               completion: AcceptedProviderCompletion,
@@ -3548,7 +3549,109 @@ describe("transition", () => {
         },
       },
     });
+    if (!("nextState" in result)) {
+      throw new Error("Expected the provider result to advance the run");
+    }
     expect(result.nextState.state).toBe("baseline_review");
     expect(persistedProviderCompletion).toBe(true);
+  });
+
+  it("does not run a domain transition for an evidence-only provider result", async () => {
+    const input = planGeneratedInput();
+    const completion = {
+      status: "completed" as const,
+      runId: input.runId,
+      commandId: input.originatingCommandId,
+      attemptId: input.acceptedAttempt.attemptId,
+      acceptedAsLogicalResult: false,
+    };
+    const authority: AuthorityPort = {
+      transaction: (work) =>
+        Promise.resolve(
+          work({
+            loadRun: () => {
+              throw new Error("late evidence must not load workflow state");
+            },
+            settleProviderCompletion: () => ({
+              status: "settled" as const,
+              completion,
+            }),
+            persistProviderCompletion: () => {
+              throw new Error("late evidence must not persist a transition");
+            },
+            persist: vi.fn(),
+          }),
+        ),
+    };
+    const accepted = input.acceptedAttempt;
+    const providerArtifact = (
+      artifactId: string,
+      contentHash: string,
+      kind: "provider_response" | "native_usage",
+    ) => ({
+      schemaVersion: 1 as const,
+      artifactId,
+      kind,
+      contentHash,
+      byteLength: 1,
+      mediaType: "application/json",
+      createdBy: "pid:planner",
+      provenance: {
+        method: "provider_generated" as const,
+        sourceArtifactIds: [accepted.requestArtifactId],
+        commandId: input.originatingCommandId,
+        attemptId: accepted.attemptId,
+      },
+    });
+    const result = await completeProviderAttempt(authority, {
+      runId: input.runId,
+      expectedStateVersion: input.expectedStateVersion,
+      input,
+      policy: pinnedPolicy,
+      completion: {
+        runId: input.runId,
+        commandId: input.originatingCommandId,
+        attemptId: accepted.attemptId,
+        ownerProcess: "pid:planner",
+        correlationId: "correlation_late",
+        requestArtifactId: accepted.requestArtifactId,
+        requestContentHash: accepted.requestContentHash,
+        outputArtifact: providerArtifact(
+          input.planArtifact.artifactId,
+          input.planArtifact.contentHash,
+          "provider_response",
+        ),
+        rawResponseArtifact: providerArtifact(
+          accepted.rawResponseArtifactId,
+          accepted.rawResponseContentHash,
+          "provider_response",
+        ),
+        nativeUsageArtifact: providerArtifact(
+          accepted.nativeUsageArtifactId,
+          accepted.nativeUsageContentHash,
+          "native_usage",
+        ),
+        actualUsage: {
+          calls: 1,
+          inputTokens: 1,
+          outputTokens: 1,
+          costUsdMicros: 1,
+        },
+        providerEvidence: {
+          requestedModel: pinnedPolicy.plannerAssignment.modelId,
+          endpoint: "https://provider.invalid",
+          behaviorHeaders: {},
+          correlationId: "correlation_late",
+          preflight: {
+            canonicalModelId: pinnedPolicy.plannerAssignment.modelId,
+            structuredOutput: true,
+            contextWindowTokens: 10,
+            maxOutputTokens: 5,
+            inputTokens: 1,
+          },
+        },
+      },
+    });
+    expect(result).toEqual(completion);
   });
 });

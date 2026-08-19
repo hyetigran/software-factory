@@ -10,6 +10,7 @@ import type {
   CompletedCommandAttempt,
 } from "../../application/execution-port.js";
 import type { ProviderEvidence } from "../../application/provider-port.js";
+import { canonicalJson } from "../../domain/canonical-json.js";
 import type { StagedArtifactRegistration } from "../../application/artifact-port.js";
 import { AuthorityIntegrityError } from "./errors.js";
 
@@ -23,6 +24,7 @@ type Dependencies = {
 };
 
 type Completion = CompletedCommandAttempt & {
+  stateVersion: number;
   auditFacts: PersistableAuditFact[];
 };
 
@@ -77,10 +79,202 @@ export function providerEvidenceMatchesRecording(
   }
 }
 
+export function structuredOutputMatchesRawResponse(
+  provider: "openai" | "anthropic",
+  outputBytes: Uint8Array,
+  rawResponseBytes: Uint8Array,
+): boolean {
+  try {
+    const raw = JSON.parse(
+      Buffer.from(rawResponseBytes).toString("utf8"),
+    ) as Record<string, unknown>;
+    let text: unknown;
+    if (provider === "openai") {
+      const output = raw.output;
+      if (!Array.isArray(output)) return false;
+      text = output
+        .flatMap((item) =>
+          item !== null && typeof item === "object"
+            ? ((item as { content?: unknown }).content ?? [])
+            : [],
+        )
+        .find(
+          (item) =>
+            item !== null &&
+            typeof item === "object" &&
+            (item as { type?: unknown }).type === "output_text",
+        );
+      text =
+        text !== null && typeof text === "object"
+          ? (text as { text?: unknown }).text
+          : undefined;
+    } else {
+      const content = raw.content;
+      if (!Array.isArray(content)) return false;
+      const block = (content as unknown[]).find(
+        (item) =>
+          item !== null &&
+          typeof item === "object" &&
+          (item as { type?: unknown }).type === "text",
+      );
+      text =
+        block !== null && typeof block === "object"
+          ? (block as { text?: unknown }).text
+          : undefined;
+    }
+    if (typeof text !== "string") return false;
+    return (
+      Buffer.from(outputBytes).toString("utf8") ===
+      canonicalJson(JSON.parse(text))
+    );
+  } catch {
+    return false;
+  }
+}
+
 export class SqliteProviderCompletion {
   constructor(private readonly dependencies: Dependencies) {}
 
-  complete(request: CompleteProviderAttemptEvidence): Completion {
+  settle(
+    request: CompleteProviderAttemptEvidence,
+  ): { status: "eligible" } | { status: "settled"; completion: Completion } {
+    const row = this.dependencies.database
+      .prepare(
+        `SELECT c.run_id, c.status AS command_status, c.accepted_attempt_id,
+                c.triggering_state_version,
+                a.status AS attempt_status, a.correlation_id,
+                a.result_artifact_id, a.native_usage_artifact_id,
+                r.state_version,
+                result.content_hash AS result_content_hash,
+                usage_artifact.content_hash AS usage_content_hash,
+                actual.calls AS actual_calls,
+                actual.input_tokens AS actual_input_tokens,
+                actual.output_tokens AS actual_output_tokens,
+                actual.cost_usd_micros AS actual_cost_usd_micros
+           FROM logical_commands c
+           JOIN command_attempts a ON a.command_id = c.command_id
+           JOIN runs r ON r.run_id = c.run_id
+           LEFT JOIN artifacts result ON result.artifact_id = a.result_artifact_id
+           LEFT JOIN artifacts usage_artifact
+             ON usage_artifact.artifact_id = a.native_usage_artifact_id
+           LEFT JOIN usage_ledger actual
+             ON actual.attempt_id = a.attempt_id AND actual.kind = 'actual'
+          WHERE c.command_id = ? AND a.attempt_id = ?`,
+      )
+      .get(request.commandId, request.attemptId) as
+      | {
+          run_id: string;
+          command_status: string;
+          accepted_attempt_id: string | null;
+          triggering_state_version: number;
+          attempt_status: string;
+          correlation_id: string;
+          result_artifact_id: string | null;
+          native_usage_artifact_id: string | null;
+          state_version: number;
+          result_content_hash: string | null;
+          usage_content_hash: string | null;
+          actual_calls: number | null;
+          actual_input_tokens: number | null;
+          actual_output_tokens: number | null;
+          actual_cost_usd_micros: number | null;
+        }
+      | undefined;
+    if (
+      row === undefined ||
+      row.run_id !== request.runId ||
+      row.correlation_id !== request.correlationId
+    ) {
+      throw new TypeError("Provider attempt completion is not eligible");
+    }
+    if (["completed", "discarded"].includes(row.attempt_status)) {
+      this.dependencies.readStagedArtifactBytes(request.outputArtifact);
+      this.dependencies.readStagedArtifactBytes(request.rawResponseArtifact);
+      this.dependencies.readStagedArtifactBytes(request.nativeUsageArtifact);
+      this.dependencies.persistArtifactMetadata(request.outputArtifact);
+      this.dependencies.persistArtifactMetadata(request.rawResponseArtifact);
+      this.dependencies.persistArtifactMetadata(request.nativeUsageArtifact);
+      const audit = this.dependencies.database
+        .prepare(
+          `SELECT payload_json FROM audit_entries
+            WHERE run_id = ? AND fact_type = 'command_attempt_completed'
+              AND json_extract(payload_json, '$.attemptId') = ?
+            ORDER BY sequence DESC LIMIT 1`,
+        )
+        .get(request.runId, request.attemptId) as
+        { payload_json: string } | undefined;
+      const auditPayload =
+        audit === undefined
+          ? undefined
+          : (JSON.parse(audit.payload_json) as Record<string, unknown>);
+      if (
+        row.result_artifact_id !== request.outputArtifact.artifactId ||
+        row.native_usage_artifact_id !==
+          request.nativeUsageArtifact.artifactId ||
+        row.result_content_hash !== request.outputArtifact.contentHash ||
+        row.usage_content_hash !== request.nativeUsageArtifact.contentHash ||
+        row.actual_calls !== request.actualUsage.calls ||
+        row.actual_input_tokens !== request.actualUsage.inputTokens ||
+        row.actual_output_tokens !== request.actualUsage.outputTokens ||
+        row.actual_cost_usd_micros !== request.actualUsage.costUsdMicros ||
+        auditPayload === undefined ||
+        auditPayload.rawResponseArtifactId !==
+          request.rawResponseArtifact.artifactId ||
+        auditPayload.requestArtifactId !== request.requestArtifactId ||
+        auditPayload.requestContentHash !== request.requestContentHash ||
+        canonicalJson(auditPayload.providerEvidence) !==
+          canonicalJson(request.providerEvidence)
+      ) {
+        throw new TypeError("Completed provider evidence conflicts");
+      }
+      return {
+        status: "settled",
+        completion: {
+          status: "completed",
+          runId: request.runId,
+          commandId: request.commandId,
+          attemptId: request.attemptId,
+          acceptedAsLogicalResult:
+            row.accepted_attempt_id === request.attemptId,
+          stateVersion: row.state_version,
+          auditFacts: [],
+        },
+      };
+    }
+    const explicitlyExpected =
+      this.dependencies.database
+        .prepare(
+          `SELECT 1 FROM audit_entries
+            WHERE run_id = ? AND fact_type = 'command_attempt_started'
+              AND json_extract(payload_json, '$.attemptId') = ?
+              AND json_extract(payload_json, '$.attemptKind') = 'human_rerun'
+              AND json_extract(payload_json, '$.humanAuthorizationId') IS NOT NULL`,
+        )
+        .get(request.runId, request.attemptId) !== undefined;
+    if (
+      row.attempt_status === "started" &&
+      row.accepted_attempt_id === null &&
+      (row.state_version === row.triggering_state_version || explicitlyExpected)
+    ) {
+      return { status: "eligible" };
+    }
+    if (
+      row.attempt_status === "started" &&
+      (row.accepted_attempt_id !== null ||
+        row.state_version !== row.triggering_state_version)
+    ) {
+      return {
+        status: "settled",
+        completion: this.complete(request, false),
+      };
+    }
+    throw new TypeError("Provider attempt completion is not eligible");
+  }
+
+  complete(
+    request: CompleteProviderAttemptEvidence,
+    acceptLogicalResult = true,
+  ): Completion {
     const row = this.dependencies.database
       .prepare(
         `SELECT c.run_id, c.status AS command_status, c.accepted_attempt_id,
@@ -115,16 +309,30 @@ export class SqliteProviderCompletion {
           request_content_hash: string | null;
         }
       | undefined;
+    const explicitlyExpected =
+      this.dependencies.database
+        .prepare(
+          `SELECT 1 FROM audit_entries
+            WHERE run_id = ? AND fact_type = 'command_attempt_started'
+              AND json_extract(payload_json, '$.attemptId') = ?
+              AND json_extract(payload_json, '$.attemptKind') = 'human_rerun'
+              AND json_extract(payload_json, '$.humanAuthorizationId') IS NOT NULL`,
+        )
+        .get(request.runId, request.attemptId) !== undefined;
     if (
       row === undefined ||
       row.run_id !== request.runId ||
-      row.command_status !== "running" ||
-      row.accepted_attempt_id !== null ||
+      (acceptLogicalResult && row.command_status !== "running") ||
+      (acceptLogicalResult && row.accepted_attempt_id !== null) ||
       row.attempt_status !== "started" ||
       row.correlation_id !== request.correlationId ||
-      row.owner_process !== request.ownerProcess ||
-      row.lease_attempt_id !== request.attemptId ||
-      row.state_version !== row.triggering_state_version
+      (row.owner_process !== null &&
+        row.owner_process !== request.ownerProcess) ||
+      (row.lease_attempt_id !== null &&
+        row.lease_attempt_id !== request.attemptId) ||
+      (acceptLogicalResult &&
+        row.state_version !== row.triggering_state_version &&
+        !explicitlyExpected)
     ) {
       throw new TypeError("Provider attempt completion is not eligible");
     }
@@ -160,7 +368,9 @@ export class SqliteProviderCompletion {
       "native_usage",
       row.request_artifact_id,
     );
-    this.dependencies.verifyStagedArtifact(request.outputArtifact);
+    const outputBytes = this.dependencies.readStagedArtifactBytes(
+      request.outputArtifact,
+    );
     const rawResponseBytes = this.dependencies.readStagedArtifactBytes(
       request.rawResponseArtifact,
     );
@@ -185,6 +395,7 @@ export class SqliteProviderCompletion {
       request.actualUsage.costUsdMicros !== reservation.costUsdMicros ||
       !this.usageMatchesNative(request, nativeUsageBytes) ||
       !this.responseMatchesEvidence(request, rawResponseBytes) ||
+      !this.outputMatchesRawResponse(outputBytes, rawResponseBytes, command) ||
       !this.evidenceMatchesRecording(request, recordedRequestBytes)
     ) {
       throw new TypeError("Provider usage exceeds the reserved maximum");
@@ -193,23 +404,32 @@ export class SqliteProviderCompletion {
     this.dependencies.database
       .prepare(
         `UPDATE command_attempts
-            SET status = 'completed', result_artifact_id = ?,
+            SET status = ?, result_artifact_id = ?,
                 native_usage_artifact_id = ?, completed_at = ?
           WHERE attempt_id = ?`,
       )
       .run(
+        acceptLogicalResult ? "completed" : "discarded",
         request.outputArtifact.artifactId,
         request.nativeUsageArtifact.artifactId,
         completedAt,
         request.attemptId,
       );
-    this.dependencies.database
-      .prepare(
-        `UPDATE logical_commands
-            SET status = 'succeeded', accepted_attempt_id = ?
-          WHERE command_id = ?`,
-      )
-      .run(request.attemptId, request.commandId);
+    if (acceptLogicalResult) {
+      this.dependencies.database
+        .prepare(
+          `UPDATE logical_commands
+              SET status = 'succeeded', accepted_attempt_id = ?
+            WHERE command_id = ?`,
+        )
+        .run(request.attemptId, request.commandId);
+    } else if (row.accepted_attempt_id === null) {
+      this.dependencies.database
+        .prepare(
+          "UPDATE logical_commands SET status = 'cancelled' WHERE command_id = ?",
+        )
+        .run(request.commandId);
+    }
     this.reconcileUsage(request, reservation, completedAt);
     const evidence = [
       { kind: "artifact", artifactId: request.outputArtifact.artifactId },
@@ -224,7 +444,8 @@ export class SqliteProviderCompletion {
       runId: request.runId,
       commandId: request.commandId,
       attemptId: request.attemptId,
-      acceptedAsLogicalResult: true,
+      acceptedAsLogicalResult: acceptLogicalResult,
+      stateVersion: row.state_version,
       auditFacts: [
         {
           type: "command_attempt_completed",
@@ -240,6 +461,7 @@ export class SqliteProviderCompletion {
             requestContentHash: row.request_content_hash,
             nativeUsageArtifactId: request.nativeUsageArtifact.artifactId,
             providerEvidence: request.providerEvidence,
+            acceptedAsLogicalResult: acceptLogicalResult,
           },
         },
         {
@@ -255,6 +477,28 @@ export class SqliteProviderCompletion {
             costBasis: "reserved_maximum_no_pinned_price_schedule",
           },
         },
+        ...(acceptLogicalResult
+          ? []
+          : [
+              {
+                type: "result_discarded",
+                actor: {
+                  kind: "system",
+                  component: "executor",
+                  version: "0.0.0",
+                },
+                reason:
+                  "The provider result is stale or a logical result was already accepted",
+                evidence,
+                payload: {
+                  commandId: request.commandId,
+                  attemptId: request.attemptId,
+                  acceptedAttemptId: row.accepted_attempt_id,
+                  triggeringStateVersion: row.triggering_state_version,
+                  currentStateVersion: row.state_version,
+                },
+              },
+            ]),
       ],
     };
   }
@@ -300,6 +544,21 @@ export class SqliteProviderCompletion {
     } catch {
       return false;
     }
+  }
+
+  private outputMatchesRawResponse(
+    outputBytes: Uint8Array,
+    rawResponseBytes: Uint8Array,
+    command: PersistableCommand,
+  ): boolean {
+    if (command.provider !== "openai" && command.provider !== "anthropic") {
+      return false;
+    }
+    return structuredOutputMatchesRawResponse(
+      command.provider,
+      outputBytes,
+      rawResponseBytes,
+    );
   }
 
   private assertProviderArtifact(

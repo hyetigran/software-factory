@@ -15,7 +15,10 @@ import type {
   HttpTransport,
   ProviderPreflight,
 } from "../../src/infrastructure/providers/transport.js";
-import { providerEvidenceMatchesRecording } from "../../src/infrastructure/sqlite/provider-completion.js";
+import {
+  providerEvidenceMatchesRecording,
+  structuredOutputMatchesRawResponse,
+} from "../../src/infrastructure/sqlite/provider-completion.js";
 
 const inputContent = '{"requirements":["traceability"]}';
 const systemPrompt = "Produce a plan.";
@@ -96,12 +99,20 @@ describe("provider adapter contract", () => {
     });
     expect(send).not.toHaveBeenCalled();
     const result = await prepared.dispatch();
+    if (result.kind !== "completed") throw new Error("expected completion");
 
     expect(
       providerEvidenceMatchesRecording(
         result.evidence,
         baseRequest.correlationId,
         prepared.redactedRequestBytes,
+      ),
+    ).toBe(true);
+    expect(
+      structuredOutputMatchesRawResponse(
+        "openai",
+        Buffer.from(canonicalJson(result.structured)),
+        result.recording.rawResponseBytes ?? new Uint8Array(),
       ),
     ).toBe(true);
 
@@ -160,12 +171,20 @@ describe("provider adapter contract", () => {
     });
     expect(send).not.toHaveBeenCalled();
     const result = await prepared.dispatch();
+    if (result.kind !== "completed") throw new Error("expected completion");
 
     expect(
       providerEvidenceMatchesRecording(
         result.evidence,
         baseRequest.correlationId,
         prepared.redactedRequestBytes,
+      ),
+    ).toBe(true);
+    expect(
+      structuredOutputMatchesRawResponse(
+        "anthropic",
+        Buffer.from(canonicalJson(result.structured)),
+        result.recording.rawResponseBytes ?? new Uint8Array(),
       ),
     ).toBe(true);
 

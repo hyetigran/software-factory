@@ -482,6 +482,36 @@ export class SqliteAuthority
         assertActive();
         return this.loadRun<TState>(runId);
       },
+      settleProviderCompletion: (completionRequest) => {
+        assertActive();
+        if (persisted) {
+          throw new Error("Authority transaction accepts exactly one input");
+        }
+        const settlement = this.providerCompletion.settle(completionRequest);
+        if (settlement.status === "eligible") return settlement;
+        if (settlement.completion.auditFacts.length > 0) {
+          appendAuditEntries({
+            database: this.database,
+            workspaceId: this.workspaceId,
+            runId: completionRequest.runId,
+            stateVersionBefore: settlement.completion.stateVersion,
+            stateVersionAfter: settlement.completion.stateVersion,
+            correlationId: completionRequest.correlationId,
+            facts: settlement.completion.auditFacts,
+            now: this.now,
+          });
+          this.database
+            .prepare(
+              "DELETE FROM mutation_lease WHERE singleton = 1 AND attempt_id = ?",
+            )
+            .run(completionRequest.attemptId);
+        }
+        persisted = true;
+        return {
+          status: "settled" as const,
+          completion: settlement.completion,
+        };
+      },
       persistProviderCompletion: <TState extends object>(
         accepted: AcceptedProviderCompletion,
       ): PersistableTransition<TState> => {

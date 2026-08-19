@@ -3,7 +3,10 @@ import type {
   PersistableTransition,
   PersistTransitionRequest,
 } from "./authority-port.js";
-import type { CompleteProviderAttemptEvidence } from "./execution-port.js";
+import type {
+  CompleteProviderAttemptEvidence,
+  CompletedCommandAttempt,
+} from "./execution-port.js";
 import {
   transition,
   type NonterminalRunState,
@@ -160,8 +163,14 @@ function outcomeMatchesAttempt(
 export async function completeProviderAttempt(
   authority: AuthorityPort,
   request: CompleteProviderAttemptRequest,
-): Promise<PersistableTransition<NonterminalRunState>> {
+): Promise<
+  PersistableTransition<NonterminalRunState> | CompletedCommandAttempt
+> {
   return authority.transaction((transaction) => {
+    const settlement = transaction.settleProviderCompletion(request.completion);
+    if (settlement.status === "settled") {
+      return settlement.completion;
+    }
     const previousState = transaction.loadRun<NonterminalRunState>(
       request.runId,
     );
