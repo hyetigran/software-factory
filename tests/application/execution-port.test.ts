@@ -49,6 +49,8 @@ describe("execution policy and attempt boundary", () => {
       .digest("hex");
     const policy = ExecutionPolicy.fromConfiguration({
       configuration,
+      runId: "run_1",
+      configurationArtifactId: "artifact_configuration",
       expectedContentHash,
     });
     const beginAttempt = vi.fn().mockResolvedValue({
@@ -56,12 +58,18 @@ describe("execution policy and attempt boundary", () => {
       commandId: "command_1",
       attemptId: "attempt_1",
       attemptNumber: 1,
+      triggeringStateVersion: 2,
       correlationId: "correlation_1",
       reservation: {
         calls: 1,
         inputTokens: 100,
         outputTokens: 100,
         costUsdMicros: 1_000,
+      },
+      lease: {
+        ownerProcess: "pid:1",
+        acquiredAt: "2026-08-19T00:00:00.000Z",
+        heartbeatAt: "2026-08-19T00:00:00.000Z",
       },
       startedAt: "2026-08-19T00:00:00.000Z",
     });
@@ -70,21 +78,45 @@ describe("execution policy and attempt boundary", () => {
       beginEligibleCommandAttempt(
         { beginAttempt },
         {
+          runId: "run_1",
           commandId: "command_1",
           attemptId: "attempt_1",
           correlationId: "correlation_1",
           ownerProcess: "pid:1",
+          configurationArtifactId: "artifact_configuration",
           policy,
         },
       ),
     ).resolves.toMatchObject({ attemptNumber: 1 });
     expect(beginAttempt).toHaveBeenCalledOnce();
+    expect(Object.isFrozen(policy)).toBe(true);
+    expect(Object.isFrozen(policy.configuration)).toBe(true);
+    expect(Object.isFrozen(policy.configuration.hardCeilings)).toBe(true);
+    expect(() => {
+      (policy.configuration.hardCeilings as { calls: number }).calls = 99;
+    }).toThrow();
+    expect(() =>
+      beginEligibleCommandAttempt(
+        { beginAttempt },
+        {
+          runId: "run_other",
+          commandId: "command_1",
+          attemptId: "attempt_2",
+          correlationId: "correlation_2",
+          ownerProcess: "pid:1",
+          configurationArtifactId: "artifact_configuration",
+          policy,
+        },
+      ),
+    ).toThrow("identity and execution policy");
   });
 
   it("rejects a configuration hash mismatch", () => {
     expect(() =>
       ExecutionPolicy.fromConfiguration({
         configuration,
+        runId: "run_1",
+        configurationArtifactId: "artifact_configuration",
         expectedContentHash: "f".repeat(64),
       }),
     ).toThrow("hash does not match");

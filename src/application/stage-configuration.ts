@@ -1,10 +1,10 @@
 import { canonicalJson } from "../domain/canonical-json.js";
 import type { ProviderModelAssignment } from "../domain/index.js";
 import type {
+  ArtifactStagingPort,
   ArtifactRegistration,
-  ContentAddressedArtifactStore,
-  StagedArtifactDescriptor,
-} from "../infrastructure/artifacts/object-store.js";
+  StagedArtifactRegistration,
+} from "./artifact-port.js";
 
 export type CredentialReference =
   | { kind: "environment"; reference: string }
@@ -105,6 +105,7 @@ export function resolvedConfigurationIsValid(
   value: ResolvedConfigurationSnapshot,
 ): boolean {
   return (
+    hasExactKeys(value, [...allowedKeys]) &&
     value.schemaVersion === 1 &&
     /^[a-f0-9]{64}$/u.test(value.policyHash) &&
     hasExactKeys(value.plannerAssignment, ["provider", "modelId"]) &&
@@ -160,18 +161,11 @@ export function resolvedConfigurationIsValid(
 }
 
 export async function stageResolvedConfiguration(
-  store: ContentAddressedArtifactStore,
+  store: ArtifactStagingPort,
   configurationInput: ResolvedConfigurationSnapshot,
   registration: Pick<ArtifactRegistration, "artifactId" | "createdBy">,
-): Promise<StagedArtifactDescriptor> {
-  const runtimeConfiguration = configurationInput as unknown as Record<
-    string,
-    unknown
-  >;
-  if (
-    Object.keys(runtimeConfiguration).some((key) => !allowedKeys.has(key)) ||
-    !resolvedConfigurationIsValid(configurationInput)
-  ) {
+): Promise<StagedArtifactRegistration> {
+  if (!resolvedConfigurationIsValid(configurationInput)) {
     throw new TypeError(
       "Resolved configuration must be complete, valid, and secret-free",
     );

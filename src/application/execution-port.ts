@@ -15,8 +15,14 @@ export type StartedCommandAttempt = {
   commandId: string;
   attemptId: string;
   attemptNumber: number;
+  triggeringStateVersion: number;
   correlationId: string;
   reservation: BudgetReservation;
+  lease: {
+    ownerProcess: string;
+    acquiredAt: string;
+    heartbeatAt: string;
+  };
   startedAt: string;
 };
 
@@ -26,15 +32,25 @@ export class ExecutionPolicy {
   readonly [executionPolicyBrand] = true;
 
   private constructor(
+    readonly runId: string,
+    readonly configurationArtifactId: string,
     readonly configurationHash: string,
-    readonly ceilings: Readonly<ResolvedConfigurationSnapshot["hardCeilings"]>,
-  ) {}
+    readonly configuration: Readonly<ResolvedConfigurationSnapshot>,
+  ) {
+    Object.freeze(this);
+  }
 
   static fromConfiguration(input: {
     configuration: ResolvedConfigurationSnapshot;
+    runId: string;
+    configurationArtifactId: string;
     expectedContentHash: string;
   }): ExecutionPolicy {
-    if (!resolvedConfigurationIsValid(input.configuration)) {
+    if (
+      input.runId.trim().length === 0 ||
+      input.configurationArtifactId.trim().length === 0 ||
+      !resolvedConfigurationIsValid(input.configuration)
+    ) {
       throw new TypeError(
         "Execution policy requires a valid resolved configuration",
       );
@@ -46,17 +62,36 @@ export class ExecutionPolicy {
       throw new TypeError("Execution policy configuration hash does not match");
     }
     return new ExecutionPolicy(
+      input.runId,
+      input.configurationArtifactId,
       actualHash,
-      Object.freeze(structuredClone(input.configuration.hardCeilings)),
+      immutableCopy(input.configuration),
     );
+  }
+
+  get ceilings(): Readonly<ResolvedConfigurationSnapshot["hardCeilings"]> {
+    return this.configuration.hardCeilings;
   }
 }
 
+function immutableCopy<T>(value: T): Readonly<T> {
+  const copy = structuredClone(value);
+  const freeze = (nested: unknown): void => {
+    if (nested === null || typeof nested !== "object") return;
+    Object.freeze(nested);
+    Object.values(nested).forEach(freeze);
+  };
+  freeze(copy);
+  return copy;
+}
+
 export type BeginAttemptRequest = {
+  runId: string;
   commandId: string;
   attemptId: string;
   correlationId: string;
   ownerProcess: string;
+  configurationArtifactId: string;
   policy: ExecutionPolicy;
 };
 
@@ -70,6 +105,9 @@ export function beginEligibleCommandAttempt(
 ): Promise<StartedCommandAttempt> {
   if (
     request.commandId.trim().length === 0 ||
+    request.runId !== request.policy.runId ||
+    request.configurationArtifactId !==
+      request.policy.configurationArtifactId ||
     request.attemptId.trim().length === 0 ||
     request.correlationId.trim().length === 0 ||
     request.ownerProcess.trim().length === 0 ||
