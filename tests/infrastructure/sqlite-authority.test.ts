@@ -532,6 +532,108 @@ describe("SQLite authority", () => {
         artifact: repairRequestArtifact,
       }),
     ).resolves.toBe("claimed");
+
+    const completionArtifact = async (
+      artifactId: string,
+      bytes: Buffer,
+      kind: "provider_response" | "native_usage",
+    ) =>
+      store.stageArtifact(bytes, {
+        artifactId,
+        kind,
+        mediaType: "application/json",
+        createdBy: "pid:provider",
+        provenance: {
+          method: "provider_generated",
+          sourceArtifactIds: [repairRequestArtifact.artifactId],
+          commandId: repairAttempt.commandId,
+          attemptId: repairAttempt.attemptId,
+        },
+      });
+    const outputArtifact = await completionArtifact(
+      "artifact_repaired_plan",
+      Buffer.from('{"plan":"valid"}'),
+      "provider_response",
+    );
+    const rawResponseArtifact = await completionArtifact(
+      "artifact_repair_raw_response",
+      Buffer.from('{"id":"response_repair","model":"planner"}'),
+      "provider_response",
+    );
+    const nativeUsageArtifact = await completionArtifact(
+      "artifact_repair_usage",
+      Buffer.from('{"input_tokens":10,"output_tokens":20}'),
+      "native_usage",
+    );
+    await authority.transaction((transaction) => {
+      const current = transaction.loadRun<TestState>("run_provider_request");
+      if (current === null) throw new Error("run must exist");
+      const result: PersistableTransition<TestState> = {
+        nextState: { ...current, stateVersion: 2 },
+        commands: [],
+        auditFacts: [
+          {
+            type: "provider_output_accepted",
+            actor: { kind: "planner", provider: "openai", modelId: "planner" },
+            evidence: [],
+            payload: { commandId: repairAttempt.commandId },
+          },
+        ],
+      };
+      return transaction.persistProviderCompletion(
+        {
+          runId: "run_provider_request",
+          commandId: repairAttempt.commandId,
+          attemptId: repairAttempt.attemptId,
+          ownerProcess: "pid:provider",
+          correlationId: repairAttempt.correlationId,
+          requestArtifactId: repairRequestArtifact.artifactId,
+          requestContentHash: repairRequestArtifact.contentHash,
+          outputArtifact,
+          rawResponseArtifact,
+          nativeUsageArtifact,
+          actualUsage: {
+            calls: 1,
+            inputTokens: 10,
+            outputTokens: 20,
+            costUsdMicros: 50,
+          },
+          providerEvidence: {
+            requestedModel: "planner",
+            returnedModel: "planner",
+            endpoint: "https://provider.invalid",
+            behaviorHeaders: {},
+            providerResponseId: "response_repair",
+            correlationId: repairAttempt.correlationId,
+            preflight: {
+              canonicalModelId: "planner",
+              structuredOutput: true,
+              contextWindowTokens: 100_000,
+              maxOutputTokens: 100,
+              inputTokens: 10,
+            },
+          },
+        },
+        {
+          runId: "run_provider_request",
+          expectedStateVersion: 1,
+        },
+        result,
+      );
+    });
+    expect(
+      authority.loadRun<TestState>("run_provider_request")?.stateVersion,
+    ).toBe(2);
+    expect(
+      authority
+        .listAuditEntries()
+        .map(({ factType }) => factType)
+        .slice(-3),
+    ).toEqual([
+      "command_attempt_completed",
+      "budget_reconciled",
+      "provider_output_accepted",
+    ]);
   });
 
   it("atomically reserves budget, acquires the lease, and starts one attempt", async () => {

@@ -3,36 +3,48 @@ import type {
   PersistableTransition,
   PersistTransitionRequest,
 } from "./authority-port.js";
-import type { CompleteAttemptRequest } from "./execution-port.js";
+import type { CompleteProviderAttemptEvidence } from "./execution-port.js";
 import {
   transition,
-  type HaltedRunState,
   type NonterminalRunState,
   type PlanGenerated,
   type PinnedRunPolicy,
-  type ProviderOutcomeFailed,
   type ReviewAccepted,
 } from "../domain/index.js";
 
-type ProviderOutcomeInput =
-  PlanGenerated | ReviewAccepted | ProviderOutcomeFailed;
+type ProviderOutcomeInput = PlanGenerated | ReviewAccepted;
 
 export type CompleteProviderAttemptRequest = PersistTransitionRequest & {
-  completion: CompleteAttemptRequest;
+  completion: CompleteProviderAttemptEvidence;
   input: ProviderOutcomeInput;
   policy: PinnedRunPolicy;
 };
 
 function outcomeMatchesAttempt(
   input: ProviderOutcomeInput,
-  completion: CompleteAttemptRequest,
+  completion: CompleteProviderAttemptEvidence,
 ): boolean {
   if (input.runId !== completion.runId) return false;
   if (input.type === "PlanGenerated") {
     return (
       input.originatingCommandId === completion.commandId &&
-      input.planArtifact.artifactId === completion.resultArtifact.artifactId &&
-      input.planArtifact.contentHash === completion.resultArtifact.contentHash
+      input.planArtifact.artifactId === completion.outputArtifact.artifactId &&
+      input.planArtifact.contentHash ===
+        completion.outputArtifact.contentHash &&
+      input.acceptedAttempt.commandId === completion.commandId &&
+      input.acceptedAttempt.attemptId === completion.attemptId &&
+      input.acceptedAttempt.requestArtifactId ===
+        completion.requestArtifactId &&
+      input.acceptedAttempt.requestContentHash ===
+        completion.requestContentHash &&
+      input.acceptedAttempt.responseArtifactId ===
+        completion.rawResponseArtifact.artifactId &&
+      input.acceptedAttempt.responseContentHash ===
+        completion.rawResponseArtifact.contentHash &&
+      input.acceptedAttempt.nativeUsageArtifactId ===
+        completion.nativeUsageArtifact.artifactId &&
+      input.acceptedAttempt.nativeUsageContentHash ===
+        completion.nativeUsageArtifact.contentHash
     );
   }
   if (input.type === "ReviewAccepted") {
@@ -40,23 +52,27 @@ function outcomeMatchesAttempt(
       input.originatingCommandId === completion.commandId &&
       input.acceptedAttempt.commandId === completion.commandId &&
       input.acceptedAttempt.attemptId === completion.attemptId &&
+      input.acceptedAttempt.requestArtifactId ===
+        completion.requestArtifactId &&
+      input.acceptedAttempt.requestContentHash ===
+        completion.requestContentHash &&
       input.acceptedAttempt.responseArtifactId ===
-        completion.resultArtifact.artifactId &&
+        completion.outputArtifact.artifactId &&
       input.acceptedAttempt.responseContentHash ===
-        completion.resultArtifact.contentHash &&
+        completion.outputArtifact.contentHash &&
       input.acceptedAttempt.nativeUsageArtifactId ===
         completion.nativeUsageArtifact.artifactId &&
       input.acceptedAttempt.nativeUsageContentHash ===
         completion.nativeUsageArtifact.contentHash
     );
   }
-  return input.failedCommandId === completion.commandId;
+  return false;
 }
 
 export async function completeProviderAttempt(
   authority: AuthorityPort,
   request: CompleteProviderAttemptRequest,
-): Promise<PersistableTransition<NonterminalRunState | HaltedRunState>> {
+): Promise<PersistableTransition<NonterminalRunState>> {
   if (!outcomeMatchesAttempt(request.input, request.completion)) {
     throw new TypeError("Provider outcome does not match its physical attempt");
   }
@@ -64,21 +80,9 @@ export async function completeProviderAttempt(
     const previousState = transaction.loadRun<NonterminalRunState>(
       request.runId,
     );
-    const completion = transaction.completeProviderAttempt(request.completion);
-    if (!completion.acceptedAsLogicalResult) {
-      throw new TypeError(
-        "A discarded provider result cannot drive a domain transition",
-      );
-    }
-    const result =
-      request.input.type === "ProviderOutcomeFailed"
-        ? transition(previousState, request.input, request.policy)
-        : transition(previousState, request.input, request.policy);
-    const combined = {
-      ...result,
-      auditFacts: [...completion.auditFacts, ...result.auditFacts],
-    };
-    transaction.persist<NonterminalRunState | HaltedRunState>(
+    const result = transition(previousState, request.input, request.policy);
+    return transaction.persistProviderCompletion<NonterminalRunState>(
+      request.completion,
       {
         runId: request.runId,
         expectedStateVersion: request.expectedStateVersion,
@@ -91,14 +95,11 @@ export async function completeProviderAttempt(
         ...(request.validatedProjection === undefined
           ? {}
           : { validatedProjection: request.validatedProjection }),
-        stagedArtifacts: [
-          ...(request.stagedArtifacts ?? []),
-          request.completion.resultArtifact,
-          request.completion.nativeUsageArtifact,
-        ],
+        ...(request.stagedArtifacts === undefined
+          ? {}
+          : { stagedArtifacts: request.stagedArtifacts }),
       },
-      combined,
+      result,
     );
-    return combined;
   });
 }

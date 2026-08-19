@@ -6,7 +6,7 @@ import type {
 } from "../../application/authority-port.js";
 import { commandIsValid } from "../../application/command-validation.js";
 import type {
-  CompleteAttemptRequest,
+  CompleteProviderAttemptEvidence,
   CompletedCommandAttempt,
 } from "../../application/execution-port.js";
 import type { StagedArtifactRegistration } from "../../application/artifact-port.js";
@@ -16,6 +16,7 @@ type Dependencies = {
   database: DatabaseSync;
   now: () => string;
   verifyStagedArtifact(artifact: StagedArtifactRegistration): void;
+  readStagedArtifactBytes(artifact: StagedArtifactRegistration): Uint8Array;
   persistArtifactMetadata(artifact: StagedArtifactRegistration): void;
 };
 
@@ -26,18 +27,23 @@ type Completion = CompletedCommandAttempt & {
 export class SqliteProviderCompletion {
   constructor(private readonly dependencies: Dependencies) {}
 
-  complete(request: CompleteAttemptRequest): Completion {
+  complete(request: CompleteProviderAttemptEvidence): Completion {
     const row = this.dependencies.database
       .prepare(
         `SELECT c.run_id, c.status AS command_status, c.accepted_attempt_id,
                 c.triggering_state_version, c.specification_json,
                 a.status AS attempt_status, a.correlation_id,
                 l.owner_process, l.attempt_id AS lease_attempt_id,
-                r.state_version
+                r.state_version,
+                pr.artifact_id AS request_artifact_id,
+                pr.content_hash AS request_content_hash
            FROM logical_commands c
            JOIN command_attempts a ON a.command_id = c.command_id
            JOIN runs r ON r.run_id = c.run_id
            LEFT JOIN mutation_lease l ON l.singleton = 1
+           LEFT JOIN artifacts pr
+             ON json_extract(pr.metadata_json, '$.provenance.attemptId') = a.attempt_id
+            AND pr.kind = 'provider_request'
           WHERE c.command_id = ? AND a.attempt_id = ?`,
       )
       .get(request.commandId, request.attemptId) as
@@ -52,6 +58,8 @@ export class SqliteProviderCompletion {
           owner_process: string | null;
           lease_attempt_id: string | null;
           state_version: number;
+          request_artifact_id: string | null;
+          request_content_hash: string | null;
         }
       | undefined;
     if (
@@ -77,19 +85,57 @@ export class SqliteProviderCompletion {
         "Provider command envelope is invalid during completion",
       );
     }
-    this.assertArtifact(request.resultArtifact, request, "provider_response");
-    this.assertArtifact(request.nativeUsageArtifact, request, "native_usage");
-    this.dependencies.verifyStagedArtifact(request.resultArtifact);
+    if (
+      row.request_artifact_id === null ||
+      row.request_content_hash === null ||
+      request.requestArtifactId !== row.request_artifact_id ||
+      request.requestContentHash !== row.request_content_hash ||
+      !this.providerEvidenceIsValid(request, command)
+    ) {
+      throw new TypeError("Provider completion evidence is invalid");
+    }
+    this.assertArtifact(
+      request.outputArtifact,
+      request,
+      "provider_response",
+      row.request_artifact_id,
+    );
+    this.assertArtifact(
+      request.rawResponseArtifact,
+      request,
+      "provider_response",
+      row.request_artifact_id,
+    );
+    this.assertArtifact(
+      request.nativeUsageArtifact,
+      request,
+      "native_usage",
+      row.request_artifact_id,
+    );
+    this.dependencies.verifyStagedArtifact(request.outputArtifact);
+    this.dependencies.verifyStagedArtifact(request.rawResponseArtifact);
     this.dependencies.verifyStagedArtifact(request.nativeUsageArtifact);
-    this.dependencies.persistArtifactMetadata(request.resultArtifact);
+    const rawResponseBytes = this.dependencies.readStagedArtifactBytes(
+      request.rawResponseArtifact,
+    );
+    const nativeUsageBytes = this.dependencies.readStagedArtifactBytes(
+      request.nativeUsageArtifact,
+    );
+    this.dependencies.persistArtifactMetadata(request.outputArtifact);
+    this.dependencies.persistArtifactMetadata(request.rawResponseArtifact);
     this.dependencies.persistArtifactMetadata(request.nativeUsageArtifact);
     const reservation = this.loadReservation(request.attemptId);
     if (
+      !Object.values(request.actualUsage).every(
+        (value) => Number.isInteger(value) && value >= 0,
+      ) ||
       request.actualUsage.calls !== 1 ||
       request.actualUsage.calls > reservation.calls ||
       request.actualUsage.inputTokens > reservation.inputTokens ||
       request.actualUsage.outputTokens > reservation.outputTokens ||
-      request.actualUsage.costUsdMicros > reservation.costUsdMicros
+      request.actualUsage.costUsdMicros > reservation.costUsdMicros ||
+      !this.usageMatchesNative(request, nativeUsageBytes) ||
+      !this.responseMatchesEvidence(request, rawResponseBytes)
     ) {
       throw new TypeError("Provider usage exceeds the reserved maximum");
     }
@@ -102,7 +148,7 @@ export class SqliteProviderCompletion {
           WHERE attempt_id = ?`,
       )
       .run(
-        request.resultArtifact.artifactId,
+        request.outputArtifact.artifactId,
         request.nativeUsageArtifact.artifactId,
         completedAt,
         request.attemptId,
@@ -115,11 +161,9 @@ export class SqliteProviderCompletion {
       )
       .run(request.attemptId, request.commandId);
     this.reconcileUsage(request, reservation, completedAt);
-    this.dependencies.database
-      .prepare("DELETE FROM mutation_lease WHERE singleton = 1")
-      .run();
     const evidence = [
-      { kind: "artifact", artifactId: request.resultArtifact.artifactId },
+      { kind: "artifact", artifactId: request.outputArtifact.artifactId },
+      { kind: "artifact", artifactId: request.rawResponseArtifact.artifactId },
       {
         kind: "artifact",
         artifactId: request.nativeUsageArtifact.artifactId,
@@ -140,7 +184,10 @@ export class SqliteProviderCompletion {
           payload: {
             commandId: request.commandId,
             attemptId: request.attemptId,
-            resultArtifactId: request.resultArtifact.artifactId,
+            resultArtifactId: request.outputArtifact.artifactId,
+            rawResponseArtifactId: request.rawResponseArtifact.artifactId,
+            requestArtifactId: row.request_artifact_id,
+            requestContentHash: row.request_content_hash,
             nativeUsageArtifactId: request.nativeUsageArtifact.artifactId,
             providerEvidence: request.providerEvidence,
           },
@@ -161,20 +208,89 @@ export class SqliteProviderCompletion {
     };
   }
 
+  private usageMatchesNative(
+    request: CompleteProviderAttemptEvidence,
+    bytes: Uint8Array,
+  ): boolean {
+    try {
+      const usage = JSON.parse(Buffer.from(bytes).toString("utf8")) as Record<
+        string,
+        unknown
+      >;
+      return (
+        usage !== null &&
+        typeof usage === "object" &&
+        !Array.isArray(usage) &&
+        usage.input_tokens === request.actualUsage.inputTokens &&
+        usage.output_tokens === request.actualUsage.outputTokens
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private responseMatchesEvidence(
+    request: CompleteProviderAttemptEvidence,
+    bytes: Uint8Array,
+  ): boolean {
+    try {
+      const response = JSON.parse(
+        Buffer.from(bytes).toString("utf8"),
+      ) as Record<string, unknown>;
+      return (
+        response !== null &&
+        typeof response === "object" &&
+        !Array.isArray(response) &&
+        response.id === request.providerEvidence.providerResponseId &&
+        response.model === request.providerEvidence.returnedModel
+      );
+    } catch {
+      return false;
+    }
+  }
+
   private assertArtifact(
     artifact: StagedArtifactRegistration,
-    request: CompleteAttemptRequest,
+    request: CompleteProviderAttemptEvidence,
     kind: "provider_response" | "native_usage",
+    requestArtifactId: string,
   ): void {
     if (
       artifact.kind !== kind ||
       artifact.createdBy !== request.ownerProcess ||
       artifact.provenance.method !== "provider_generated" ||
       artifact.provenance.commandId !== request.commandId ||
-      artifact.provenance.attemptId !== request.attemptId
+      artifact.provenance.attemptId !== request.attemptId ||
+      artifact.provenance.sourceArtifactIds.length !== 1 ||
+      artifact.provenance.sourceArtifactIds[0] !== requestArtifactId
     ) {
       throw new TypeError("Provider completion artifact provenance is invalid");
     }
+  }
+
+  private providerEvidenceIsValid(
+    request: CompleteProviderAttemptEvidence,
+    command: PersistableCommand,
+  ): boolean {
+    const evidence = request.providerEvidence;
+    const preflight = evidence.preflight;
+    return (
+      evidence.requestedModel === command.modelId &&
+      evidence.returnedModel === command.modelId &&
+      evidence.correlationId === request.correlationId &&
+      evidence.endpoint.trim().length > 0 &&
+      (evidence.providerResponseId?.trim().length ?? 0) > 0 &&
+      preflight.structuredOutput === true &&
+      preflight.canonicalModelId === command.modelId &&
+      [
+        preflight.contextWindowTokens,
+        preflight.maxOutputTokens,
+        preflight.inputTokens,
+      ].every((value) => Number.isInteger(value) && value >= 0) &&
+      Object.values(evidence.behaviorHeaders).every(
+        (value) => typeof value === "string",
+      )
+    );
   }
 
   private loadReservation(attemptId: string) {
@@ -203,7 +319,7 @@ export class SqliteProviderCompletion {
   }
 
   private reconcileUsage(
-    request: CompleteAttemptRequest,
+    request: CompleteProviderAttemptEvidence,
     reservation: ReturnType<SqliteProviderCompletion["loadReservation"]>,
     createdAt: string,
   ): void {

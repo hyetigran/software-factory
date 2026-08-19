@@ -10,6 +10,7 @@ import {
   artifactRegistrationIsValid,
   type StagedArtifactRegistration,
 } from "./artifact-port.js";
+import type { ProviderEvidence } from "./provider-port.js";
 
 export type AttemptStatus =
   "started" | "completed" | "failed" | "unknown" | "discarded";
@@ -247,6 +248,17 @@ export type CompleteAttemptRequest = {
   nativeUsageArtifact: StagedArtifactRegistration;
   actualUsage: BudgetReservation;
   providerEvidence: Readonly<Record<string, string | null>>;
+};
+
+export type CompleteProviderAttemptEvidence = Omit<
+  CompleteAttemptRequest,
+  "resultArtifact" | "providerEvidence"
+> & {
+  requestArtifactId: string;
+  requestContentHash: string;
+  outputArtifact: StagedArtifactRegistration;
+  rawResponseArtifact: StagedArtifactRegistration;
+  providerEvidence: ProviderEvidence;
 };
 
 export type CompletedCommandAttempt = {

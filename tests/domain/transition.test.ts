@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+import type { AuthorityPort } from "../../src/application/authority-port.js";
+import { completeProviderAttempt } from "../../src/application/complete-provider-attempt.js";
 
 import {
   transition,
@@ -286,6 +289,17 @@ function planGeneratedInput(): PlanGenerated {
     expectedStateVersion: 5,
     planPurposeId: "purpose_plan_01JTEST",
     originatingCommandId: "command_generate_plan_01JTEST",
+    acceptedAttempt: {
+      validator: "accepted-provider-attempt-v1",
+      commandId: "command_generate_plan_01JTEST",
+      attemptId: "attempt_generate_plan_01JTEST",
+      requestArtifactId: "artifact_plan_request_01JTEST",
+      requestContentHash: "b".repeat(64),
+      responseArtifactId: "artifact_plan_raw_response_01JTEST",
+      responseContentHash: "c".repeat(64),
+      nativeUsageArtifactId: "artifact_plan_usage_01JTEST",
+      nativeUsageContentHash: "d".repeat(64),
+    },
     planVersionId: "plan_version_01JTEST",
     planArtifact: {
       artifactId: "artifact_plan_01JTEST",
@@ -3434,5 +3448,96 @@ describe("transition", () => {
         correlationId: input.correlationId,
       },
     });
+  });
+
+  it("couples accepted planner evidence to its domain transition", async () => {
+    const input = planGeneratedInput();
+    const state = planningState();
+    let persistedProviderCompletion = false;
+    const authority: AuthorityPort = {
+      transaction: (work) =>
+        Promise.resolve(
+          work({
+            loadRun: <TState extends object>() => state as unknown as TState,
+            persist: vi.fn(),
+            persistProviderCompletion: (_completion, _request, result) => {
+              persistedProviderCompletion = true;
+              return result;
+            },
+          }),
+        ),
+    };
+    const artifact = (
+      artifactId: string,
+      contentHash: string,
+      kind: "provider_response" | "native_usage",
+    ) => ({
+      schemaVersion: 1 as const,
+      artifactId,
+      kind,
+      contentHash,
+      byteLength: 10,
+      mediaType: "application/json",
+      createdBy: "pid:planner",
+      provenance: {
+        method: "provider_generated" as const,
+        sourceArtifactIds: [input.acceptedAttempt.requestArtifactId],
+        commandId: input.originatingCommandId,
+        attemptId: input.acceptedAttempt.attemptId,
+      },
+    });
+    const result = await completeProviderAttempt(authority, {
+      runId: input.runId,
+      expectedStateVersion: input.expectedStateVersion,
+      input,
+      policy: pinnedPolicy,
+      completion: {
+        runId: input.runId,
+        commandId: input.originatingCommandId,
+        attemptId: input.acceptedAttempt.attemptId,
+        ownerProcess: "pid:planner",
+        correlationId: "correlation_plan_01JTEST",
+        requestArtifactId: input.acceptedAttempt.requestArtifactId,
+        requestContentHash: input.acceptedAttempt.requestContentHash,
+        outputArtifact: artifact(
+          input.planArtifact.artifactId,
+          input.planArtifact.contentHash,
+          "provider_response",
+        ),
+        rawResponseArtifact: artifact(
+          input.acceptedAttempt.responseArtifactId,
+          input.acceptedAttempt.responseContentHash,
+          "provider_response",
+        ),
+        nativeUsageArtifact: artifact(
+          input.acceptedAttempt.nativeUsageArtifactId,
+          input.acceptedAttempt.nativeUsageContentHash,
+          "native_usage",
+        ),
+        actualUsage: {
+          calls: 1,
+          inputTokens: 10,
+          outputTokens: 20,
+          costUsdMicros: 100,
+        },
+        providerEvidence: {
+          requestedModel: pinnedPolicy.plannerAssignment.modelId,
+          returnedModel: pinnedPolicy.plannerAssignment.modelId,
+          endpoint: "https://provider.invalid",
+          behaviorHeaders: {},
+          providerResponseId: "response_1",
+          correlationId: "correlation_plan_01JTEST",
+          preflight: {
+            canonicalModelId: pinnedPolicy.plannerAssignment.modelId,
+            structuredOutput: true,
+            contextWindowTokens: 100_000,
+            maxOutputTokens: 10_000,
+            inputTokens: 1_000,
+          },
+        },
+      },
+    });
+    expect(result.nextState.state).toBe("baseline_review");
+    expect(persistedProviderCompletion).toBe(true);
   });
 });

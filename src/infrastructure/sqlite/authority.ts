@@ -28,6 +28,7 @@ import type {
   BeginAttemptOutcome,
   CommandExecutionPort,
   CompleteAttemptRequest,
+  CompleteProviderAttemptEvidence,
   CompletedCommandAttempt,
   StartedCommandAttempt,
 } from "../../application/execution-port.js";
@@ -156,6 +157,15 @@ export class SqliteAuthority
       database,
       now,
       verifyStagedArtifact: (artifact) => this.verifyStagedArtifact(artifact),
+      readStagedArtifactBytes: (artifact) => {
+        this.verifyStagedArtifact(artifact);
+        if (this.artifactStore === undefined) {
+          throw new AuthorityIntegrityError("Artifact store is unavailable");
+        }
+        return readFileSync(
+          join(this.artifactStore.workspace.objects, artifact.contentHash),
+        );
+      },
       persistArtifactMetadata: (artifact) =>
         this.persistArtifactMetadata(artifact),
     });
@@ -470,7 +480,6 @@ export class SqliteAuthority
     this.database.exec("BEGIN IMMEDIATE");
     let active = true;
     let persisted = false;
-    let providerAttemptCompleted = false;
     const assertActive = (): void => {
       if (!active) throw new Error("Authority transaction is no longer active");
     };
@@ -479,16 +488,38 @@ export class SqliteAuthority
         assertActive();
         return this.loadRun<TState>(runId);
       },
-      completeProviderAttempt: (request) => {
+      persistProviderCompletion: <TState extends object>(
+        completionRequest: CompleteProviderAttemptEvidence,
+        persistRequest: PersistTransitionRequest,
+        transitionResult: PersistableTransition<TState>,
+      ): PersistableTransition<TState> => {
         assertActive();
-        if (providerAttemptCompleted || persisted) {
-          throw new Error(
-            "Authority transaction accepts one provider completion before persistence",
-          );
+        if (persisted) {
+          throw new Error("Authority transaction accepts exactly one input");
         }
-        const completion = this.providerCompletion.complete(request);
-        providerAttemptCompleted = true;
-        return completion;
+        const completion = this.providerCompletion.complete(completionRequest);
+        const combined = {
+          ...transitionResult,
+          auditFacts: [
+            ...completion.auditFacts,
+            ...transitionResult.auditFacts,
+          ],
+        };
+        const stagedArtifacts = [
+          ...(persistRequest.stagedArtifacts ?? []),
+          completionRequest.outputArtifact,
+          completionRequest.rawResponseArtifact,
+          completionRequest.nativeUsageArtifact,
+        ];
+        this.persistAcceptedTransition(
+          { ...persistRequest, stagedArtifacts },
+          combined,
+        );
+        this.database
+          .prepare("DELETE FROM mutation_lease WHERE singleton = 1")
+          .run();
+        persisted = true;
+        return combined;
       },
       persist: <TState extends object>(
         request: PersistTransitionRequest,

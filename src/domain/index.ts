@@ -366,6 +366,7 @@ export type PlanGenerated = {
   expectedStateVersion: number;
   planPurposeId: string;
   originatingCommandId: string;
+  acceptedAttempt: AcceptedAttemptResolution;
   planVersionId: string;
   planArtifact: VerifiedArtifactInput;
   outputValid: boolean;
@@ -2414,6 +2415,17 @@ function acceptPlanForBaseline(
     sectionTransitionValidation.classificationsComplete &&
     sectionTransitionValidation.existingSectionIdsPreserved &&
     sectionTransitionValidation.onlyDeclaredNewSectionsAssignedIds;
+  const plannerAttemptValid =
+    input.type === "PlanSubmitted" ||
+    (input.acceptedAttempt.validator === "accepted-provider-attempt-v1" &&
+      input.acceptedAttempt.commandId === input.originatingCommandId &&
+      input.acceptedAttempt.attemptId.length > 0 &&
+      input.acceptedAttempt.requestArtifactId.length > 0 &&
+      /^[a-f0-9]{64}$/u.test(input.acceptedAttempt.requestContentHash) &&
+      input.acceptedAttempt.responseArtifactId.length > 0 &&
+      /^[a-f0-9]{64}$/u.test(input.acceptedAttempt.responseContentHash) &&
+      input.acceptedAttempt.nativeUsageArtifactId.length > 0 &&
+      /^[a-f0-9]{64}$/u.test(input.acceptedAttempt.nativeUsageContentHash));
 
   if (
     input.expectedStateVersion !== previousState.stateVersion ||
@@ -2428,6 +2440,7 @@ function acceptPlanForBaseline(
       ? input.outputValid
       : input.canonicalSchemaValid) ||
     !sectionTransitionValid ||
+    !plannerAttemptValid ||
     !input.reviewerModelAllowed ||
     !input.reviewerModelIdentityPinned ||
     !input.reviewerAssignmentAuthorized ||
