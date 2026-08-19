@@ -34,43 +34,6 @@ function parseCommand(value: string): PersistableCommand {
   return parsed as PersistableCommand;
 }
 
-function expectedRole(commandType: string): ProviderRequest["role"] | null {
-  if (["generate_plan", "generate_remediation"].includes(commandType)) {
-    return "planner";
-  }
-  if (
-    ["baseline_review", "closure_review", "verify_remediation"].includes(
-      commandType,
-    )
-  ) {
-    return "reviewer";
-  }
-  return commandType === "repair_schema" ? "schema_repair" : null;
-}
-
-function controlledArtifactIds(command: PersistableCommand): {
-  promptId?: string;
-  schemaId?: string;
-} {
-  const payload = command.payload as Record<string, unknown>;
-  if (command.commandType === "generate_plan") {
-    return {
-      promptId: String(payload.promptArtifactId),
-      schemaId: String(payload.outputSchemaArtifactId),
-    };
-  }
-  if (["baseline_review", "closure_review"].includes(command.commandType)) {
-    return {
-      promptId: String(payload.reviewerPromptArtifactId),
-      schemaId: String(payload.reviewSchemaArtifactId),
-    };
-  }
-  if (command.commandType === "repair_schema") {
-    return { schemaId: String(payload.schemaArtifactId) };
-  }
-  return {};
-}
-
 export class SqlitePreparedRequestRegistration {
   constructor(private readonly dependencies: Dependencies) {}
 
@@ -121,16 +84,12 @@ export class SqlitePreparedRequestRegistration {
           }
         | undefined;
       const command = row && parseCommand(row.specification_json);
-      const role =
-        row?.attempt_kind === "schema_repair"
-          ? "schema_repair"
-          : command && expectedRole(command.commandType);
-      const payload = command?.payload as Record<string, unknown> | undefined;
+      const requestPolicy = command?.providerRequestPolicy;
       if (
         row === undefined ||
         command === undefined ||
         !commandIsValid(command) ||
-        role === null ||
+        requestPolicy === undefined ||
         row.run_id !== input.attempt.runId ||
         row.command_key !== input.providerRequest.logicalCommandKey ||
         row.attempt_status !== "started" ||
@@ -141,18 +100,20 @@ export class SqlitePreparedRequestRegistration {
         row.owner_process !== input.attempt.lease.ownerProcess ||
         command.provider !== input.providerRequest.provider ||
         command.modelId !== input.providerRequest.modelId ||
-        role !== input.providerRequest.role ||
-        input.providerRequest.maxOutputTokens >
-          command.budgetReservation.outputTokens ||
-        (typeof payload?.providerStorage === "string" &&
-          payload.providerStorage !== input.providerRequest.providerStorage)
+        row.attempt_kind === "schema_repair" ||
+        requestPolicy.role !== input.providerRequest.role ||
+        requestPolicy.maxOutputTokens !==
+          input.providerRequest.maxOutputTokens ||
+        requestPolicy.timeoutMs !== input.providerRequest.timeoutMs ||
+        requestPolicy.reasoning !== (input.providerRequest.reasoning ?? null) ||
+        requestPolicy.providerStorage !== input.providerRequest.providerStorage
       ) {
         throw new TypeError(
           "Provider request is not bound to the active command attempt",
         );
       }
       this.assertArtifactIdentity(input, row.owner_process);
-      this.assertInputs(input.providerRequest, command);
+      this.assertInputs(input.providerRequest, command, requestPolicy);
       const existing = database
         .prepare(
           `SELECT artifact_id FROM artifacts
@@ -216,18 +177,18 @@ export class SqlitePreparedRequestRegistration {
   private assertInputs(
     request: ProviderRequest,
     command: PersistableCommand,
+    policy: NonNullable<PersistableCommand["providerRequestPolicy"]>,
   ): void {
-    const controlled = controlledArtifactIds(command);
     if (
       createHash("sha256").update(request.systemPrompt).digest("hex") !==
         request.systemPromptContentHash ||
       createHash("sha256")
         .update(canonicalJson(request.outputSchema))
         .digest("hex") !== request.outputSchemaContentHash ||
-      (controlled.promptId !== undefined &&
-        controlled.promptId !== request.systemPromptArtifactId) ||
-      (controlled.schemaId !== undefined &&
-        controlled.schemaId !== request.outputSchemaArtifactId)
+      policy.promptArtifactId !== request.systemPromptArtifactId ||
+      policy.promptContentHash !== request.systemPromptContentHash ||
+      policy.outputSchemaArtifactId !== request.outputSchemaArtifactId ||
+      policy.outputSchemaContentHash !== request.outputSchemaContentHash
     ) {
       throw new TypeError("Provider controlled artifacts do not match command");
     }

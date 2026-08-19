@@ -332,6 +332,9 @@ export type PlanningRequested = {
   outputSchemaArtifactId: string;
   outputSchemaContentHash: string;
   outputSchemaArtifactVerified: boolean;
+  requestTimeoutMs: number;
+  requestReasoning: string | null;
+  requestPolicyResolved: boolean;
   budgetReservation: BudgetReservation;
   availableBudget: BudgetReservation;
   auditChainVerified: boolean;
@@ -378,6 +381,9 @@ export type PlanGenerated = {
   reviewSchemaArtifact: VerifiedArtifactInput;
   taxonomyArtifact: VerifiedArtifactInput;
   componentRegistryArtifact: VerifiedArtifactInput;
+  reviewTimeoutMs: number;
+  reviewReasoning: string | null;
+  reviewRequestPolicyResolved: boolean;
   reviewBudgetMaximum: BudgetReservation;
   availableBudget: BudgetReservation;
   auditChainVerified: boolean;
@@ -408,6 +414,9 @@ export type PlanSubmitted = {
   reviewSchemaArtifact: VerifiedArtifactInput;
   taxonomyArtifact: VerifiedArtifactInput;
   componentRegistryArtifact: VerifiedArtifactInput;
+  reviewTimeoutMs: number;
+  reviewReasoning: string | null;
+  reviewRequestPolicyResolved: boolean;
   reviewBudgetMaximum: BudgetReservation;
   availableBudget: BudgetReservation;
   auditChainVerified: boolean;
@@ -524,6 +533,9 @@ export type ReviewAccepted = {
   reconciliation: FindingReconciliationValidation;
   nextCommandId: string;
   nextCommandBudgetMaximum: BudgetReservation;
+  nextCommandTimeoutMs: number;
+  nextCommandReasoning: string | null;
+  nextCommandRequestPolicyResolved: boolean;
   availableBudget: BudgetReservation;
   auditChainVerified: boolean;
   databaseIntegrityVerified: boolean;
@@ -593,6 +605,18 @@ export type BudgetReservation = {
   inputTokens: number;
   outputTokens: number;
   costUsdMicros: number;
+};
+
+export type ProviderRequestPolicy = {
+  role: "planner" | "reviewer";
+  promptArtifactId: string;
+  promptContentHash: string;
+  outputSchemaArtifactId: string;
+  outputSchemaContentHash: string;
+  maxOutputTokens: number;
+  timeoutMs: number;
+  reasoning: string | null;
+  providerStorage: "minimize";
 };
 
 export type RenderSourceRegistrationReport = {
@@ -687,6 +711,7 @@ export type GeneratePlan = {
   provider: ProviderModelAssignment["provider"];
   modelId: string;
   budgetReservation: BudgetReservation;
+  providerRequestPolicy: ProviderRequestPolicy;
   payload: {
     ledgerVersionId: string;
     ledgerArtifactId: string;
@@ -728,6 +753,7 @@ export type BaselineReview = {
   provider: ProviderModelAssignment["provider"];
   modelId: string;
   budgetReservation: BudgetReservation;
+  providerRequestPolicy: ProviderRequestPolicy;
   payload: {
     ledgerVersionId: string;
     ledgerArtifactId: string;
@@ -758,11 +784,14 @@ export type GenerateRemediation = {
   provider: ProviderModelAssignment["provider"];
   modelId: string;
   budgetReservation: BudgetReservation;
+  providerRequestPolicy: ProviderRequestPolicy;
   payload: {
     ledgerVersionId: string;
     planVersionId: string;
     planArtifactId: string;
     reviewArtifactId: string;
+    promptArtifactId: string;
+    outputSchemaArtifactId: string;
     blockingFindingIds: string[];
     providerStorage: "minimize";
   };
@@ -781,6 +810,7 @@ export type ClosureReview = {
   provider: ProviderModelAssignment["provider"];
   modelId: string;
   budgetReservation: BudgetReservation;
+  providerRequestPolicy: ProviderRequestPolicy;
   payload: {
     ledgerVersionId: string;
     planVersionId: string;
@@ -1143,6 +1173,40 @@ function providerBudgetIsEligible(
     available.inputTokens >= maximum.inputTokens &&
     available.outputTokens >= maximum.outputTokens &&
     available.costUsdMicros >= maximum.costUsdMicros
+  );
+}
+
+function providerRequestPolicy(
+  role: ProviderRequestPolicy["role"],
+  prompt: Omit<ArtifactEvidenceReference, "kind">,
+  schema: Omit<ArtifactEvidenceReference, "kind">,
+  budget: BudgetReservation,
+  timeoutMs: number,
+  reasoning: string | null,
+): ProviderRequestPolicy {
+  return {
+    role,
+    promptArtifactId: prompt.artifactId,
+    promptContentHash: prompt.contentHash,
+    outputSchemaArtifactId: schema.artifactId,
+    outputSchemaContentHash: schema.contentHash,
+    maxOutputTokens: budget.outputTokens,
+    timeoutMs,
+    reasoning,
+    providerStorage: "minimize",
+  };
+}
+
+function providerRequestSettingsAreValid(
+  timeoutMs: number,
+  reasoning: string | null,
+  resolved: boolean,
+): boolean {
+  return (
+    resolved &&
+    Number.isInteger(timeoutMs) &&
+    timeoutMs > 0 &&
+    (reasoning === null || reasoning.trim().length > 0)
   );
 }
 
@@ -2050,6 +2114,11 @@ function requestPlanning(
     !input.modelIdentityPinned ||
     !input.promptArtifactVerified ||
     !input.outputSchemaArtifactVerified ||
+    !providerRequestSettingsAreValid(
+      input.requestTimeoutMs,
+      input.requestReasoning,
+      input.requestPolicyResolved,
+    ) ||
     input.planPurposeId.length === 0 ||
     input.plannerAssignment.modelId.length === 0 ||
     (input.plannerAssignment.provider !== "openai" &&
@@ -2087,6 +2156,20 @@ function requestPlanning(
     provider: input.plannerAssignment.provider,
     modelId: input.plannerAssignment.modelId,
     budgetReservation: input.budgetReservation,
+    providerRequestPolicy: providerRequestPolicy(
+      "planner",
+      {
+        artifactId: input.promptArtifactId,
+        contentHash: input.promptContentHash,
+      },
+      {
+        artifactId: input.outputSchemaArtifactId,
+        contentHash: input.outputSchemaContentHash,
+      },
+      input.budgetReservation,
+      input.requestTimeoutMs,
+      input.requestReasoning,
+    ),
     payload: {
       ledgerVersionId: previousState.currentLedger.versionId,
       ledgerArtifactId: previousState.currentLedger.artifactId,
@@ -2333,6 +2416,11 @@ function acceptPlanForBaseline(
     !input.reviewerModelAllowed ||
     !input.reviewerModelIdentityPinned ||
     !input.reviewerAssignmentAuthorized ||
+    !providerRequestSettingsAreValid(
+      input.reviewTimeoutMs,
+      input.reviewReasoning,
+      input.reviewRequestPolicyResolved,
+    ) ||
     !reviewerValid ||
     !reviewerAssignmentMatchesPolicy ||
     !providerIndependenceSatisfied ||
@@ -2406,6 +2494,20 @@ function acceptPlanForBaseline(
     provider: input.reviewerAssignment.provider,
     modelId: input.reviewerAssignment.modelId,
     budgetReservation: input.reviewBudgetMaximum,
+    providerRequestPolicy: providerRequestPolicy(
+      "reviewer",
+      {
+        artifactId: input.reviewerPromptArtifact.artifactId,
+        contentHash: input.reviewerPromptArtifact.contentHash,
+      },
+      {
+        artifactId: input.reviewSchemaArtifact.artifactId,
+        contentHash: input.reviewSchemaArtifact.contentHash,
+      },
+      input.reviewBudgetMaximum,
+      input.reviewTimeoutMs,
+      input.reviewReasoning,
+    ),
     payload: {
       ledgerVersionId: previousState.currentLedger.versionId,
       ledgerArtifactId: previousState.currentLedger.artifactId,
@@ -2690,11 +2792,21 @@ function planAfterBaselineReview(
         purposeId: `${input.runId}:plan:${state.currentPlan.versionId}:remediation:1`,
         provider: policy.plannerAssignment.provider,
         modelId: policy.plannerAssignment.modelId,
+        providerRequestPolicy: providerRequestPolicy(
+          "planner",
+          state.reviewContext.prompt,
+          state.reviewContext.schema,
+          input.nextCommandBudgetMaximum,
+          input.nextCommandTimeoutMs,
+          input.nextCommandReasoning,
+        ),
         payload: {
           ledgerVersionId: state.currentLedger.versionId,
           planVersionId: state.currentPlan.versionId,
           planArtifactId: state.currentPlan.artifactId,
           reviewArtifactId: input.reviewArtifact.artifactId,
+          promptArtifactId: state.reviewContext.prompt.artifactId,
+          outputSchemaArtifactId: state.reviewContext.schema.artifactId,
           blockingFindingIds: input.reconciliation.blockingFindingIds,
           providerStorage: "minimize",
         },
@@ -2705,6 +2817,14 @@ function planAfterBaselineReview(
         purposeId: `${input.runId}:plan:${state.currentPlan.versionId}:closure:1`,
         provider: state.activeReview.reviewerAssignment.provider,
         modelId: state.activeReview.reviewerAssignment.modelId,
+        providerRequestPolicy: providerRequestPolicy(
+          "reviewer",
+          state.reviewContext.prompt,
+          state.reviewContext.schema,
+          input.nextCommandBudgetMaximum,
+          input.nextCommandTimeoutMs,
+          input.nextCommandReasoning,
+        ),
         payload: {
           ledgerVersionId: state.currentLedger.versionId,
           planVersionId: state.currentPlan.versionId,
@@ -2986,6 +3106,11 @@ function acceptBaselineReview(
     !providerBudgetIsEligible(
       input.nextCommandBudgetMaximum,
       input.availableBudget,
+    ) ||
+    !providerRequestSettingsAreValid(
+      input.nextCommandTimeoutMs,
+      input.nextCommandReasoning,
+      input.nextCommandRequestPolicyResolved,
     ) ||
     input.nextCommandId.length === 0 ||
     !input.auditChainVerified ||

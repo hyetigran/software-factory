@@ -209,6 +209,8 @@ function payloadIsValid(commandType: string, value: object): boolean {
           "planVersionId",
           "planArtifactId",
           "reviewArtifactId",
+          "promptArtifactId",
+          "outputSchemaArtifactId",
           "blockingFindingIds",
           "providerStorage",
         ]) &&
@@ -217,6 +219,8 @@ function payloadIsValid(commandType: string, value: object): boolean {
           "planVersionId",
           "planArtifactId",
           "reviewArtifactId",
+          "promptArtifactId",
+          "outputSchemaArtifactId",
         ]) &&
         stringSet(payload.blockingFindingIds) &&
         payload.providerStorage === "minimize"
@@ -405,12 +409,14 @@ export function commandIsValid(command: PersistableCommand): boolean {
     commandExecutionClass === "local"
       ? command.provider === "local" &&
         command.modelId === undefined &&
+        command.providerRequestPolicy === undefined &&
         Object.values(command.budgetReservation).every((value) => value === 0)
       : commandExecutionClass === "provider"
         ? (command.provider === "openai" || command.provider === "anthropic") &&
           typeof command.modelId === "string" &&
           command.modelId.length > 0 &&
-          command.budgetReservation.calls === 1
+          command.budgetReservation.calls === 1 &&
+          providerRequestPolicyIsValid(command)
         : commandExecutionClass === "cancel" &&
           (command.provider === "openai" || command.provider === "anthropic");
   const prerequisiteShapeValid =
@@ -437,6 +443,7 @@ export function commandIsValid(command: PersistableCommand): boolean {
     hasExactKeys(command, envelopeRequired, [
       "modelId",
       "prerequisiteCommandIds",
+      "providerRequestPolicy",
     ]) &&
     hasExactKeys(command.budgetReservation, [
       "calls",
@@ -462,5 +469,36 @@ export function commandIsValid(command: PersistableCommand): boolean {
       (value) => Number.isInteger(value) && value >= 0,
     ) &&
     sha256(canonicalJson(commandWithoutIdentity)) === command.commandKey
+  );
+}
+
+function providerRequestPolicyIsValid(command: PersistableCommand): boolean {
+  const policy = command.providerRequestPolicy;
+  return (
+    policy !== undefined &&
+    hasExactKeys(policy, [
+      "role",
+      "promptArtifactId",
+      "promptContentHash",
+      "outputSchemaArtifactId",
+      "outputSchemaContentHash",
+      "maxOutputTokens",
+      "timeoutMs",
+      "reasoning",
+      "providerStorage",
+    ]) &&
+    ["planner", "reviewer"].includes(policy.role) &&
+    policy.promptArtifactId.length > 0 &&
+    /^[a-f0-9]{64}$/u.test(policy.promptContentHash) &&
+    policy.outputSchemaArtifactId.length > 0 &&
+    /^[a-f0-9]{64}$/u.test(policy.outputSchemaContentHash) &&
+    Number.isInteger(policy.maxOutputTokens) &&
+    policy.maxOutputTokens > 0 &&
+    policy.maxOutputTokens === command.budgetReservation.outputTokens &&
+    Number.isInteger(policy.timeoutMs) &&
+    policy.timeoutMs > 0 &&
+    (policy.reasoning === null ||
+      (typeof policy.reasoning === "string" && policy.reasoning.length > 0)) &&
+    policy.providerStorage === "minimize"
   );
 }

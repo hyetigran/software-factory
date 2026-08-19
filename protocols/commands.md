@@ -19,9 +19,22 @@ interface PlannedCommand<T> {
   provider?: "openai" | "anthropic" | "manual" | "local";
   modelId?: string;
   budgetReservation: BudgetReservation;
+  providerRequestPolicy?: {
+    role: "planner" | "reviewer";
+    promptArtifactId: string;
+    promptContentHash: string;
+    outputSchemaArtifactId: string;
+    outputSchemaContentHash: string;
+    maxOutputTokens: number;
+    timeoutMs: number;
+    reasoning: string | null;
+    providerStorage: "minimize";
+  };
   payload: T;
 }
 ```
+
+Every provider-backed command carries `providerRequestPolicy`; local and cancellation commands omit it. The executor requires exact equality with this policy before recording or dispatching a request. A smaller output limit, different timeout/reasoning setting, alternate controlled artifact, or changed storage behavior is a different logical command, not an execution-time choice.
 
 `commandKey` is the SHA-256 hash of canonical JSON containing every field above except `commandId` and `budgetReservation`'s mutable reconciliation fields. A database uniqueness constraint on `(run_id, command_key)` prevents duplicate logical planning.
 

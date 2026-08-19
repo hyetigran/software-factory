@@ -206,6 +206,17 @@ function providerTransitionResult(
       outputTokens: 100,
       costUsdMicros: 100,
     },
+    providerRequestPolicy: {
+      role: "planner" as const,
+      promptArtifactId: "artifact_prompt",
+      promptContentHash: promptHash,
+      outputSchemaArtifactId: "artifact_schema",
+      outputSchemaContentHash: schemaHash,
+      maxOutputTokens: 100,
+      timeoutMs: 1_000,
+      reasoning: null,
+      providerStorage: "minimize" as const,
+    },
     payload: {
       ledgerVersionId: "ledger_1",
       ledgerArtifactId: "artifact_source",
@@ -328,6 +339,20 @@ describe("SQLite authority", () => {
         artifact: requestArtifact,
       }),
     ).rejects.toThrow("not bound to the active command attempt");
+    for (const override of [
+      { timeoutMs: 999 },
+      { maxOutputTokens: 99 },
+      { reasoning: "high" },
+    ]) {
+      await expect(
+        authority.registerPreparedProviderRequest({
+          attempt,
+          providerRequest: { ...providerRequest, ...override },
+          normalizedRequestHash: requestArtifact.contentHash,
+          artifact: requestArtifact,
+        }),
+      ).rejects.toThrow("not bound to the active command attempt");
+    }
   });
 
   it("atomically reserves budget, acquires the lease, and starts one attempt", async () => {
