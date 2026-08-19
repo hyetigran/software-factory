@@ -122,6 +122,18 @@ describe("workspace and content-addressed artifact store", () => {
         },
       }),
     ).rejects.toThrow("registration is invalid");
+    await expect(
+      store.stageArtifact(Buffer.from("submitted", "utf8"), {
+        artifactId: "artifact_submitted_invalid_01JTEST",
+        kind: "requirements_ledger",
+        mediaType: "application/json",
+        createdBy: "human:tig",
+        provenance: {
+          method: "human_submitted",
+          credential: "opaque-value",
+        } as never,
+      }),
+    ).rejects.toThrow("registration is invalid");
   });
 
   it("stages deterministic complete configuration and rejects credential values", async () => {

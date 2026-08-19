@@ -106,20 +106,42 @@ function identifiersAreValid(values: unknown): values is string[] {
   );
 }
 
+function hasExactKeys(value: object, keys: string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return (
+    actual.length === expected.length &&
+    actual.every((key, index) => key === expected[index])
+  );
+}
+
 function provenanceIsValid(provenance: ArtifactProvenance): boolean {
   switch (provenance.method) {
     case "copied":
       return (
+        hasExactKeys(provenance, ["method", "sourcePath"]) &&
         typeof provenance.sourcePath === "string" &&
         provenance.sourcePath.trim().length > 0
       );
     case "human_submitted":
       return (
-        provenance.sourceArtifactIds === undefined ||
-        identifiersAreValid(provenance.sourceArtifactIds)
+        hasExactKeys(
+          provenance,
+          provenance.sourceArtifactIds === undefined
+            ? ["method"]
+            : ["method", "sourceArtifactIds"],
+        ) &&
+        (provenance.sourceArtifactIds === undefined ||
+          identifiersAreValid(provenance.sourceArtifactIds))
       );
     case "provider_generated":
       return (
+        hasExactKeys(provenance, [
+          "method",
+          "sourceArtifactIds",
+          "commandId",
+          "attemptId",
+        ]) &&
         identifiersAreValid(provenance.sourceArtifactIds) &&
         typeof provenance.commandId === "string" &&
         provenance.commandId.trim().length > 0 &&
@@ -128,12 +150,20 @@ function provenanceIsValid(provenance: ArtifactProvenance): boolean {
       );
     case "deterministic_render":
       return (
+        hasExactKeys(provenance, [
+          "method",
+          "sourceArtifactIds",
+          "commandId",
+        ]) &&
         identifiersAreValid(provenance.sourceArtifactIds) &&
         typeof provenance.commandId === "string" &&
         provenance.commandId.trim().length > 0
       );
     case "exported":
-      return identifiersAreValid(provenance.sourceArtifactIds);
+      return (
+        hasExactKeys(provenance, ["method", "sourceArtifactIds"]) &&
+        identifiersAreValid(provenance.sourceArtifactIds)
+      );
   }
 }
 
