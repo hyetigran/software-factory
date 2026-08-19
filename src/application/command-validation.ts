@@ -70,6 +70,8 @@ function humanActor(value: unknown): boolean {
 function sourceExclusions(value: unknown): boolean {
   return (
     Array.isArray(value) &&
+    new Set(value.map((item) => (record(item) ? String(item.exclusionId) : "")))
+      .size === value.length &&
     value.every(
       (item) =>
         record(item) &&
