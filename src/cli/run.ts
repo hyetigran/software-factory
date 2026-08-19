@@ -36,10 +36,24 @@ type ParsedCommand =
       json: boolean;
       projectRoot: string;
       runId?: string;
+    }
+  | {
+      kind: "artifacts";
+      publicName: "inspect artifacts";
+      json: boolean;
+      projectRoot: string;
+      runId?: string;
+    }
+  | {
+      kind: "findings" | "usage" | "gates";
+      publicName: "inspect findings" | "inspect usage" | "inspect gates";
+      json: boolean;
+      projectRoot: string;
+      runId: string;
     };
 
 const usage =
-  "Usage: factory init | run list | run status <run-id> | inspect state <run-id> | inspect audit [run-id] [--json] [--project <path>]";
+  "Usage: factory init | run list | run status <run-id> | inspect <state|findings|usage|gates> <run-id> | inspect <audit|artifacts> [run-id] [--json] [--project <path>]";
 
 export function runCli(args: string[], write: Writer): number {
   if (args.includes("--version")) {
@@ -102,6 +116,34 @@ function parseArgs(args: string[], cwd: string): ParsedCommand {
     positional[1] === "list"
   ) {
     return { kind: "run_list", publicName: "run list", json, projectRoot };
+  }
+  if (
+    positional[0] === "inspect" &&
+    positional[1] === "artifacts" &&
+    positional.length >= 2 &&
+    positional.length <= 3
+  ) {
+    return {
+      kind: "artifacts",
+      publicName: "inspect artifacts",
+      json,
+      projectRoot,
+      ...(positional[2] === undefined ? {} : { runId: positional[2] }),
+    };
+  }
+  if (
+    positional[0] === "inspect" &&
+    ["findings", "usage", "gates"].includes(positional[1] ?? "") &&
+    positional.length === 3
+  ) {
+    const kind = positional[1] as "findings" | "usage" | "gates";
+    return {
+      kind,
+      publicName: `inspect ${kind}`,
+      json,
+      projectRoot,
+      runId: positional[2] ?? "",
+    };
   }
   if (
     positional.length === 3 &&
@@ -268,13 +310,85 @@ export async function runCliAsync(
         );
         return CliExit.success;
       }
+      case "artifacts": {
+        const artifacts = await operations.listArtifacts(
+          command.projectRoot,
+          command.runId,
+        );
+        writeSuccess(
+          write,
+          command,
+          { artifacts },
+          artifacts.length === 0
+            ? "No artifacts"
+            : artifacts
+                .map(
+                  (artifact) =>
+                    `${artifact.artifactId}\t${artifact.kind}\t${artifact.contentHash}\t${artifact.byteLength}`,
+                )
+                .join("\n"),
+        );
+        return CliExit.success;
+      }
+      case "findings": {
+        const findings = await operations.listFindings(
+          command.projectRoot,
+          command.runId,
+        );
+        writeSuccess(
+          write,
+          command,
+          { findings },
+          findings.length === 0
+            ? "No findings"
+            : findings
+                .map(
+                  (finding) =>
+                    `${finding.findingId}\t${finding.status}\t${finding.severity}`,
+                )
+                .join("\n"),
+        );
+        return CliExit.success;
+      }
+      case "usage": {
+        const usage = await operations.loadUsage(
+          command.projectRoot,
+          command.runId,
+        );
+        writeSuccess(
+          write,
+          command,
+          usage,
+          `Calls: ${usage.totals.calls}\nInput tokens: ${usage.totals.inputTokens}\nOutput tokens: ${usage.totals.outputTokens}\nCost (USD micros): ${usage.totals.costUsdMicros}`,
+        );
+        return CliExit.success;
+      }
+      case "gates": {
+        const gates = await operations.listGates(
+          command.projectRoot,
+          command.runId,
+        );
+        writeSuccess(
+          write,
+          command,
+          { gates },
+          gates.length === 0
+            ? "No gates"
+            : gates
+                .map(
+                  (gate) => `${gate.gateId}\t${gate.gateType}\t${gate.status}`,
+                )
+                .join("\n"),
+        );
+        return CliExit.success;
+      }
     }
   } catch (error) {
     if (error instanceof WorkspaceOperationError) {
       writeError(
         write,
         command.json,
-        command.kind,
+        command.publicName,
         error.code,
         error.message,
         error.details,
@@ -282,7 +396,13 @@ export async function runCliAsync(
       return exitFor(error);
     }
     const message = error instanceof Error ? error.message : String(error);
-    writeError(write, command.json, command.kind, "INTERNAL_ERROR", message);
+    writeError(
+      write,
+      command.json,
+      command.publicName,
+      "INTERNAL_ERROR",
+      message,
+    );
     return CliExit.internal;
   }
 }

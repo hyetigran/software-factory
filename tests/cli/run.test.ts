@@ -103,6 +103,10 @@ describe("factory executable", () => {
       listRuns,
       loadRun: vi.fn(),
       listAudit: vi.fn(),
+      listArtifacts: vi.fn(),
+      listFindings: vi.fn(),
+      loadUsage: vi.fn(),
+      listGates: vi.fn(),
     };
 
     await expect(
@@ -150,6 +154,10 @@ describe("factory executable", () => {
       listRuns: vi.fn(),
       loadRun: vi.fn().mockResolvedValue({ runId: "run_1" }),
       listAudit: vi.fn(),
+      listArtifacts: vi.fn(),
+      listFindings: vi.fn(),
+      loadUsage: vi.fn(),
+      listGates: vi.fn(),
     };
 
     await runCliAsync(
@@ -178,5 +186,55 @@ describe("factory executable", () => {
         projectRoot,
       ),
     ).resolves.toBe(CliExit.notFound);
+  });
+
+  it.each([
+    ["artifacts", "listArtifacts", { artifacts: [] }],
+    ["findings", "listFindings", { findings: [] }],
+    [
+      "usage",
+      "loadUsage",
+      {
+        entries: [],
+        totals: {
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsdMicros: 0,
+        },
+      },
+    ],
+    ["gates", "listGates", { gates: [] }],
+  ] as const)("supports JSON inspection of %s", async (kind, method, value) => {
+    const operations = {
+      initialize: vi.fn(),
+      listRuns: vi.fn(),
+      loadRun: vi.fn(),
+      listAudit: vi.fn(),
+      listArtifacts: vi.fn(),
+      listFindings: vi.fn(),
+      loadUsage: vi.fn(),
+      listGates: vi.fn(),
+    } satisfies WorkspaceOperations;
+    operations[method].mockResolvedValue(
+      kind === "usage" ? value : Object.values(value)[0],
+    );
+    const lines: string[] = [];
+    const args = [
+      "inspect",
+      kind,
+      ...(kind === "artifacts" ? [] : ["run_1"]),
+      "--json",
+    ];
+
+    await expect(
+      runCliAsync(args, (line) => lines.push(line), operations, "/project"),
+    ).resolves.toBe(CliExit.success);
+
+    expect(JSON.parse(lines[0] ?? "null")).toMatchObject({
+      ok: true,
+      command: `inspect ${kind}`,
+      data: value,
+    });
   });
 });

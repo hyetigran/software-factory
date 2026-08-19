@@ -15,6 +15,55 @@ export type AuditSummary = {
   [key: string]: unknown;
 };
 
+export type ArtifactSummary = {
+  artifactId: string;
+  kind: string;
+  contentHash: string;
+  byteLength: number;
+  mediaType: string;
+  schemaId: string | null;
+  metadata: object;
+  createdAt: string;
+};
+
+export type FindingSummary = {
+  findingId: string;
+  status: string;
+  severity: string;
+  createdAt: string;
+  updatedAt: string;
+  fingerprints: string[];
+};
+
+export type UsageSummary = {
+  entries: Array<{
+    usageEntryId: string;
+    commandId: string | null;
+    attemptId: string | null;
+    kind: string;
+    calls: number;
+    inputTokens: number;
+    outputTokens: number;
+    costUsdMicros: number;
+    nativeUsageArtifactId: string | null;
+    createdAt: string;
+  }>;
+  totals: {
+    calls: number;
+    inputTokens: number;
+    outputTokens: number;
+    costUsdMicros: number;
+  };
+};
+
+export type GateSummary = {
+  gateId: string;
+  gateType: string;
+  status: string;
+  evidenceArtifactId: string | null;
+  evaluatedAt: string;
+};
+
 export class WorkspaceOperationError extends Error {
   constructor(
     readonly code:
@@ -36,4 +85,11 @@ export interface WorkspaceOperations {
   listRuns(projectRoot: string): Promise<RunSummary[]>;
   loadRun(projectRoot: string, runId: string): Promise<object | null>;
   listAudit(projectRoot: string, runId?: string): Promise<AuditSummary[]>;
+  listArtifacts(
+    projectRoot: string,
+    runId?: string,
+  ): Promise<ArtifactSummary[]>;
+  listFindings(projectRoot: string, runId: string): Promise<FindingSummary[]>;
+  loadUsage(projectRoot: string, runId: string): Promise<UsageSummary>;
+  listGates(projectRoot: string, runId: string): Promise<GateSummary[]>;
 }

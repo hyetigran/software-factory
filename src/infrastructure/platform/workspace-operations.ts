@@ -7,6 +7,17 @@ import { SqliteAuthority } from "../sqlite/authority.js";
 import { SqliteReadModel } from "../sqlite/read-model.js";
 
 export function createWorkspaceOperations(): WorkspaceOperations {
+  async function withReadModel<T>(
+    projectRoot: string,
+    read: (model: SqliteReadModel) => T,
+  ): Promise<T> {
+    const model = await SqliteReadModel.open(projectRoot);
+    try {
+      return read(model);
+    } finally {
+      model.close();
+    }
+  }
   return {
     async initialize(projectRoot) {
       const store = await ContentAddressedArtifactStore.open(projectRoot);
@@ -20,12 +31,7 @@ export function createWorkspaceOperations(): WorkspaceOperations {
       return { workspaceRoot: store.workspace.root };
     },
     async listRuns(projectRoot) {
-      const readModel = await SqliteReadModel.open(projectRoot);
-      try {
-        return readModel.listRuns();
-      } finally {
-        readModel.close();
-      }
+      return withReadModel(projectRoot, (model) => model.listRuns());
     },
     async loadRun(projectRoot, runId) {
       const readModel = await SqliteReadModel.open(projectRoot);
@@ -49,6 +55,51 @@ export function createWorkspaceOperations(): WorkspaceOperations {
       } finally {
         readModel.close();
       }
+    },
+    async listArtifacts(projectRoot, runId) {
+      return withReadModel(projectRoot, (model) => {
+        if (runId !== undefined && model.loadRun(runId) === null) {
+          throw new WorkspaceOperationError(
+            "RUN_NOT_FOUND",
+            `Run not found: ${runId}`,
+            { runId },
+          );
+        }
+        return model.listArtifacts(runId);
+      });
+    },
+    async listFindings(projectRoot, runId) {
+      return withReadModel(projectRoot, (model) => {
+        if (model.loadRun(runId) === null)
+          throw new WorkspaceOperationError(
+            "RUN_NOT_FOUND",
+            `Run not found: ${runId}`,
+            { runId },
+          );
+        return model.listFindings(runId);
+      });
+    },
+    async loadUsage(projectRoot, runId) {
+      return withReadModel(projectRoot, (model) => {
+        if (model.loadRun(runId) === null)
+          throw new WorkspaceOperationError(
+            "RUN_NOT_FOUND",
+            `Run not found: ${runId}`,
+            { runId },
+          );
+        return model.loadUsage(runId);
+      });
+    },
+    async listGates(projectRoot, runId) {
+      return withReadModel(projectRoot, (model) => {
+        if (model.loadRun(runId) === null)
+          throw new WorkspaceOperationError(
+            "RUN_NOT_FOUND",
+            `Run not found: ${runId}`,
+            { runId },
+          );
+        return model.listGates(runId);
+      });
     },
   };
 }
