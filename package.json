@@ -8,7 +8,8 @@
     "factory": "dist/cli/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "database"
   ],
   "engines": {
     "node": ">=22"
