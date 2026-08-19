@@ -116,6 +116,11 @@ export type BeginAttemptRequest = {
     | "strict_replay"
     | "human_rerun";
   humanAuthorizationId?: string;
+  strictReplay?: {
+    recordingManifestArtifactId: string;
+    cassetteKey: string;
+    normalizedRequestHash: string;
+  };
 };
 
 export interface CommandExecutionPort {
@@ -136,6 +141,15 @@ export function beginEligibleCommandAttempt(
     request.ownerProcess.trim().length === 0 ||
     (request.attemptKind === "human_rerun" &&
       (request.humanAuthorizationId?.trim().length ?? 0) === 0) ||
+    (request.attemptKind === "strict_replay" &&
+      (request.strictReplay === undefined ||
+        request.strictReplay.recordingManifestArtifactId.trim().length === 0 ||
+        !/^[a-f0-9]{64}$/u.test(request.strictReplay.cassetteKey) ||
+        !/^[a-f0-9]{64}$/u.test(request.strictReplay.normalizedRequestHash))) ||
+    (request.attemptKind !== "strict_replay" &&
+      request.strictReplay !== undefined) ||
+    (request.attemptKind !== "human_rerun" &&
+      request.humanAuthorizationId !== undefined) ||
     request.policy[executionPolicyBrand] !== true
   ) {
     throw new TypeError(

@@ -28,6 +28,7 @@ import type {
 } from "../../application/execution-port.js";
 import { commandIsValid } from "../../application/command-validation.js";
 import { artifactRegistrationIsValid } from "../../application/artifact-port.js";
+import { decideAttemptPolicy } from "../../application/attempt-policy.js";
 import type { StagedArtifactDescriptor } from "../artifacts/object-store.js";
 import type { ContentAddressedArtifactStore } from "../artifacts/object-store.js";
 import {
@@ -512,7 +513,6 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
         state.configurationContentHash !== request.policy.configurationHash ||
         row.configuration_content_hash !== request.policy.configurationHash ||
         command.policyHash !== request.policy.configuration.policyHash ||
-        row.triggering_state_version !== row.state_version ||
         !commandIsValid(command)
       ) {
         throw new TypeError("Logical command is not eligible for execution");
@@ -524,18 +524,6 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
         throw new AuthorityIntegrityError(
           "Logical command relational identity disagrees with its envelope",
         );
-      }
-      if (
-        row.accepted_attempt_id !== null &&
-        request.attemptKind !== "human_rerun"
-      ) {
-        this.database.exec("COMMIT");
-        return {
-          status: "already_succeeded",
-          runId: request.runId,
-          commandId: request.commandId,
-          acceptedAttemptId: row.accepted_attempt_id,
-        };
       }
       const unresolvedInputHash = command.inputArtifactHashes.find(
         (hash) =>
@@ -597,42 +585,73 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
         run_attempts: number;
         command_attempts: number | null;
       };
-      if (
-        attemptCounts.run_attempts >= request.policy.ceilings.physicalAttempts
-      ) {
-        throw new TypeError("Physical-attempt hard ceiling is exhausted");
-      }
       const lastAttempt = this.database
         .prepare(
-          `SELECT status, failure_class FROM command_attempts
+          `SELECT attempt_id, status, failure_class, correlation_id
+             FROM command_attempts
             WHERE command_id = ? ORDER BY attempt_number DESC LIMIT 1`,
         )
         .get(request.commandId) as
-        { status: string; failure_class: string | null } | undefined;
+        | {
+            attempt_id: string;
+            status: string;
+            failure_class: string | null;
+            correlation_id: string;
+          }
+        | undefined;
       const priorAttempts = attemptCounts.command_attempts ?? 0;
-      const attemptKindAllowed =
-        (request.attemptKind === "initial" &&
-          row.status === "planned" &&
-          priorAttempts === 0) ||
-        (request.attemptKind === "transport_retry" &&
-          (row.status === "failed" || row.status === "unknown") &&
-          priorAttempts - 1 < request.policy.ceilings.retries &&
-          (lastAttempt?.status === "unknown" ||
-            ["transport", "provider_error"].includes(
-              lastAttempt?.failure_class ?? "",
-            ))) ||
-        (request.attemptKind === "schema_repair" &&
-          command.commandType === "repair_schema" &&
-          priorAttempts < request.policy.ceilings.repairs) ||
-        (request.attemptKind === "strict_replay" &&
-          ["planned", "failed", "unknown"].includes(row.status)) ||
-        (request.attemptKind === "human_rerun" &&
-          request.humanAuthorizationId !== undefined &&
-          ["planned", "failed", "unknown", "succeeded"].includes(row.status));
-      if (!attemptKindAllowed) {
-        throw new TypeError(
-          "Attempt kind is not eligible under recovery policy",
-        );
+      const humanRerunAuthorized =
+        request.humanAuthorizationId !== undefined &&
+        (() => {
+          const decision = this.database
+            .prepare(
+              `SELECT evidence_json FROM human_decisions
+                WHERE decision_id = ? AND run_id = ?
+                  AND decision_type = 'rerun_authorized'`,
+            )
+            .get(request.humanAuthorizationId, request.runId) as
+            { evidence_json: string } | undefined;
+          if (decision === undefined) return false;
+          const evidence = parseObject(decision.evidence_json);
+          return evidence.commandId === request.commandId;
+        })();
+      const strictReplayVerified =
+        request.strictReplay !== undefined &&
+        this.recordingManifestMatches(request.strictReplay, command);
+      const decision = decideAttemptPolicy(
+        request,
+        {
+          logicalStatus: row.status,
+          acceptedAttemptId: row.accepted_attempt_id,
+          triggeringStateVersion: row.triggering_state_version,
+          currentStateVersion: row.state_version,
+          commandType: command.commandType,
+          commandReservation: command.budgetReservation,
+          priorAttempts,
+          runAttempts: attemptCounts.run_attempts,
+          ...(lastAttempt === undefined
+            ? {}
+            : {
+                lastAttempt: {
+                  attemptId: lastAttempt.attempt_id,
+                  status: lastAttempt.status,
+                  failureClass: lastAttempt.failure_class,
+                  correlationId: lastAttempt.correlation_id,
+                },
+              }),
+          humanRerunAuthorized,
+          strictReplayVerified,
+        },
+        request.policy,
+      );
+      if (decision.noOpAcceptedAttemptId !== undefined) {
+        this.database.exec("COMMIT");
+        return {
+          status: "already_succeeded",
+          runId: request.runId,
+          commandId: request.commandId,
+          acceptedAttemptId: decision.noOpAcceptedAttemptId,
+        };
       }
       const usage = this.database
         .prepare(
@@ -649,15 +668,7 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
         output_tokens: number;
         cost: number;
       };
-      const reservation =
-        request.attemptKind === "strict_replay"
-          ? {
-              calls: 0,
-              inputTokens: 0,
-              outputTokens: 0,
-              costUsdMicros: 0,
-            }
-          : command.budgetReservation;
+      const reservation = decision.reservation;
       if (
         usage.calls + reservation.calls > request.policy.ceilings.calls ||
         usage.input_tokens + reservation.inputTokens >
@@ -734,12 +745,34 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
             type: "command_attempt_started",
             actor: { kind: "system", component: "executor", version: "0.0.0" },
             reason: "Begin an eligible physical command attempt",
-            evidence: [],
+            evidence: [
+              ...(request.humanAuthorizationId === undefined
+                ? []
+                : [
+                    {
+                      kind: "human_decision",
+                      decisionId: request.humanAuthorizationId,
+                    },
+                  ]),
+              ...(request.strictReplay === undefined
+                ? []
+                : [
+                    {
+                      kind: "artifact",
+                      artifactId:
+                        request.strictReplay.recordingManifestArtifactId,
+                    },
+                  ]),
+            ],
             payload: {
               commandId: request.commandId,
               attemptId: request.attemptId,
               attemptNumber,
               correlationId: request.correlationId,
+              attemptKind: request.attemptKind,
+              humanAuthorizationId: request.humanAuthorizationId ?? null,
+              recordingManifestArtifactId:
+                request.strictReplay?.recordingManifestArtifactId ?? null,
             },
           },
           {
@@ -749,6 +782,29 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
             evidence: [],
             payload: { commandId: request.commandId, reservation },
           },
+          ...(decision.duplicateCallPossible &&
+          decision.priorAttemptId !== undefined
+            ? [
+                {
+                  type: "duplicate_call_possible",
+                  actor: {
+                    kind: "system",
+                    component: "executor",
+                    version: "0.0.0",
+                  },
+                  reason:
+                    "Retrying an unresolved provider outcome may duplicate generation and billing",
+                  evidence: [],
+                  payload: {
+                    commandId: request.commandId,
+                    priorAttemptId: decision.priorAttemptId,
+                    newAttemptId: request.attemptId,
+                    correlationId: request.correlationId,
+                    reservation,
+                  },
+                },
+              ]
+            : []),
         ],
         now: this.now,
       });
@@ -968,6 +1024,57 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
       );
     } finally {
       if (handle !== undefined) closeSync(handle);
+    }
+  }
+
+  private recordingManifestMatches(
+    replay: NonNullable<BeginAttemptRequest["strictReplay"]>,
+    command: PersistableCommand,
+  ): boolean {
+    if (this.artifactStore === undefined) return false;
+    const artifact = this.database
+      .prepare(
+        `SELECT content_hash, schema_id FROM artifacts
+          WHERE artifact_id = ? AND kind = 'other'`,
+      )
+      .get(replay.recordingManifestArtifactId) as
+      { content_hash: string; schema_id: string | null } | undefined;
+    if (artifact?.schema_id !== "software-factory/provider-recording.v1") {
+      return false;
+    }
+    try {
+      const bytes = readFileSync(
+        join(this.artifactStore.workspace.objects, artifact.content_hash),
+      );
+      if (sha256(bytes) !== artifact.content_hash) return false;
+      const manifest = parseObject(bytes.toString("utf8"));
+      return (
+        Object.keys(manifest).sort().join(",") ===
+          [
+            "cassetteKey",
+            "commandKey",
+            "normalizedRequestHash",
+            "responseArtifactId",
+            "responseContentHash",
+            "schemaVersion",
+          ]
+            .sort()
+            .join(",") &&
+        manifest.schemaVersion === 1 &&
+        manifest.cassetteKey === replay.cassetteKey &&
+        manifest.commandKey === command.commandKey &&
+        manifest.normalizedRequestHash === replay.normalizedRequestHash &&
+        typeof manifest.responseArtifactId === "string" &&
+        typeof manifest.responseContentHash === "string" &&
+        this.database
+          .prepare(
+            `SELECT 1 FROM artifacts WHERE artifact_id = ? AND content_hash = ?`,
+          )
+          .get(manifest.responseArtifactId, manifest.responseContentHash) !==
+          undefined
+      );
+    } catch {
+      return false;
     }
   }
 
