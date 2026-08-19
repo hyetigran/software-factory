@@ -19,6 +19,8 @@ import type {
 } from "../../src/application/authority-port.js";
 import { ValidatedProjection } from "../../src/application/authority-port.js";
 import { commitTransition } from "../../src/application/commit-transition.js";
+import { ExecutionPolicy } from "../../src/application/execution-port.js";
+import type { ResolvedConfigurationSnapshot } from "../../src/application/stage-configuration.js";
 import { canonicalJson } from "../../src/domain/canonical-json.js";
 import {
   transition,
@@ -39,11 +41,48 @@ type TestState = Record<string, unknown> & {
   state: "draft" | "halted";
   sourceArtifactId: string;
   configurationArtifactId: string;
+  configurationContentHash: string;
   policyHash: string;
   policyLocked: boolean;
 };
 
 const directories: string[] = [];
+
+const executionConfiguration: ResolvedConfigurationSnapshot = {
+  schemaVersion: 1,
+  policyHash: "a".repeat(64),
+  plannerAssignment: { provider: "openai", modelId: "planner" },
+  reviewerAssignment: { provider: "anthropic", modelId: "reviewer" },
+  artifactHashes: {
+    requirementsSchema: "1".repeat(64),
+    artifactSchema: "2".repeat(64),
+    planSchema: "3".repeat(64),
+    reviewSchema: "4".repeat(64),
+    taxonomy: "5".repeat(64),
+    componentRegistry: "6".repeat(64),
+    plannerPrompt: "7".repeat(64),
+    reviewerPrompt: "8".repeat(64),
+    reviewPolicy: "9".repeat(64),
+  },
+  hardCeilings: {
+    calls: 4,
+    physicalAttempts: 4,
+    inputTokens: 10_000,
+    outputTokens: 10_000,
+    costUsdMicros: 1_000_000,
+    retries: 1,
+    repairs: 1,
+    remediationCycles: 1,
+    closureCycles: 1,
+  },
+  credentialReferences: {
+    openai: { kind: "environment", reference: "OPENAI_API_KEY" },
+    anthropic: { kind: "environment", reference: "ANTHROPIC_API_KEY" },
+  },
+};
+const executionConfigurationHash = createHash("sha256")
+  .update(canonicalJson(executionConfiguration))
+  .digest("hex");
 
 async function databasePath(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "factory-sqlite-test-"));
@@ -72,7 +111,11 @@ async function openAuthority(
   });
   for (const [artifactId, kind, bytes] of [
     ["artifact_source", "raw_requirements", Buffer.from("source")],
-    ["artifact_configuration", "other", Buffer.from("configuration")],
+    [
+      "artifact_configuration",
+      "other",
+      Buffer.from(canonicalJson(executionConfiguration)),
+    ],
   ] as const) {
     const descriptor = await store.stageArtifact(bytes, {
       artifactId,
@@ -121,6 +164,7 @@ function transitionResult(
       state: "draft",
       sourceArtifactId: "artifact_source",
       configurationArtifactId: "artifact_configuration",
+      configurationContentHash: executionConfigurationHash,
       policyHash: "a".repeat(64),
       policyLocked: false,
     },
@@ -138,13 +182,64 @@ function transitionResult(
 }
 
 describe("SQLite authority", () => {
+  it("atomically reserves budget, acquires the lease, and starts one attempt", async () => {
+    const path = await databasePath();
+    const authority = await openAuthority(path, {
+      now: () => "2026-08-19T00:00:00.000Z",
+    });
+    await commitTransition<TestState>(authority, {
+      runId: "run_execute",
+      expectedStateVersion: 0,
+      transition: () => transitionResult("run_execute", 1, "command_execute"),
+    });
+    const policy = ExecutionPolicy.fromConfiguration({
+      runId: "run_execute",
+      configurationArtifactId: "artifact_configuration",
+      configuration: executionConfiguration,
+      expectedContentHash: executionConfigurationHash,
+    });
+
+    await expect(
+      authority.beginAttempt({
+        runId: "run_execute",
+        commandId: "command_execute",
+        attemptId: "attempt_execute_1",
+        correlationId: "correlation_execute_1",
+        ownerProcess: "pid:123",
+        configurationArtifactId: "artifact_configuration",
+        policy,
+      }),
+    ).resolves.toMatchObject({
+      attemptNumber: 1,
+      triggeringStateVersion: 1,
+      lease: { ownerProcess: "pid:123" },
+      reservation: { calls: 0, inputTokens: 0, outputTokens: 0 },
+    });
+    expect(
+      authority
+        .listAuditEntries()
+        .slice(-2)
+        .map(({ factType }) => factType),
+    ).toEqual(["command_attempt_started", "budget_reserved"]);
+    await expect(
+      authority.beginAttempt({
+        runId: "run_execute",
+        commandId: "command_execute",
+        attemptId: "attempt_execute_2",
+        correlationId: "correlation_execute_2",
+        ownerProcess: "pid:123",
+        configurationArtifactId: "artifact_configuration",
+        policy,
+      }),
+    ).rejects.toThrow("not eligible");
+    authority.close();
+  });
+
   it("accepts the public pure-domain transition without an adapter DTO", async () => {
     const path = await databasePath();
     const authority = await openAuthority(path);
     const sourceHash = createHash("sha256").update("source").digest("hex");
-    const configurationHash = createHash("sha256")
-      .update("configuration")
-      .digest("hex");
+    const configurationHash = executionConfigurationHash;
     const input: RunStarted = {
       type: "RunStarted",
       runId: "run_domain",

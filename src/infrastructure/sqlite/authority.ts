@@ -15,12 +15,18 @@ import { canonicalJson } from "../../domain/canonical-json.js";
 import type {
   AuthorityPort,
   AuthorityTransaction,
+  PersistableAuditFact,
   PersistableCommand,
   PersistableTransition,
   PersistTransitionRequest,
   StagedArtifactRegistration,
   ValidatedProjectionData,
 } from "../../application/authority-port.js";
+import type {
+  BeginAttemptRequest,
+  CommandExecutionPort,
+  StartedCommandAttempt,
+} from "../../application/execution-port.js";
 import { commandIsValid } from "../../application/command-validation.js";
 import { artifactRegistrationIsValid } from "../../application/artifact-port.js";
 import type { StagedArtifactDescriptor } from "../artifacts/object-store.js";
@@ -122,7 +128,7 @@ function auditEntryFromRow(row: AuditRow): AuditEntry {
   });
 }
 
-export class SqliteAuthority implements AuthorityPort {
+export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
   private constructor(
     private readonly database: DatabaseSync,
     private readonly databasePath: string,
@@ -459,6 +465,231 @@ export class SqliteAuthority implements AuthorityPort {
     }
   }
 
+  async beginAttempt(
+    request: BeginAttemptRequest,
+  ): Promise<StartedCommandAttempt> {
+    this.assertWritable();
+    await this.verifyIntegrity();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.assertWritable();
+      this.verifyAuditChain();
+      const row = this.database
+        .prepare(
+          `SELECT c.run_id, c.status, c.triggering_state_version,
+                  c.accepted_attempt_id, c.specification_json,
+                  r.state_version, r.configuration_artifact_id,
+                  s.state_json, a.content_hash AS configuration_content_hash
+             FROM logical_commands c
+             JOIN runs r ON r.run_id = c.run_id
+             JOIN run_state_snapshots s ON s.run_id = r.run_id
+             JOIN artifacts a ON a.artifact_id = r.configuration_artifact_id
+            WHERE c.command_id = ?`,
+        )
+        .get(request.commandId) as
+        | {
+            run_id: string;
+            status: string;
+            triggering_state_version: number;
+            accepted_attempt_id: string | null;
+            specification_json: string;
+            state_version: number;
+            configuration_artifact_id: string;
+            configuration_content_hash: string;
+            state_json: string;
+          }
+        | undefined;
+      if (row === undefined)
+        throw new TypeError("Logical command does not exist");
+      const state = parseObject(row.state_json);
+      const command = parseObject(row.specification_json) as PersistableCommand;
+      if (
+        row.run_id !== request.runId ||
+        request.policy.runId !== request.runId ||
+        row.configuration_artifact_id !== request.configurationArtifactId ||
+        request.policy.configurationArtifactId !==
+          request.configurationArtifactId ||
+        state.configurationContentHash !== request.policy.configurationHash ||
+        row.configuration_content_hash !== request.policy.configurationHash ||
+        command.policyHash !== request.policy.configuration.policyHash ||
+        row.accepted_attempt_id !== null ||
+        !["planned", "failed", "unknown"].includes(row.status) ||
+        row.triggering_state_version !== row.state_version ||
+        !commandIsValid(command)
+      ) {
+        throw new TypeError("Logical command is not eligible for execution");
+      }
+      const prerequisites = command.prerequisiteCommandIds ?? [];
+      if (
+        prerequisites.some((commandId) => {
+          const prerequisite = this.database
+            .prepare(
+              `SELECT status, accepted_attempt_id FROM logical_commands
+                WHERE command_id = ? AND run_id = ?`,
+            )
+            .get(commandId, request.runId) as
+            { status: string; accepted_attempt_id: string | null } | undefined;
+          return (
+            prerequisite?.status !== "succeeded" ||
+            prerequisite.accepted_attempt_id === null
+          );
+        })
+      ) {
+        throw new TypeError("Logical command prerequisites are incomplete");
+      }
+      const lease = this.database
+        .prepare("SELECT command_id FROM mutation_lease WHERE singleton = 1")
+        .get() as { command_id: string } | undefined;
+      if (lease !== undefined)
+        throw new TypeError("Mutation lease is unavailable");
+      const attemptCounts = this.database
+        .prepare(
+          `SELECT count(*) AS run_attempts,
+                  sum(CASE WHEN a.command_id = ? THEN 1 ELSE 0 END) AS command_attempts
+             FROM command_attempts a
+             JOIN logical_commands c ON c.command_id = a.command_id
+            WHERE c.run_id = ?`,
+        )
+        .get(request.commandId, request.runId) as {
+        run_attempts: number;
+        command_attempts: number | null;
+      };
+      if (
+        attemptCounts.run_attempts >= request.policy.ceilings.physicalAttempts
+      ) {
+        throw new TypeError("Physical-attempt hard ceiling is exhausted");
+      }
+      const usage = this.database
+        .prepare(
+          `SELECT
+             coalesce(sum(CASE WHEN kind = 'release' THEN -calls ELSE calls END), 0) calls,
+             coalesce(sum(CASE WHEN kind = 'release' THEN -input_tokens ELSE input_tokens END), 0) input_tokens,
+             coalesce(sum(CASE WHEN kind = 'release' THEN -output_tokens ELSE output_tokens END), 0) output_tokens,
+             coalesce(sum(CASE WHEN kind = 'release' THEN -cost_usd_micros ELSE cost_usd_micros END), 0) cost
+           FROM usage_ledger WHERE run_id = ?`,
+        )
+        .get(request.runId) as {
+        calls: number;
+        input_tokens: number;
+        output_tokens: number;
+        cost: number;
+      };
+      const reservation = command.budgetReservation;
+      if (
+        usage.calls + reservation.calls > request.policy.ceilings.calls ||
+        usage.input_tokens + reservation.inputTokens >
+          request.policy.ceilings.inputTokens ||
+        usage.output_tokens + reservation.outputTokens >
+          request.policy.ceilings.outputTokens ||
+        usage.cost + reservation.costUsdMicros >
+          request.policy.ceilings.costUsdMicros
+      ) {
+        throw new TypeError(
+          "Command reservation exceeds a hard budget ceiling",
+        );
+      }
+      const startedAt = this.now();
+      const attemptNumber = (attemptCounts.command_attempts ?? 0) + 1;
+      this.database
+        .prepare(
+          `INSERT INTO command_attempts
+             (attempt_id, command_id, attempt_number, status, correlation_id, started_at)
+           VALUES (?, ?, ?, 'started', ?, ?)`,
+        )
+        .run(
+          request.attemptId,
+          request.commandId,
+          attemptNumber,
+          request.correlationId,
+          startedAt,
+        );
+      this.database
+        .prepare(
+          `INSERT INTO usage_ledger
+             (usage_entry_id, run_id, command_id, attempt_id, kind,
+              calls, input_tokens, output_tokens, cost_usd_micros, created_at)
+           VALUES (?, ?, ?, ?, 'reservation', ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          `${request.attemptId}:reservation`,
+          request.runId,
+          request.commandId,
+          request.attemptId,
+          reservation.calls,
+          reservation.inputTokens,
+          reservation.outputTokens,
+          reservation.costUsdMicros,
+          startedAt,
+        );
+      this.database
+        .prepare(
+          `INSERT INTO mutation_lease
+             (singleton, command_id, attempt_id, owner_process, acquired_at, heartbeat_at)
+           VALUES (1, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          request.commandId,
+          request.attemptId,
+          request.ownerProcess,
+          startedAt,
+          startedAt,
+        );
+      this.database
+        .prepare(
+          "UPDATE logical_commands SET status = 'running' WHERE command_id = ?",
+        )
+        .run(request.commandId);
+      this.appendAuditFacts({
+        runId: request.runId,
+        stateVersionBefore: row.state_version,
+        stateVersionAfter: row.state_version,
+        correlationId: request.correlationId,
+        facts: [
+          {
+            type: "command_attempt_started",
+            actor: { kind: "system", component: "executor", version: "0.0.0" },
+            reason: "Begin an eligible physical command attempt",
+            evidence: [],
+            payload: {
+              commandId: request.commandId,
+              attemptId: request.attemptId,
+              attemptNumber,
+              correlationId: request.correlationId,
+            },
+          },
+          {
+            type: "budget_reserved",
+            actor: { kind: "system", component: "executor", version: "0.0.0" },
+            reason: "Reserve the command maximum before dispatch",
+            evidence: [],
+            payload: { commandId: request.commandId, reservation },
+          },
+        ],
+      });
+      this.database.exec("COMMIT");
+      return {
+        runId: request.runId,
+        commandId: request.commandId,
+        attemptId: request.attemptId,
+        attemptNumber,
+        triggeringStateVersion: row.triggering_state_version,
+        correlationId: request.correlationId,
+        reservation,
+        lease: {
+          ownerProcess: request.ownerProcess,
+          acquiredAt: startedAt,
+          heartbeatAt: startedAt,
+        },
+        startedAt,
+      };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      if (error instanceof AuthorityIntegrityError)
+        this.quarantine(error.message);
+      throw error;
+    }
+  }
+
   private persistAcceptedTransition<TState extends object>(
     request: PersistTransitionRequest,
     result: PersistableTransition<TState>,
@@ -663,6 +894,80 @@ export class SqliteAuthority implements AuthorityPort {
         `UPDATE workspaces
            SET next_audit_sequence = ?, audit_chain_head = ?
            WHERE workspace_id = ?`,
+      )
+      .run(sequence + 1, previousEntryHash, this.workspaceId);
+  }
+
+  private appendAuditFacts(input: {
+    runId: string;
+    stateVersionBefore: number;
+    stateVersionAfter: number;
+    correlationId?: string;
+    facts: PersistableAuditFact[];
+  }): void {
+    const metadata = this.database
+      .prepare(
+        `SELECT next_audit_sequence, audit_chain_head
+           FROM workspaces WHERE workspace_id = ?`,
+      )
+      .get(this.workspaceId) as {
+      next_audit_sequence: number;
+      audit_chain_head: string;
+    };
+    let sequence = metadata.next_audit_sequence - 1;
+    let previousEntryHash = metadata.audit_chain_head;
+    const insertAudit = this.database.prepare(`
+      INSERT INTO audit_entries
+        (audit_entry_id, workspace_id, run_id, sequence,
+         state_version_before, state_version_after, fact_type, schema_version,
+         actor_json, reason, evidence_json, causation_id, correlation_id,
+         recorded_at, payload_json, previous_entry_hash, entry_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
+    `);
+    for (const fact of input.facts) {
+      sequence += 1;
+      const withoutHash = {
+        auditEntryId: `${input.runId}:audit:${sequence}`,
+        sequence,
+        runId: input.runId,
+        stateVersionBefore: input.stateVersionBefore,
+        stateVersionAfter: input.stateVersionAfter,
+        factType: fact.type,
+        schemaVersion: 1 as const,
+        actor: fact.actor,
+        ...(fact.reason === undefined ? {} : { reason: fact.reason }),
+        evidence: fact.evidence,
+        ...(input.correlationId === undefined
+          ? {}
+          : { correlationId: input.correlationId }),
+        recordedAt: this.now(),
+        payload: fact.payload,
+        previousEntryHash,
+      };
+      const entryHash = sha256(canonicalJson(withoutHash));
+      insertAudit.run(
+        withoutHash.auditEntryId,
+        this.workspaceId,
+        input.runId,
+        sequence,
+        input.stateVersionBefore,
+        input.stateVersionAfter,
+        fact.type,
+        canonicalJson(fact.actor),
+        fact.reason ?? null,
+        canonicalJson(fact.evidence),
+        input.correlationId ?? null,
+        withoutHash.recordedAt,
+        canonicalJson(fact.payload),
+        previousEntryHash,
+        entryHash,
+      );
+      previousEntryHash = entryHash;
+    }
+    this.database
+      .prepare(
+        `UPDATE workspaces SET next_audit_sequence = ?, audit_chain_head = ?
+          WHERE workspace_id = ?`,
       )
       .run(sequence + 1, previousEntryHash, this.workspaceId);
   }
