@@ -19,6 +19,7 @@ import type {
 } from "../../src/application/authority-port.js";
 import { ValidatedProjection } from "../../src/application/authority-port.js";
 import { commitTransition } from "../../src/application/commit-transition.js";
+import { completeProviderFailure } from "../../src/application/complete-provider-failure.js";
 import {
   ExecutionPolicy,
   type BeginAttemptRequest,
@@ -532,6 +533,95 @@ describe("SQLite authority", () => {
         artifact: repairRequestArtifact,
       }),
     ).resolves.toBe("claimed");
+
+    const failedResponse = await store.stageArtifact(
+      Buffer.from('{"id":"response_invalid","model":"planner"}'),
+      {
+        artifactId: "artifact_repair_failed_response",
+        kind: "provider_response",
+        mediaType: "application/json",
+        createdBy: "pid:provider",
+        provenance: {
+          method: "provider_generated",
+          sourceArtifactIds: [repairRequestArtifact.artifactId],
+          commandId: repairAttempt.commandId,
+          attemptId: repairAttempt.attemptId,
+        },
+      },
+    );
+    const failedUsage = await store.stageArtifact(
+      Buffer.from('{"input_tokens":10,"output_tokens":5}'),
+      {
+        artifactId: "artifact_repair_failed_usage",
+        kind: "native_usage",
+        mediaType: "application/json",
+        createdBy: "pid:provider",
+        provenance: {
+          method: "provider_generated",
+          sourceArtifactIds: [repairRequestArtifact.artifactId],
+          commandId: repairAttempt.commandId,
+          attemptId: repairAttempt.attemptId,
+        },
+      },
+    );
+    await expect(
+      completeProviderFailure(
+        authority,
+        {
+          runId: repairAttempt.runId,
+          commandId: repairAttempt.commandId,
+          attemptId: repairAttempt.attemptId,
+          ownerProcess: "pid:provider",
+          correlationId: repairAttempt.correlationId,
+          requestArtifactId: repairRequestArtifact.artifactId,
+          requestContentHash: repairRequestArtifact.contentHash,
+          outcomeArtifact: failedResponse,
+          nativeUsageArtifact: failedUsage,
+          actualUsage: {
+            calls: 1,
+            inputTokens: 10,
+            outputTokens: 5,
+            costUsdMicros: 100,
+          },
+          failureKind: "schema_invalid",
+          providerEvidence: {
+            requestedModel: "planner",
+            returnedModel: "planner",
+            endpoint: "https://api.openai.com/v1/responses",
+            behaviorHeaders: {},
+            providerResponseId: "response_invalid",
+            correlationId: repairAttempt.correlationId,
+            completionStatus: "completed",
+            preflight: {
+              canonicalModelId: "planner",
+              structuredOutput: true,
+              contextWindowTokens: 100_000,
+              maxOutputTokens: 10_000,
+              inputTokens: 10,
+            },
+          },
+        },
+        policy,
+      ),
+    ).resolves.toMatchObject({
+      status: "failed",
+      failureClass: "schema_invalid",
+      recovery: "terminal",
+      recoveryBounds: { repairLimit: 1, repairsUsed: 1 },
+    });
+    expect(
+      database
+        .prepare(
+          "SELECT status, failure_class FROM command_attempts WHERE attempt_id = ?",
+        )
+        .get(repairAttempt.attemptId),
+    ).toEqual({ status: "failed", failure_class: "schema_invalid" });
+    expect(
+      authority
+        .listAuditEntries()
+        .slice(-2)
+        .map(({ factType }) => factType),
+    ).toEqual(["command_attempt_completed", "budget_reconciled"]);
   });
 
   it("atomically reserves budget, acquires the lease, and starts one attempt", async () => {

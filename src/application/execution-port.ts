@@ -261,6 +261,49 @@ export type CompleteProviderAttemptEvidence = Omit<
   providerEvidence: ProviderEvidence;
 };
 
+export type ProviderFailureKind =
+  | "refusal"
+  | "truncated"
+  | "schema_invalid"
+  | "transport_retryable"
+  | "transport_nonretryable"
+  | "unknown_outcome"
+  | "model_unavailable"
+  | "model_mismatch";
+
+export type CompleteProviderFailureEvidence = Omit<
+  CompleteAttemptRequest,
+  "resultArtifact" | "providerEvidence"
+> & {
+  requestArtifactId: string;
+  requestContentHash: string;
+  outcomeArtifact: StagedArtifactRegistration;
+  nativeUsageArtifact?: StagedArtifactRegistration;
+  providerEvidence: ProviderEvidence;
+  failureKind: ProviderFailureKind;
+};
+
+export type ProviderFailureDisposition = {
+  status: "failed" | "unknown";
+  runId: string;
+  commandId: string;
+  attemptId: string;
+  failureClass:
+    | "refusal"
+    | "invalid_output"
+    | "schema_invalid"
+    | "transport"
+    | "provider_error"
+    | "unknown";
+  recovery: "transport_retry" | "schema_repair" | "terminal";
+  recoveryBounds: {
+    retryLimit: number;
+    repairLimit: number;
+    retriesUsed: number;
+    repairsUsed: number;
+  };
+};
+
 export type CompletedCommandAttempt = {
   status: "completed";
   runId: string;
@@ -274,6 +317,13 @@ export interface CommandExecutionPort {
   completeAttempt(
     request: CompleteAttemptRequest,
   ): Promise<CompletedCommandAttempt>;
+}
+
+export interface ProviderFailureCompletionPort {
+  completeProviderFailure(
+    request: CompleteProviderFailureEvidence,
+    policy: ExecutionPolicy,
+  ): Promise<ProviderFailureDisposition>;
 }
 
 function schemaRepairPolicyIsValid(

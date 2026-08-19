@@ -29,7 +29,10 @@ import type {
   BeginAttemptOutcome,
   CommandExecutionPort,
   CompleteAttemptRequest,
+  CompleteProviderFailureEvidence,
   CompletedCommandAttempt,
+  ExecutionPolicy,
+  ProviderFailureDisposition,
   StartedCommandAttempt,
 } from "../../application/execution-port.js";
 import { schemaRepairOverlayFromUnknown } from "../../application/execution-port.js";
@@ -47,6 +50,7 @@ import { appendAuditEntries } from "./audit-journal.js";
 import { AuthorityIntegrityError, StaleStateError } from "./errors.js";
 import { SqliteOperationalCompletion } from "./operational-completion.js";
 import { SqliteProviderCompletion } from "./provider-completion.js";
+import { SqliteProviderFailure } from "./provider-failure.js";
 import { SqlitePreparedRequestRegistration } from "./prepared-request-registration.js";
 
 export { AuthorityIntegrityError, StaleStateError } from "./errors.js";
@@ -133,6 +137,7 @@ export class SqliteAuthority
 {
   private readonly operationalCompletion: SqliteOperationalCompletion;
   private readonly providerCompletion: SqliteProviderCompletion;
+  private readonly providerFailure: SqliteProviderFailure;
   private readonly preparedRequestRegistration?: SqlitePreparedRequestRegistration;
 
   private constructor(
@@ -160,6 +165,15 @@ export class SqliteAuthority
       readStagedArtifactBytes: (artifact) =>
         this.readVerifiedStagedArtifact(artifact),
       readObjectBytes: (contentHash) => this.readVerifiedObject(contentHash),
+      persistArtifactMetadata: (artifact) =>
+        this.persistArtifactMetadata(artifact),
+    });
+    this.providerFailure = new SqliteProviderFailure({
+      database,
+      workspaceId,
+      now,
+      readStagedArtifactBytes: (artifact) =>
+        this.readVerifiedStagedArtifact(artifact),
       persistArtifactMetadata: (artifact) =>
         this.persistArtifactMetadata(artifact),
     });
@@ -1044,6 +1058,28 @@ export class SqliteAuthority
       this.database.exec("ROLLBACK");
       if (error instanceof AuthorityIntegrityError)
         this.quarantine(error.message);
+      throw error;
+    }
+  }
+
+  async completeProviderFailure(
+    request: CompleteProviderFailureEvidence,
+    policy: ExecutionPolicy,
+  ): Promise<ProviderFailureDisposition> {
+    this.assertWritable();
+    await this.verifyIntegrity();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.assertWritable();
+      this.verifyAuditChain();
+      const result = this.providerFailure.complete(request, policy);
+      this.database.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      if (error instanceof AuthorityIntegrityError) {
+        this.quarantine(error.message);
+      }
       throw error;
     }
   }
