@@ -10,6 +10,7 @@ import {
   type PlanGenerated,
   type PlanSubmitted,
   type PlanningRequested,
+  type ReviewAccepted,
   type RunStarted,
   type SourceExclusionApproved,
 } from "../../src/domain/index.js";
@@ -359,6 +360,89 @@ function planSubmittedInput(): PlanSubmitted {
   };
 }
 
+function baselineReviewState(): AdvancedRunState & {
+  state: "baseline_review";
+} {
+  const result = transition(
+    planningState(),
+    planGeneratedInput(),
+    pinnedPolicy,
+  ).nextState;
+  if (result.state !== "baseline_review") {
+    throw new Error("Expected baseline review fixture");
+  }
+  return result;
+}
+
+function reviewAcceptedInput(blockingFindingIds: string[]): ReviewAccepted {
+  return {
+    type: "ReviewAccepted",
+    runId: "run_01JTEST0000000000000000000",
+    expectedStateVersion: 6,
+    reviewId: "review_baseline_01JTEST",
+    reviewPurposeId:
+      "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
+    originatingCommandId: "command_baseline_review_01JTEST",
+    reviewArtifact: {
+      artifactId: "artifact_review_baseline_01JTEST",
+      contentHash: reviewContentHash,
+      verified: true,
+    },
+    reviewedPlanVersionId: "plan_version_01JTEST",
+    reviewedPlanContentHash: planContentHash,
+    reviewedPolicyHash: policyHash,
+    reviewCycle: 1,
+    outputValid: true,
+    findings: [
+      {
+        findingId: "finding_architecture_01JTEST",
+        observationId: "observation_architecture_01JTEST",
+        ruleId: "rule_architecture_boundary",
+        severity: "high",
+        title: "Boundary is underspecified",
+        evidence: [
+          {
+            kind: "artifact",
+            artifactId: "artifact_plan_01JTEST",
+            contentHash: planContentHash,
+          },
+        ],
+      },
+    ],
+    reconciliation: {
+      validator: "deterministic-finding-reconciliation-v1",
+      validatedReviewContentHash: reviewContentHash,
+      priorFindingsAccountedFor: true,
+      ambiguousCandidatesResolved: true,
+      findingIdsAssignedByOrchestrator: true,
+      observationIdsUnique: true,
+      blockingFindingIds,
+    },
+    nextCommandId: "command_after_baseline_01JTEST",
+    nextCommandBudgetMaximum: {
+      calls: 1,
+      inputTokens: 70_000,
+      outputTokens: 28_000,
+      costUsdMicros: 40_000_000,
+    },
+    availableBudget: {
+      calls: 2,
+      inputTokens: 100_000,
+      outputTokens: 40_000,
+      costUsdMicros: 50_000_000,
+    },
+    auditChainVerified: true,
+    databaseIntegrityVerified: true,
+    schemaCompatible: true,
+    mutationLeaseAvailable: true,
+    actor: {
+      kind: "reviewer",
+      provider: "anthropic",
+      modelId: "claude-frontier-pinned-20260801",
+    },
+  };
+}
+
 function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
   const draft = transition(null, runStartedInput(), pinnedPolicy).nextState;
   const base = {
@@ -420,6 +504,7 @@ function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
       },
       activeReview: {
         cycle: 1,
+        commandId: "command_baseline_review_01JTEST",
         reviewerAssignment: {
           provider: "anthropic",
           modelId: "claude-frontier-pinned-20260801",
@@ -429,6 +514,29 @@ function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
         independence: { reduced: false },
       },
     };
+  }
+  if (state === "remediation" || state === "closure") {
+    const reviewed = advancedRunState("baseline_review");
+    if (reviewed.state !== "baseline_review") {
+      throw new Error("Expected baseline review fixture");
+    }
+    const common = {
+      ...reviewed,
+      state,
+      stateVersion: 7,
+      activeFindings: [],
+    };
+    return state === "remediation"
+      ? {
+          ...common,
+          state,
+          activePlanning: {
+            purposeId: "purpose_remediation_01JTEST",
+            commandId: "command_remediation_01JTEST",
+            plannerAssignment: configuredPlannerAssignment,
+          },
+        }
+      : { ...common, state };
   }
   return { ...base, state };
 }
@@ -2074,6 +2182,7 @@ describe("transition", () => {
       },
       activeReview: {
         cycle: 1,
+        commandId: "command_baseline_review_01JTEST",
         reviewerAssignment: planGeneratedInput().reviewerAssignment,
         reviewPurposeId:
           "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
@@ -2551,6 +2660,75 @@ describe("transition", () => {
         pinnedPolicy,
       ),
     ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
+  });
+
+  it("routes an accepted baseline review with blockers to remediation", () => {
+    const result = transition(
+      baselineReviewState(),
+      reviewAcceptedInput(["finding_architecture_01JTEST"]),
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.state).toBe("remediation");
+    expect(result.nextState.stateVersion).toBe(7);
+    expect(result.commands).toEqual([
+      expect.objectContaining({ commandType: "generate_remediation" }),
+    ]);
+    expect(result.auditFacts.map(({ type }) => type)).toEqual([
+      "review_accepted",
+      "finding_created",
+      "command_planned",
+    ]);
+  });
+
+  it("routes an accepted baseline review without blockers to closure", () => {
+    const result = transition(
+      baselineReviewState(),
+      reviewAcceptedInput([]),
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.state).toBe("closure");
+    expect(result.commands).toEqual([
+      expect.objectContaining({ commandType: "closure_review" }),
+    ]);
+  });
+
+  it.each([
+    ["a stale state version", { expectedStateVersion: 5 }],
+    ["an invalid review", { outputValid: false }],
+    ["a stale plan", { reviewedPlanContentHash: "9".repeat(64) }],
+    ["the wrong review purpose", { reviewPurposeId: "purpose_wrong" }],
+    [
+      "the wrong originating command",
+      { originatingCommandId: "command_wrong" },
+    ],
+    [
+      "an unknown blocking finding",
+      {
+        reconciliation: {
+          ...reviewAcceptedInput([]).reconciliation,
+          blockingFindingIds: ["finding_unknown_01JTEST"],
+        },
+      },
+    ],
+    [
+      "incomplete prior-finding accounting",
+      {
+        reconciliation: {
+          ...reviewAcceptedInput([]).reconciliation,
+          priorFindingsAccountedFor: false,
+        },
+      },
+    ],
+  ])("rejects ReviewAccepted with %s", (_name, override) => {
+    expect(() =>
+      transition(
+        baselineReviewState(),
+        { ...reviewAcceptedInput([]), ...override },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 
   it("accepts a policy-authorized reduced-independence review assignment", () => {

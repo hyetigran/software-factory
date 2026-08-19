@@ -92,6 +92,7 @@ export type CurrentPlan = {
 
 export type ActiveReview = {
   cycle: number;
+  commandId: string;
   reviewerAssignment: ProviderModelAssignment;
   reviewPurposeId: string;
   independence:
@@ -100,6 +101,18 @@ export type ActiveReview = {
         reduced: true;
         overrideEvidence: Omit<ArtifactEvidenceReference, "kind">;
       };
+};
+
+export type FindingSeverity = "critical" | "high" | "medium" | "low";
+
+export type ActiveFinding = {
+  findingId: string;
+  status: "open";
+  latestObservationId: string;
+  severity: FindingSeverity;
+  ruleId: string;
+  title: string;
+  evidence: ArtifactEvidenceReference[];
 };
 
 export type ReviewIndependenceOverride = {
@@ -121,8 +134,22 @@ export type AdvancedRunState = AdvancedStateBase &
         activeReview: ActiveReview;
       }
     | {
-        state:
-          "remediation" | "closure" | "qualified" | "qualified_with_waivers";
+        state: "remediation";
+        policyLocked: true;
+        currentPlan: CurrentPlan;
+        activeFindings: ActiveFinding[];
+        activeReview: ActiveReview;
+        activePlanning: ActivePlanning;
+      }
+    | {
+        state: "closure";
+        policyLocked: true;
+        currentPlan: CurrentPlan;
+        activeFindings: ActiveFinding[];
+        activeReview: ActiveReview;
+      }
+    | {
+        state: "qualified" | "qualified_with_waivers";
         policyLocked: true;
       }
   );
@@ -332,6 +359,50 @@ export type IndependenceOverrideGranted = {
   actor: HumanActor;
 };
 
+export type ReviewFindingInput = {
+  findingId: string;
+  observationId: string;
+  severity: FindingSeverity;
+  ruleId: string;
+  title: string;
+  evidence: ArtifactEvidenceReference[];
+};
+
+export type FindingReconciliationValidation = {
+  validator: "deterministic-finding-reconciliation-v1";
+  validatedReviewContentHash: string;
+  priorFindingsAccountedFor: boolean;
+  ambiguousCandidatesResolved: boolean;
+  findingIdsAssignedByOrchestrator: boolean;
+  observationIdsUnique: boolean;
+  blockingFindingIds: string[];
+};
+
+export type ReviewAccepted = {
+  type: "ReviewAccepted";
+  runId: string;
+  expectedStateVersion: number;
+  reviewId: string;
+  reviewPurposeId: string;
+  originatingCommandId: string;
+  reviewArtifact: VerifiedArtifactInput;
+  reviewedPlanVersionId: string;
+  reviewedPlanContentHash: string;
+  reviewedPolicyHash: string;
+  reviewCycle: number;
+  outputValid: boolean;
+  findings: ReviewFindingInput[];
+  reconciliation: FindingReconciliationValidation;
+  nextCommandId: string;
+  nextCommandBudgetMaximum: BudgetReservation;
+  availableBudget: BudgetReservation;
+  auditChainVerified: boolean;
+  databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
+  actor: ModelActor & { kind: "reviewer" };
+};
+
 export type BudgetReservation = {
   calls: number;
   inputTokens: number;
@@ -488,6 +559,53 @@ export type BaselineReview = {
   };
 };
 
+export type GenerateRemediation = {
+  commandId: string;
+  commandKey: string;
+  commandType: "generate_remediation";
+  schemaVersion: 1;
+  runId: string;
+  triggeringStateVersion: number;
+  purposeId: string;
+  inputArtifactHashes: string[];
+  policyHash: string;
+  provider: ProviderModelAssignment["provider"];
+  modelId: string;
+  budgetReservation: BudgetReservation;
+  payload: {
+    ledgerVersionId: string;
+    planVersionId: string;
+    planArtifactId: string;
+    reviewArtifactId: string;
+    blockingFindingIds: string[];
+    providerStorage: "minimize";
+  };
+};
+
+export type ClosureReview = {
+  commandId: string;
+  commandKey: string;
+  commandType: "closure_review";
+  schemaVersion: 1;
+  runId: string;
+  triggeringStateVersion: number;
+  purposeId: string;
+  inputArtifactHashes: string[];
+  policyHash: string;
+  provider: ProviderModelAssignment["provider"];
+  modelId: string;
+  budgetReservation: BudgetReservation;
+  payload: {
+    ledgerVersionId: string;
+    planVersionId: string;
+    planArtifactId: string;
+    baselineReviewArtifactId: string;
+    findingIds: string[];
+    independence: ActiveReview["independence"];
+    providerStorage: "minimize";
+  };
+};
+
 export type RunStartedFact = {
   type: "run_started";
   actor: HumanActor;
@@ -528,7 +646,9 @@ export type CommandPlannedFact = {
       | "render_ledger_approval"
       | "generate_plan"
       | "render_plan"
-      | "baseline_review";
+      | "baseline_review"
+      | "generate_remediation"
+      | "closure_review";
     reservation: BudgetReservation;
   };
 };
@@ -614,6 +734,35 @@ export type PlanVersionAcceptedFact = {
   };
 };
 
+export type ReviewAcceptedFact = {
+  type: "review_accepted";
+  actor: ModelActor & { kind: "reviewer" };
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    reviewId: string;
+    reviewArtifactId: string;
+    reviewContentHash: string;
+    cycle: number;
+    policyHash: string;
+    reviewerAssignment: ProviderModelAssignment;
+    observationIds: string[];
+  };
+};
+
+export type FindingCreatedFact = {
+  type: "finding_created";
+  actor: SystemActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    findingId: string;
+    initialObservationId: string;
+    severity: FindingSeverity;
+    ruleId: string;
+  };
+};
+
 export type IndependenceOverrideGrantedFact = {
   type: "independence_override_granted";
   actor: HumanActor;
@@ -637,6 +786,8 @@ export type TransitionResult = {
     | GeneratePlan
     | RenderPlan
     | BaselineReview
+    | GenerateRemediation
+    | ClosureReview
   >;
   auditFacts: Array<
     | RunStartedFact
@@ -647,6 +798,8 @@ export type TransitionResult = {
     | LedgerApprovedFact
     | PlanningRequestedFact
     | PlanVersionAcceptedFact
+    | ReviewAcceptedFact
+    | FindingCreatedFact
     | IndependenceOverrideGrantedFact
     | CommandPlannedFact
   >;
@@ -659,7 +812,12 @@ type LocalCommand =
   | RenderLedgerApproval
   | RenderPlan;
 
-type PlannedCommand = LocalCommand | GeneratePlan | BaselineReview;
+type PlannedCommand =
+  | LocalCommand
+  | GeneratePlan
+  | BaselineReview
+  | GenerateRemediation
+  | ClosureReview;
 
 function zeroBudgetReservation(): BudgetReservation {
   return {
@@ -784,6 +942,7 @@ export function transition(
     | PlanningRequested
     | PlanGenerated
     | PlanSubmitted
+    | ReviewAccepted
     | IndependenceOverrideGranted,
   policy: PinnedRunPolicy,
 ): TransitionResult {
@@ -802,6 +961,8 @@ export function transition(
       return acceptPlanForBaseline(previousState, input, policy);
     case "PlanSubmitted":
       return acceptPlanForBaseline(previousState, input, policy);
+    case "ReviewAccepted":
+      return acceptBaselineReview(previousState, input, policy);
     case "IndependenceOverrideGranted":
       return grantIndependenceOverride(previousState, input, policy);
     default:
@@ -1823,6 +1984,7 @@ function acceptPlanForBaseline(
       },
       activeReview: {
         cycle: 1,
+        commandId: input.reviewCommandId,
         reviewerAssignment: input.reviewerAssignment,
         reviewPurposeId,
         independence,
@@ -1857,6 +2019,243 @@ function acceptPlanForBaseline(
         reviewCommand,
         "Run independent baseline review",
         reviewEvidence,
+      ),
+    ],
+  };
+}
+
+function acceptBaselineReview(
+  previousState: NonterminalRunState | null,
+  input: ReviewAccepted,
+  policy: PinnedRunPolicy,
+): TransitionResult {
+  if (
+    previousState === null ||
+    previousState.state !== "baseline_review" ||
+    previousState.runId !== input.runId
+  ) {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      "ReviewAccepted requires the matching baseline-review run",
+    );
+  }
+
+  const reconciliation = input.reconciliation;
+  const findingIds = input.findings.map(({ findingId }) => findingId);
+  const observationIds = input.findings.map(
+    ({ observationId }) => observationId,
+  );
+  const uniqueFindingIds = new Set(findingIds);
+  const uniqueObservationIds = new Set(observationIds);
+  const blockingIds = new Set(reconciliation.blockingFindingIds);
+  const findingsValid = input.findings.every(
+    ({ findingId, observationId, ruleId, severity, title, evidence }) =>
+      findingId.length > 0 &&
+      observationId.length > 0 &&
+      ruleId.length > 0 &&
+      ["critical", "high", "medium", "low"].includes(severity) &&
+      title.trim().length > 0 &&
+      evidence.length > 0 &&
+      evidence.every(
+        ({ kind, artifactId, contentHash }) =>
+          kind === "artifact" &&
+          artifactId.length > 0 &&
+          /^[a-f0-9]{64}$/.test(contentHash),
+      ),
+  );
+  const reconciliationValid =
+    reconciliation.validator === "deterministic-finding-reconciliation-v1" &&
+    reconciliation.validatedReviewContentHash ===
+      input.reviewArtifact.contentHash &&
+    reconciliation.priorFindingsAccountedFor &&
+    reconciliation.ambiguousCandidatesResolved &&
+    reconciliation.findingIdsAssignedByOrchestrator &&
+    reconciliation.observationIdsUnique &&
+    uniqueFindingIds.size === findingIds.length &&
+    uniqueObservationIds.size === observationIds.length &&
+    blockingIds.size === reconciliation.blockingFindingIds.length &&
+    reconciliation.blockingFindingIds.every((findingId) =>
+      uniqueFindingIds.has(findingId),
+    );
+  const reviewerAuthorized =
+    input.actor.provider ===
+      previousState.activeReview.reviewerAssignment.provider &&
+    input.actor.modelId ===
+      previousState.activeReview.reviewerAssignment.modelId;
+
+  if (
+    input.expectedStateVersion !== previousState.stateVersion ||
+    input.reviewId.length === 0 ||
+    input.reviewPurposeId !== previousState.activeReview.reviewPurposeId ||
+    input.originatingCommandId !== previousState.activeReview.commandId ||
+    !verifiedArtifactInputIsValid(input.reviewArtifact) ||
+    input.reviewedPlanVersionId !== previousState.currentPlan.versionId ||
+    input.reviewedPlanContentHash !== previousState.currentPlan.contentHash ||
+    input.reviewedPolicyHash !== previousState.policyHash ||
+    policy.policyHash !== previousState.policyHash ||
+    input.reviewCycle !== previousState.activeReview.cycle ||
+    !input.outputValid ||
+    !findingsValid ||
+    !reconciliationValid ||
+    !reviewerAuthorized ||
+    !providerBudgetIsEligible(
+      input.nextCommandBudgetMaximum,
+      input.availableBudget,
+    ) ||
+    input.nextCommandId.length === 0 ||
+    !input.auditChainVerified ||
+    !input.databaseIntegrityVerified ||
+    !input.schemaCompatible ||
+    !input.mutationLeaseAvailable
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "ReviewAccepted requires a verified, reconciled baseline review bound to the active plan and policy",
+    );
+  }
+
+  const nextStateVersion = previousState.stateVersion + 1;
+  const activeFindings: ActiveFinding[] = input.findings.map((finding) => ({
+    findingId: finding.findingId,
+    latestObservationId: finding.observationId,
+    severity: finding.severity,
+    ruleId: finding.ruleId,
+    title: finding.title,
+    evidence: finding.evidence,
+    status: "open",
+  }));
+  const reviewEvidence = artifactEvidence(
+    input.reviewArtifact.artifactId,
+    input.reviewArtifact.contentHash,
+  );
+  const commonCommand = {
+    schemaVersion: 1 as const,
+    runId: input.runId,
+    triggeringStateVersion: nextStateVersion,
+    inputArtifactHashes: [
+      previousState.currentLedger.contentHash,
+      previousState.currentPlan.contentHash,
+      input.reviewArtifact.contentHash,
+    ],
+    policyHash: policy.policyHash,
+    budgetReservation: input.nextCommandBudgetMaximum,
+  };
+  const command =
+    blockingIds.size > 0
+      ? planCommand<GenerateRemediation>(input.nextCommandId, {
+          ...commonCommand,
+          commandType: "generate_remediation",
+          purposeId: `${input.runId}:plan:${previousState.currentPlan.versionId}:remediation:1`,
+          provider: policy.plannerAssignment.provider,
+          modelId: policy.plannerAssignment.modelId,
+          payload: {
+            ledgerVersionId: previousState.currentLedger.versionId,
+            planVersionId: previousState.currentPlan.versionId,
+            planArtifactId: previousState.currentPlan.artifactId,
+            reviewArtifactId: input.reviewArtifact.artifactId,
+            blockingFindingIds: reconciliation.blockingFindingIds,
+            providerStorage: "minimize",
+          },
+        })
+      : planCommand<ClosureReview>(input.nextCommandId, {
+          ...commonCommand,
+          commandType: "closure_review",
+          purposeId: `${input.runId}:plan:${previousState.currentPlan.versionId}:closure:1`,
+          provider: previousState.activeReview.reviewerAssignment.provider,
+          modelId: previousState.activeReview.reviewerAssignment.modelId,
+          payload: {
+            ledgerVersionId: previousState.currentLedger.versionId,
+            planVersionId: previousState.currentPlan.versionId,
+            planArtifactId: previousState.currentPlan.artifactId,
+            baselineReviewArtifactId: input.reviewArtifact.artifactId,
+            findingIds,
+            independence: previousState.activeReview.independence,
+            providerStorage: "minimize",
+          },
+        });
+  const nextReview: ActiveReview = {
+    ...previousState.activeReview,
+    cycle: blockingIds.size > 0 ? 1 : 2,
+    commandId: command.commandId,
+    reviewPurposeId: command.purposeId,
+  };
+  const findingFacts: FindingCreatedFact[] = activeFindings.map((finding) => ({
+    type: "finding_created",
+    actor: {
+      kind: "system",
+      component: "finding-reconciliation",
+      version: "0.0.0",
+    },
+    reason: "Create an authoritative finding from the accepted observation",
+    evidence: [reviewEvidence, ...finding.evidence],
+    payload: {
+      findingId: finding.findingId,
+      initialObservationId: finding.latestObservationId,
+      severity: finding.severity,
+      ruleId: finding.ruleId,
+    },
+  }));
+
+  return {
+    nextState:
+      blockingIds.size > 0
+        ? {
+            ...previousState,
+            state: "remediation",
+            stateVersion: nextStateVersion,
+            currentPlan: previousState.currentPlan,
+            activeFindings,
+            activeReview: nextReview,
+            activePlanning: {
+              purposeId: command.purposeId,
+              commandId: command.commandId,
+              plannerAssignment: policy.plannerAssignment,
+            },
+          }
+        : {
+            ...previousState,
+            state: "closure",
+            stateVersion: nextStateVersion,
+            currentPlan: previousState.currentPlan,
+            activeFindings,
+            activeReview: nextReview,
+          },
+    commands: [command],
+    auditFacts: [
+      {
+        type: "review_accepted",
+        actor: input.actor,
+        reason: "Accept and reconcile the verified baseline review",
+        evidence: [
+          reviewEvidence,
+          artifactEvidence(
+            previousState.currentPlan.artifactId,
+            previousState.currentPlan.contentHash,
+          ),
+        ],
+        payload: {
+          reviewId: input.reviewId,
+          reviewArtifactId: input.reviewArtifact.artifactId,
+          reviewContentHash: input.reviewArtifact.contentHash,
+          cycle: input.reviewCycle,
+          policyHash: policy.policyHash,
+          reviewerAssignment: previousState.activeReview.reviewerAssignment,
+          observationIds,
+        },
+      },
+      ...findingFacts,
+      commandPlannedFact(
+        command,
+        blockingIds.size > 0
+          ? "Plan remediation for blocking findings"
+          : "Run full-document closure review",
+        [
+          reviewEvidence,
+          artifactEvidence(
+            previousState.currentPlan.artifactId,
+            previousState.currentPlan.contentHash,
+          ),
+        ],
       ),
     ],
   };
