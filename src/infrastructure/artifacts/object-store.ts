@@ -1,24 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import {
-  access,
-  chmod,
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  rename,
-  unlink,
-} from "node:fs/promises";
+import { link, open, readFile, unlink } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 
-export type WorkspacePaths = {
-  projectRoot: string;
-  root: string;
-  objects: string;
-  cassettes: string;
-  locks: string;
-};
+import {
+  initializeWorkspace,
+  type WorkspacePaths,
+} from "../platform/workspace.js";
+
+export {
+  initializeWorkspace,
+  type WorkspacePaths,
+} from "../platform/workspace.js";
 
 export type StagedObject = {
   contentHash: string;
@@ -30,9 +23,71 @@ export type CopiedSource = StagedObject & {
   provenancePath: string;
 };
 
+export type ArtifactKind =
+  | "raw_requirements"
+  | "requirements_ledger"
+  | "coverage_report"
+  | "structured_plan"
+  | "rendered_plan"
+  | "external_edit"
+  | "review"
+  | "provider_request"
+  | "provider_response"
+  | "native_usage"
+  | "terminal_manifest"
+  | "terminal_report"
+  | "backup_manifest"
+  | "other";
+
+export type ArtifactProvenance = {
+  method:
+    | "copied"
+    | "human_submitted"
+    | "provider_generated"
+    | "deterministic_render"
+    | "exported";
+  sourcePath?: string;
+  sourceArtifactIds?: string[];
+  commandId?: string;
+  attemptId?: string;
+};
+
+export type ArtifactRegistration = {
+  artifactId: string;
+  kind: ArtifactKind;
+  mediaType: string;
+  schemaId?: string;
+  createdBy: string;
+  provenance: ArtifactProvenance;
+};
+
+export type StagedArtifactDescriptor = {
+  schemaVersion: 1;
+  artifactId: string;
+  kind: ArtifactKind;
+  contentHash: string;
+  byteLength: number;
+  mediaType: string;
+  schemaId?: string;
+  createdBy: string;
+  provenance: ArtifactProvenance;
+  objectPath: string;
+};
+
+export type ArtifactStoreHooks = {
+  beforePublish?: (context: {
+    contentHash: string;
+    objectPath: string;
+  }) => Promise<void>;
+  beforeObjectOpen?: (context: {
+    contentHash: string;
+    objectPath: string;
+  }) => Promise<void>;
+};
+
 export class ArtifactIntegrityError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "ArtifactIntegrityError";
   }
 }
@@ -41,100 +96,19 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-async function ensurePrivateDirectory(path: string): Promise<void> {
-  await mkdir(path, { recursive: true, mode: 0o700 });
-  const metadata = await lstat(path);
-  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-    throw new Error(`Workspace path is not a regular directory: ${path}`);
-  }
-  await chmod(path, 0o700);
-}
-
-async function ensureFactoryIgnored(projectRoot: string): Promise<void> {
-  const ignorePath = join(projectRoot, ".gitignore");
-  let existing = "";
-  try {
-    const metadata = await lstat(ignorePath);
-    if (!metadata.isFile() || metadata.isSymbolicLink()) {
-      throw new Error(`Git ignore path is not a regular file: ${ignorePath}`);
-    }
-    existing = await readFile(ignorePath, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-  }
-
-  if (!existing.split(/\r?\n/u).includes(".factory/")) {
-    const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-    const handle = await open(
-      ignorePath,
-      constants.O_APPEND |
-        constants.O_CREAT |
-        constants.O_WRONLY |
-        constants.O_NOFOLLOW,
-      0o600,
-    );
-    try {
-      await handle.writeFile(`${prefix}.factory/\n`, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-  }
-}
-
-export async function initializeWorkspace(
-  projectRootInput: string,
-): Promise<WorkspacePaths> {
-  const projectRoot = resolve(projectRootInput);
-  const projectMetadata = await lstat(projectRoot);
-  if (!projectMetadata.isDirectory() || projectMetadata.isSymbolicLink()) {
-    throw new Error(`Project root is not a regular directory: ${projectRoot}`);
-  }
-
-  const root = join(projectRoot, ".factory");
-  const paths: WorkspacePaths = {
-    projectRoot,
-    root,
-    objects: join(root, "objects"),
-    cassettes: join(root, "cassettes"),
-    locks: join(root, "locks"),
-  };
-  await ensurePrivateDirectory(paths.root);
-  await Promise.all([
-    ensurePrivateDirectory(paths.objects),
-    ensurePrivateDirectory(join(paths.objects, ".tmp")),
-    ensurePrivateDirectory(paths.cassettes),
-    ensurePrivateDirectory(paths.locks),
-  ]);
-  const privateIgnorePath = join(paths.root, ".gitignore");
-  const privateIgnore = await open(
-    privateIgnorePath,
-    constants.O_CREAT |
-      constants.O_TRUNC |
-      constants.O_WRONLY |
-      constants.O_NOFOLLOW,
-    0o600,
-  );
-  try {
-    await privateIgnore.writeFile("*\n", "utf8");
-    await privateIgnore.sync();
-  } finally {
-    await privateIgnore.close();
-  }
-  await ensureFactoryIgnored(projectRoot);
-  return paths;
-}
-
 export class ContentAddressedArtifactStore {
-  private constructor(readonly workspace: WorkspacePaths) {}
+  private constructor(
+    readonly workspace: WorkspacePaths,
+    private readonly hooks: ArtifactStoreHooks,
+  ) {}
 
   static async open(
     projectRoot: string,
+    hooks: ArtifactStoreHooks = {},
   ): Promise<ContentAddressedArtifactStore> {
     return new ContentAddressedArtifactStore(
       await initializeWorkspace(projectRoot),
+      hooks,
     );
   }
 
@@ -161,6 +135,7 @@ export class ContentAddressedArtifactStore {
     try {
       await handle.writeFile(bytes);
       await handle.sync();
+      await handle.chmod(0o400);
     } finally {
       await handle.close();
     }
@@ -172,8 +147,21 @@ export class ContentAddressedArtifactStore {
           "Temporary object verification failed",
         );
       }
-      await rename(temporaryPath, objectPath);
-      await chmod(objectPath, 0o400);
+      await this.hooks.beforePublish?.({ contentHash, objectPath });
+      try {
+        await link(temporaryPath, objectPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+          throw error;
+        }
+        const winner = await this.readVerified(contentHash);
+        if (!winner.equals(bytes)) {
+          throw new ArtifactIntegrityError(
+            `Published object does not match its content hash: ${contentHash}`,
+          );
+        }
+      }
+      await unlink(temporaryPath);
       const directory = await open(this.workspace.objects, "r");
       try {
         await directory.sync();
@@ -188,24 +176,70 @@ export class ContentAddressedArtifactStore {
     return { contentHash, byteLength: bytes.length, objectPath };
   }
 
+  async stageArtifact(
+    bytes: Uint8Array,
+    registration: ArtifactRegistration,
+  ): Promise<StagedArtifactDescriptor> {
+    if (
+      !/^[A-Za-z][A-Za-z0-9_-]{2,127}$/u.test(registration.artifactId) ||
+      registration.mediaType.trim().length === 0 ||
+      registration.createdBy.trim().length === 0
+    ) {
+      throw new TypeError("Artifact registration is invalid");
+    }
+    const staged = await this.stage(bytes);
+    return {
+      schemaVersion: 1,
+      artifactId: registration.artifactId,
+      kind: registration.kind,
+      contentHash: staged.contentHash,
+      byteLength: staged.byteLength,
+      mediaType: registration.mediaType,
+      ...(registration.schemaId === undefined
+        ? {}
+        : { schemaId: registration.schemaId }),
+      createdBy: registration.createdBy,
+      provenance: registration.provenance,
+      objectPath: staged.objectPath,
+    };
+  }
+
   async readVerified(contentHash: string): Promise<Buffer> {
     if (!/^[a-f0-9]{64}$/u.test(contentHash)) {
       throw new ArtifactIntegrityError(`Invalid content hash: ${contentHash}`);
     }
+    let handle;
     const objectPath = join(this.workspace.objects, contentHash);
-    const metadata = await lstat(objectPath);
-    if (!metadata.isFile() || metadata.isSymbolicLink()) {
-      throw new ArtifactIntegrityError(
-        `Object path is not a regular file: ${contentHash}`,
+    try {
+      await this.hooks.beforeObjectOpen?.({ contentHash, objectPath });
+      handle = await open(
+        objectPath,
+        constants.O_RDONLY | constants.O_NOFOLLOW,
       );
+      const metadata = await handle.stat();
+      if (!metadata.isFile()) {
+        throw new ArtifactIntegrityError(
+          `Object path is not a regular file: ${contentHash}`,
+        );
+      }
+      const bytes = await handle.readFile();
+      if (sha256(bytes) !== contentHash) {
+        throw new ArtifactIntegrityError(
+          `Object content does not match its address: ${contentHash}`,
+        );
+      }
+      return bytes;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ELOOP") {
+        throw new ArtifactIntegrityError(
+          `Object path is not a regular file: ${contentHash}`,
+          { cause: error },
+        );
+      }
+      throw error;
+    } finally {
+      await handle?.close();
     }
-    const bytes = await readFile(objectPath);
-    if (sha256(bytes) !== contentHash) {
-      throw new ArtifactIntegrityError(
-        `Object content does not match its address: ${contentHash}`,
-      );
-    }
-    return bytes;
   }
 
   async copySource(sourcePathInput: string): Promise<CopiedSource> {
@@ -237,9 +271,7 @@ export class ContentAddressedArtifactStore {
   }
 
   private async readIfPresent(contentHash: string): Promise<Buffer | null> {
-    const path = join(this.workspace.objects, contentHash);
     try {
-      await access(path, constants.R_OK);
       return await this.readVerified(contentHash);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {

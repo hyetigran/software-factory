@@ -12,6 +12,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { stageResolvedConfiguration } from "../../src/application/stage-configuration.js";
 import {
   ArtifactIntegrityError,
   ContentAddressedArtifactStore,
@@ -71,6 +72,76 @@ describe("workspace and content-addressed artifact store", () => {
     expect((await lstat(first.objectPath)).mode & 0o777).toBe(0o400);
   });
 
+  it("returns complete artifact metadata for the authoritative commit", async () => {
+    const project = await temporaryProject();
+    const store = await ContentAddressedArtifactStore.open(project);
+
+    const descriptor = await store.stageArtifact(Buffer.from("{}", "utf8"), {
+      artifactId: "artifact_ledger_01JTEST",
+      kind: "requirements_ledger",
+      mediaType: "application/json",
+      schemaId: "requirements-ledger.v1",
+      createdBy: "human:tig",
+      provenance: {
+        method: "human_submitted",
+        sourceArtifactIds: ["artifact_source_01JTEST"],
+      },
+    });
+
+    expect(descriptor).toEqual(
+      expect.objectContaining({
+        schemaVersion: 1,
+        artifactId: "artifact_ledger_01JTEST",
+        kind: "requirements_ledger",
+        byteLength: 2,
+        mediaType: "application/json",
+        schemaId: "requirements-ledger.v1",
+        createdBy: "human:tig",
+      }),
+    );
+  });
+
+  it("stages deterministic complete configuration and rejects credential values", async () => {
+    const project = await temporaryProject();
+    const store = await ContentAddressedArtifactStore.open(project);
+    const configuration = {
+      schemaVersion: 1 as const,
+      policyHash: "a".repeat(64),
+      plannerAssignment: { provider: "openai" as const, modelId: "gpt-pinned" },
+      reviewerAssignment: {
+        provider: "anthropic" as const,
+        modelId: "claude-pinned",
+      },
+      artifactHashes: { reviewSchema: "b".repeat(64) },
+      budgets: { calls: 4, costUsdMicros: 100_000_000 },
+      credentialReferences: {
+        openai: { kind: "environment" as const, reference: "OPENAI_API_KEY" },
+      },
+    };
+
+    const staged = await stageResolvedConfiguration(store, configuration, {
+      artifactId: "artifact_configuration_01JTEST",
+      createdBy: "human:tig",
+    });
+    const repeated = await stageResolvedConfiguration(store, configuration, {
+      artifactId: "artifact_configuration_02JTEST",
+      createdBy: "human:tig",
+    });
+
+    expect(staged.contentHash).toBe(repeated.contentHash);
+    expect(staged.schemaId).toBe("software-factory/resolved-configuration.v1");
+    await expect(
+      stageResolvedConfiguration(
+        store,
+        { ...configuration, apiKey: "secret-value" } as typeof configuration,
+        {
+          artifactId: "artifact_configuration_bad_01JTEST",
+          createdBy: "human:tig",
+        },
+      ),
+    ).rejects.toThrow("secret-free");
+  });
+
   it("copies a regular source once and preserves its original provenance path", async () => {
     const project = await temporaryProject();
     const sourcePath = join(project, "requirements.md");
@@ -122,5 +193,44 @@ describe("workspace and content-addressed artifact store", () => {
     await expect(store.readVerified(staged.contentHash)).rejects.toBeInstanceOf(
       ArtifactIntegrityError,
     );
+  });
+
+  it("never replaces a publication-race winner and opens objects no-follow", async () => {
+    const project = await temporaryProject();
+    let racedObjectPath = "";
+    const racingStore = await ContentAddressedArtifactStore.open(project, {
+      beforePublish: async ({ objectPath }) => {
+        racedObjectPath = objectPath;
+        await writeFile(objectPath, "corrupt race winner", { mode: 0o400 });
+      },
+    });
+
+    await expect(
+      racingStore.stage(Buffer.from("candidate", "utf8")),
+    ).rejects.toBeInstanceOf(ArtifactIntegrityError);
+    expect(await readFile(racedObjectPath, "utf8")).toBe("corrupt race winner");
+
+    await chmod(racedObjectPath, 0o600);
+    await unlink(racedObjectPath);
+    const baseStore = await ContentAddressedArtifactStore.open(project);
+    const staged = await baseStore.stage(
+      Buffer.from("verified object", "utf8"),
+    );
+    const outside = join(project, "outside-race.txt");
+    await writeFile(outside, "outside", "utf8");
+    let swap = true;
+    const swappingStore = await ContentAddressedArtifactStore.open(project, {
+      beforeObjectOpen: async ({ objectPath }) => {
+        if (!swap) return;
+        swap = false;
+        await chmod(objectPath, 0o600);
+        await unlink(objectPath);
+        await symlink(outside, objectPath);
+      },
+    });
+
+    await expect(
+      swappingStore.readVerified(staged.contentHash),
+    ).rejects.toBeInstanceOf(ArtifactIntegrityError);
   });
 });
