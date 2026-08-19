@@ -70,6 +70,8 @@ const baseSnapshot = {
   commandType: "generate_plan",
   commandReservation: reservation,
   priorAttempts: 1,
+  transportRetries: 0,
+  schemaRepairs: 0,
   runAttempts: 1,
   humanRerunAuthorized: false,
   strictReplayVerified: false,
@@ -158,5 +160,42 @@ describe("attempt recovery policy", () => {
         policy,
       ),
     ).toMatchObject({ noOpAcceptedAttemptId: "attempt_accepted" });
+  });
+
+  it("repairs the original logical command after schema-invalid output", () => {
+    expect(
+      decideAttemptPolicy(
+        { ...baseRequest, attemptKind: "schema_repair" },
+        {
+          ...baseSnapshot,
+          logicalStatus: "failed",
+          commandType: "generate_plan",
+          lastAttempt: {
+            attemptId: "attempt_1",
+            status: "failed",
+            failureClass: "schema_invalid",
+            correlationId: "correlation_1",
+          },
+        },
+        policy,
+      ).reservation,
+    ).toEqual(reservation);
+    expect(() =>
+      decideAttemptPolicy(
+        { ...baseRequest, attemptKind: "schema_repair" },
+        {
+          ...baseSnapshot,
+          logicalStatus: "failed",
+          schemaRepairs: 1,
+          lastAttempt: {
+            attemptId: "attempt_1",
+            status: "failed",
+            failureClass: "schema_invalid",
+            correlationId: "correlation_1",
+          },
+        },
+        policy,
+      ),
+    ).toThrow("not eligible");
   });
 });

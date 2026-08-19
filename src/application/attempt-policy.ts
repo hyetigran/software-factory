@@ -9,6 +9,8 @@ export type AttemptRecoverySnapshot = {
   commandType: string;
   commandReservation: BudgetReservation;
   priorAttempts: number;
+  transportRetries: number;
+  schemaRepairs: number;
   runAttempts: number;
   lastAttempt?: {
     attemptId: string;
@@ -65,15 +67,16 @@ export function decideAttemptPolicy(
       snapshot.priorAttempts === 0) ||
     (request.attemptKind === "transport_retry" &&
       ["failed", "unknown"].includes(snapshot.logicalStatus) &&
-      snapshot.priorAttempts - 1 < policy.ceilings.retries &&
+      snapshot.transportRetries < policy.ceilings.retries &&
       (last?.status === "unknown" ||
         ["transport_retryable", "provider_error_retryable"].includes(
           last?.failureClass ?? "",
         )) &&
       (!retryingUnknown || last?.correlationId === request.correlationId)) ||
     (request.attemptKind === "schema_repair" &&
-      snapshot.commandType === "repair_schema" &&
-      snapshot.priorAttempts < policy.ceilings.repairs) ||
+      snapshot.logicalStatus === "failed" &&
+      last?.failureClass === "schema_invalid" &&
+      snapshot.schemaRepairs < policy.ceilings.repairs) ||
     (request.attemptKind === "strict_replay" &&
       snapshot.strictReplayVerified &&
       ["planned", "failed", "unknown"].includes(snapshot.logicalStatus)) ||

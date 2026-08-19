@@ -612,6 +612,19 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
           }
         | undefined;
       const priorAttempts = attemptCounts.command_attempts ?? 0;
+      const recoveryCounts = this.database
+        .prepare(
+          `SELECT
+             sum(CASE WHEN json_extract(payload_json, '$.attemptKind') = 'transport_retry' THEN 1 ELSE 0 END) AS retries,
+             sum(CASE WHEN json_extract(payload_json, '$.attemptKind') = 'schema_repair' THEN 1 ELSE 0 END) AS repairs
+           FROM audit_entries
+           WHERE run_id = ? AND fact_type = 'command_attempt_started'
+             AND json_extract(payload_json, '$.commandId') = ?`,
+        )
+        .get(request.runId, request.commandId) as {
+        retries: number | null;
+        repairs: number | null;
+      };
       const humanRerunAuthorized =
         request.humanAuthorizationId !== undefined &&
         (() => {
@@ -656,6 +669,8 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
           commandType: command.commandType,
           commandReservation: command.budgetReservation,
           priorAttempts,
+          transportRetries: recoveryCounts.retries ?? 0,
+          schemaRepairs: recoveryCounts.repairs ?? 0,
           runAttempts: attemptCounts.run_attempts,
           ...(lastAttempt === undefined
             ? {}
