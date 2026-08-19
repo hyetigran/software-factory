@@ -6,6 +6,7 @@ import {
   type DraftRunState,
   type LedgerApprovalRequested,
   type LedgerSubmitted,
+  type PlanGenerated,
   type PlanningRequested,
   type RunStarted,
   type SourceExclusionApproved,
@@ -20,6 +21,10 @@ const reviewContentHash = "f".repeat(64);
 const coverageReportContentHash = "0".repeat(64);
 const plannerPromptContentHash = "3".repeat(64);
 const planSchemaContentHash = "4".repeat(64);
+const sectionMapContentHash = "5".repeat(64);
+const reviewerPromptContentHash = "6".repeat(64);
+const reviewSchemaContentHash = "7".repeat(64);
+const componentRegistryContentHash = "8".repeat(64);
 
 function runStartedInput(): RunStarted {
   return {
@@ -169,6 +174,79 @@ function planningRequestedInput(): PlanningRequested {
   };
 }
 
+function planningState(): AdvancedRunState & { state: "planning" } {
+  const result = transition(
+    requirementsApprovedState(),
+    planningRequestedInput(),
+    { policyHash },
+  ).nextState;
+  if (result.state !== "planning") {
+    throw new Error("Expected planning state fixture");
+  }
+  return result;
+}
+
+function planGeneratedInput(): PlanGenerated {
+  return {
+    type: "PlanGenerated",
+    runId: "run_01JTEST0000000000000000000",
+    expectedStateVersion: 5,
+    planPurposeId: "purpose_plan_01JTEST",
+    originatingCommandId: "command_generate_plan_01JTEST",
+    planVersionId: "plan_version_01JTEST",
+    planArtifactId: "artifact_plan_01JTEST",
+    planContentHash,
+    planObjectVerified: true,
+    outputValid: true,
+    sectionContinuityValid: true,
+    sectionTransitionMapArtifactId: "artifact_section_map_01JTEST",
+    sectionTransitionMapContentHash: sectionMapContentHash,
+    sectionTransitionMapVerified: true,
+    provenanceArtifactId: "artifact_plan_provenance_01JTEST",
+    provenanceContentHash: reviewContentHash,
+    provenanceVerified: true,
+    reviewerAssignment: {
+      provider: "anthropic",
+      modelId: "claude-frontier-pinned-20260801",
+    },
+    reviewerModelAllowed: true,
+    reviewerModelIdentityPinned: true,
+    reviewerIndependenceSatisfied: true,
+    reviewerPromptArtifactId: "artifact_reviewer_prompt_01JTEST",
+    reviewerPromptContentHash,
+    reviewerPromptVerified: true,
+    reviewSchemaArtifactId: "artifact_review_schema_01JTEST",
+    reviewSchemaContentHash,
+    reviewSchemaVerified: true,
+    componentRegistryArtifactId: "artifact_component_registry_01JTEST",
+    componentRegistryContentHash,
+    componentRegistryVerified: true,
+    reviewBudgetMaximum: {
+      calls: 1,
+      inputTokens: 30_000,
+      outputTokens: 12_000,
+      costUsdMicros: 10_000_000,
+    },
+    availableBudget: {
+      calls: 2,
+      inputTokens: 70_000,
+      outputTokens: 28_000,
+      costUsdMicros: 40_000_000,
+    },
+    auditChainVerified: true,
+    databaseIntegrityVerified: true,
+    schemaCompatible: true,
+    mutationLeaseAvailable: true,
+    renderCommandId: "command_render_plan_01JTEST",
+    reviewCommandId: "command_baseline_review_01JTEST",
+    actor: {
+      kind: "planner",
+      provider: "openai",
+      modelId: "gpt-5.6-2026-08-01",
+    },
+  };
+}
+
 function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
   const draft = transition(null, runStartedInput(), { policyHash }).nextState;
   const base = {
@@ -203,10 +281,39 @@ function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
       state,
       activePlanning: {
         purposeId: "purpose_plan_01JTEST",
+        commandId: "command_generate_plan_01JTEST",
         plannerAssignment: {
           provider: "openai",
           modelId: "gpt-5.6-2026-08-01",
         },
+      },
+    };
+  }
+  if (state === "baseline_review") {
+    return {
+      ...base,
+      state,
+      currentPlan: {
+        versionId: "plan_version_01JTEST",
+        artifactId: "artifact_plan_01JTEST",
+        contentHash: planContentHash,
+        sectionTransitionMap: {
+          artifactId: "artifact_section_map_01JTEST",
+          contentHash: sectionMapContentHash,
+        },
+        provenance: {
+          artifactId: "artifact_plan_provenance_01JTEST",
+          contentHash: reviewContentHash,
+        },
+      },
+      activeReview: {
+        cycle: 1,
+        reviewerAssignment: {
+          provider: "anthropic",
+          modelId: "claude-frontier-pinned-20260801",
+        },
+        reviewPurposeId:
+          "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
       },
     };
   }
@@ -1570,6 +1677,7 @@ describe("transition", () => {
       policyLocked: true,
       activePlanning: {
         purposeId: "purpose_plan_01JTEST",
+        commandId: "command_generate_plan_01JTEST",
         plannerAssignment: {
           provider: "openai",
           modelId: "gpt-5.6-2026-08-01",
@@ -1792,5 +1900,233 @@ describe("transition", () => {
         { policyHash },
       ),
     ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
+  });
+
+  it("accepts a generated plan and schedules independent baseline review", () => {
+    const planning = planningState();
+
+    const result = transition(planning, planGeneratedInput(), { policyHash });
+
+    expect(result.nextState).toEqual({
+      ...planning,
+      state: "baseline_review",
+      stateVersion: 6,
+      currentPlan: {
+        versionId: "plan_version_01JTEST",
+        artifactId: "artifact_plan_01JTEST",
+        contentHash: planContentHash,
+        sectionTransitionMap: {
+          artifactId: "artifact_section_map_01JTEST",
+          contentHash: sectionMapContentHash,
+        },
+        provenance: {
+          artifactId: "artifact_plan_provenance_01JTEST",
+          contentHash: reviewContentHash,
+        },
+      },
+      activeReview: {
+        cycle: 1,
+        reviewerAssignment: planGeneratedInput().reviewerAssignment,
+        reviewPurposeId:
+          "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
+      },
+    });
+    expect(result.commands).toEqual([
+      expect.objectContaining({
+        commandId: "command_render_plan_01JTEST",
+        commandType: "render_plan",
+        triggeringStateVersion: 6,
+        provider: "local",
+        budgetReservation: {
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsdMicros: 0,
+        },
+        payload: {
+          planVersionId: "plan_version_01JTEST",
+          planArtifactId: "artifact_plan_01JTEST",
+        },
+      }),
+      expect.objectContaining({
+        commandId: "command_baseline_review_01JTEST",
+        commandType: "baseline_review",
+        triggeringStateVersion: 6,
+        provider: "anthropic",
+        modelId: "claude-frontier-pinned-20260801",
+        budgetReservation: planGeneratedInput().reviewBudgetMaximum,
+        payload: {
+          ledgerVersionId: "ledger_01JTEST",
+          ledgerArtifactId: "artifact_ledger_01JTEST",
+          planVersionId: "plan_version_01JTEST",
+          planArtifactId: "artifact_plan_01JTEST",
+          renderPlanCommandId: "command_render_plan_01JTEST",
+          reviewerPromptArtifactId: "artifact_reviewer_prompt_01JTEST",
+          reviewSchemaArtifactId: "artifact_review_schema_01JTEST",
+          componentRegistryArtifactId: "artifact_component_registry_01JTEST",
+          providerStorage: "minimize",
+        },
+      }),
+    ]);
+    expect(result.auditFacts[0]).toEqual({
+      type: "plan_version_accepted",
+      actor: planGeneratedInput().actor,
+      reason: "Accept the verified Planner output for baseline review",
+      evidence: [
+        {
+          kind: "artifact",
+          artifactId: "artifact_plan_01JTEST",
+          contentHash: planContentHash,
+        },
+        {
+          kind: "artifact",
+          artifactId: "artifact_section_map_01JTEST",
+          contentHash: sectionMapContentHash,
+        },
+        {
+          kind: "artifact",
+          artifactId: "artifact_plan_provenance_01JTEST",
+          contentHash: reviewContentHash,
+        },
+      ],
+      payload: {
+        planVersionId: "plan_version_01JTEST",
+        planArtifactId: "artifact_plan_01JTEST",
+        planContentHash,
+        sectionTransitionMapArtifactId: "artifact_section_map_01JTEST",
+        sectionTransitionMapContentHash: sectionMapContentHash,
+        provenanceArtifactId: "artifact_plan_provenance_01JTEST",
+        provenanceContentHash: reviewContentHash,
+      },
+    });
+  });
+
+  it.each([
+    ["a stale state version", { expectedStateVersion: 4 }],
+    ["a different planning purpose", { planPurposeId: "purpose_other" }],
+    ["a different command", { originatingCommandId: "command_other" }],
+    ["an unverified plan", { planObjectVerified: false }],
+    ["invalid structured output", { outputValid: false }],
+    ["invalid section continuity", { sectionContinuityValid: false }],
+    ["an unverified transition map", { sectionTransitionMapVerified: false }],
+    ["unverified provenance", { provenanceVerified: false }],
+    ["an unallowlisted Reviewer", { reviewerModelAllowed: false }],
+    ["a floating Reviewer identity", { reviewerModelIdentityPinned: false }],
+    ["reduced Reviewer independence", { reviewerIndependenceSatisfied: false }],
+    [
+      "the Planner provider as Reviewer",
+      {
+        reviewerAssignment: {
+          provider: "openai",
+          modelId: "gpt-reviewer-pinned",
+        },
+      },
+    ],
+    ["an unverified Reviewer prompt", { reviewerPromptVerified: false }],
+    ["an unverified review schema", { reviewSchemaVerified: false }],
+    ["an unverified component registry", { componentRegistryVerified: false }],
+    ["an invalid plan hash", { planContentHash: "invalid" }],
+    [
+      "an invalid transition-map hash",
+      { sectionTransitionMapContentHash: "invalid" },
+    ],
+    ["an invalid provenance hash", { provenanceContentHash: "invalid" }],
+    [
+      "an invalid Reviewer-prompt hash",
+      { reviewerPromptContentHash: "invalid" },
+    ],
+    ["an invalid review-schema hash", { reviewSchemaContentHash: "invalid" }],
+    ["an invalid registry hash", { componentRegistryContentHash: "invalid" }],
+    ["a missing plan version", { planVersionId: "" }],
+    ["a missing plan artifact", { planArtifactId: "" }],
+    [
+      "a missing Reviewer model",
+      { reviewerAssignment: { provider: "anthropic", modelId: "" } },
+    ],
+    ["an unverified audit chain", { auditChainVerified: false }],
+    ["failed database integrity", { databaseIntegrityVerified: false }],
+    ["an incompatible schema", { schemaCompatible: false }],
+    ["a conflicting mutation lease", { mutationLeaseAvailable: false }],
+    [
+      "the wrong Planner actor",
+      {
+        actor: {
+          kind: "planner",
+          provider: "anthropic",
+          modelId: "claude-other",
+        },
+      },
+    ],
+    [
+      "an invalid review maximum",
+      {
+        reviewBudgetMaximum: {
+          calls: 0,
+          inputTokens: 30_000,
+          outputTokens: 12_000,
+          costUsdMicros: 10_000_000,
+        },
+      },
+    ],
+    [
+      "insufficient review-call capacity",
+      {
+        availableBudget: {
+          calls: 0,
+          inputTokens: 70_000,
+          outputTokens: 28_000,
+          costUsdMicros: 40_000_000,
+        },
+      },
+    ],
+    [
+      "insufficient review-token capacity",
+      {
+        availableBudget: {
+          calls: 2,
+          inputTokens: 29_999,
+          outputTokens: 28_000,
+          costUsdMicros: 40_000_000,
+        },
+      },
+    ],
+    [
+      "duplicate command identities",
+      { reviewCommandId: "command_render_plan_01JTEST" },
+    ],
+  ])("rejects PlanGenerated with %s", (_name, override) => {
+    const input = { ...planGeneratedInput(), ...override } as PlanGenerated;
+
+    expect(() =>
+      transition(planningState(), input, { policyHash }),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it.each([
+    ["no run", null],
+    ["requirements approval", requirementsApprovedState()],
+    ["baseline review", advancedRunState("baseline_review")],
+  ])("rejects PlanGenerated from %s", (_name, state) => {
+    expect(() =>
+      transition(state, planGeneratedInput(), { policyHash }),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
+  });
+
+  it("rejects PlanGenerated for a different run", () => {
+    expect(() =>
+      transition(
+        planningState(),
+        { ...planGeneratedInput(), runId: "run_other" },
+        { policyHash },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
+  });
+
+  it("rejects PlanGenerated under a different pinned policy", () => {
+    expect(() =>
+      transition(planningState(), planGeneratedInput(), {
+        policyHash: "9".repeat(64),
+      }),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 });

@@ -14,6 +14,12 @@ export type SystemActor = {
   version: string;
 };
 
+export type ModelActor = {
+  kind: "planner" | "reviewer";
+  provider: string;
+  modelId: string;
+};
+
 export type ArtifactEvidenceReference = {
   kind: "artifact";
   artifactId: string;
@@ -71,7 +77,22 @@ export type PlannerAssignment = {
 
 export type ActivePlanning = {
   purposeId: string;
+  commandId: string;
   plannerAssignment: PlannerAssignment;
+};
+
+export type CurrentPlan = {
+  versionId: string;
+  artifactId: string;
+  contentHash: string;
+  sectionTransitionMap: Omit<ArtifactEvidenceReference, "kind">;
+  provenance: Omit<ArtifactEvidenceReference, "kind">;
+};
+
+export type ActiveReview = {
+  cycle: number;
+  reviewerAssignment: PlannerAssignment;
+  reviewPurposeId: string;
 };
 
 export type AdvancedRunState = AdvancedStateBase &
@@ -79,12 +100,14 @@ export type AdvancedRunState = AdvancedStateBase &
     | { state: "requirements_approved"; policyLocked: boolean }
     | { state: "planning"; policyLocked: true; activePlanning: ActivePlanning }
     | {
+        state: "baseline_review";
+        policyLocked: true;
+        currentPlan: CurrentPlan;
+        activeReview: ActiveReview;
+      }
+    | {
         state:
-          | "baseline_review"
-          | "remediation"
-          | "closure"
-          | "qualified"
-          | "qualified_with_waivers";
+          "remediation" | "closure" | "qualified" | "qualified_with_waivers";
         policyLocked: true;
       }
   );
@@ -199,6 +222,48 @@ export type PlanningRequested = {
   actor: HumanActor;
 };
 
+export type PlanGenerated = {
+  type: "PlanGenerated";
+  runId: string;
+  expectedStateVersion: number;
+  planPurposeId: string;
+  originatingCommandId: string;
+  planVersionId: string;
+  planArtifactId: string;
+  planContentHash: string;
+  planObjectVerified: boolean;
+  outputValid: boolean;
+  sectionContinuityValid: boolean;
+  sectionTransitionMapArtifactId: string;
+  sectionTransitionMapContentHash: string;
+  sectionTransitionMapVerified: boolean;
+  provenanceArtifactId: string;
+  provenanceContentHash: string;
+  provenanceVerified: boolean;
+  reviewerAssignment: PlannerAssignment;
+  reviewerModelAllowed: boolean;
+  reviewerModelIdentityPinned: boolean;
+  reviewerIndependenceSatisfied: boolean;
+  reviewerPromptArtifactId: string;
+  reviewerPromptContentHash: string;
+  reviewerPromptVerified: boolean;
+  reviewSchemaArtifactId: string;
+  reviewSchemaContentHash: string;
+  reviewSchemaVerified: boolean;
+  componentRegistryArtifactId: string;
+  componentRegistryContentHash: string;
+  componentRegistryVerified: boolean;
+  reviewBudgetMaximum: BudgetReservation;
+  availableBudget: BudgetReservation;
+  auditChainVerified: boolean;
+  databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
+  renderCommandId: string;
+  reviewCommandId: string;
+  actor: ModelActor & { kind: "planner" };
+};
+
 export type BudgetReservation = {
   calls: number;
   inputTokens: number;
@@ -307,6 +372,50 @@ export type GeneratePlan = {
   };
 };
 
+export type RenderPlan = {
+  commandId: string;
+  commandKey: string;
+  commandType: "render_plan";
+  schemaVersion: 1;
+  runId: string;
+  triggeringStateVersion: number;
+  purposeId: string;
+  inputArtifactHashes: string[];
+  policyHash: string;
+  provider: "local";
+  budgetReservation: BudgetReservation;
+  payload: {
+    planVersionId: string;
+    planArtifactId: string;
+  };
+};
+
+export type BaselineReview = {
+  commandId: string;
+  commandKey: string;
+  commandType: "baseline_review";
+  schemaVersion: 1;
+  runId: string;
+  triggeringStateVersion: number;
+  purposeId: string;
+  inputArtifactHashes: string[];
+  policyHash: string;
+  provider: PlannerAssignment["provider"];
+  modelId: string;
+  budgetReservation: BudgetReservation;
+  payload: {
+    ledgerVersionId: string;
+    ledgerArtifactId: string;
+    planVersionId: string;
+    planArtifactId: string;
+    renderPlanCommandId: string;
+    reviewerPromptArtifactId: string;
+    reviewSchemaArtifactId: string;
+    componentRegistryArtifactId: string;
+    providerStorage: "minimize";
+  };
+};
+
 export type RunStartedFact = {
   type: "run_started";
   actor: HumanActor;
@@ -345,7 +454,9 @@ export type CommandPlannedFact = {
       | "validate_ledger"
       | "render_ledger"
       | "render_ledger_approval"
-      | "generate_plan";
+      | "generate_plan"
+      | "render_plan"
+      | "baseline_review";
     reservation: BudgetReservation;
   };
 };
@@ -415,6 +526,22 @@ export type PlanningRequestedFact = {
   };
 };
 
+export type PlanVersionAcceptedFact = {
+  type: "plan_version_accepted";
+  actor: ModelActor & { kind: "planner" };
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    planVersionId: string;
+    planArtifactId: string;
+    planContentHash: string;
+    sectionTransitionMapArtifactId: string;
+    sectionTransitionMapContentHash: string;
+    provenanceArtifactId: string;
+    provenanceContentHash: string;
+  };
+};
+
 export type TransitionResult = {
   nextState: NonterminalRunState;
   commands: Array<
@@ -423,6 +550,8 @@ export type TransitionResult = {
     | RenderLedger
     | RenderLedgerApproval
     | GeneratePlan
+    | RenderPlan
+    | BaselineReview
   >;
   auditFacts: Array<
     | RunStartedFact
@@ -432,6 +561,7 @@ export type TransitionResult = {
     | SourceExclusionApprovedFact
     | LedgerApprovedFact
     | PlanningRequestedFact
+    | PlanVersionAcceptedFact
     | CommandPlannedFact
   >;
 };
@@ -440,9 +570,10 @@ type LocalCommand =
   | RenderSourceRegistrationReport
   | ValidateLedger
   | RenderLedger
-  | RenderLedgerApproval;
+  | RenderLedgerApproval
+  | RenderPlan;
 
-type PlannedCommand = LocalCommand | GeneratePlan;
+type PlannedCommand = LocalCommand | GeneratePlan | BaselineReview;
 
 function zeroBudgetReservation(): BudgetReservation {
   return {
@@ -515,7 +646,8 @@ export function transition(
     | LedgerSubmitted
     | SourceExclusionApproved
     | LedgerApprovalRequested
-    | PlanningRequested,
+    | PlanningRequested
+    | PlanGenerated,
   policy: PinnedRunPolicy,
 ): TransitionResult {
   switch (input.type) {
@@ -529,6 +661,8 @@ export function transition(
       return approveLedger(previousState, input, policy);
     case "PlanningRequested":
       return requestPlanning(previousState, input, policy);
+    case "PlanGenerated":
+      return acceptGeneratedPlan(previousState, input, policy);
     default:
       throw new DomainTransitionError(
         "INVALID_TRANSITION",
@@ -1198,6 +1332,7 @@ function requestPlanning(
       policyLocked: true,
       activePlanning: {
         purposeId: input.planPurposeId,
+        commandId: input.generateCommandId,
         plannerAssignment: input.plannerAssignment,
       },
     },
@@ -1219,6 +1354,244 @@ function requestPlanning(
         command,
         "Generate plan with the assigned Planner",
         evidence,
+      ),
+    ],
+  };
+}
+
+function acceptGeneratedPlan(
+  previousState: NonterminalRunState | null,
+  input: PlanGenerated,
+  policy: PinnedRunPolicy,
+): TransitionResult {
+  if (
+    previousState === null ||
+    previousState.state !== "planning" ||
+    previousState.runId !== input.runId
+  ) {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      "PlanGenerated requires an active planning command",
+    );
+  }
+
+  const sha256 = /^[a-f0-9]{64}$/;
+  const artifactReferencesValid = [
+    [input.planArtifactId, input.planContentHash],
+    [
+      input.sectionTransitionMapArtifactId,
+      input.sectionTransitionMapContentHash,
+    ],
+    [input.provenanceArtifactId, input.provenanceContentHash],
+    [input.reviewerPromptArtifactId, input.reviewerPromptContentHash],
+    [input.reviewSchemaArtifactId, input.reviewSchemaContentHash],
+    [input.componentRegistryArtifactId, input.componentRegistryContentHash],
+  ].every(
+    ([artifactId, contentHash]) =>
+      artifactId !== undefined &&
+      artifactId.length > 0 &&
+      contentHash !== undefined &&
+      sha256.test(contentHash),
+  );
+  const maximum = input.reviewBudgetMaximum;
+  const available = input.availableBudget;
+  const maximumValid =
+    maximum.calls === 1 &&
+    Number.isInteger(maximum.inputTokens) &&
+    maximum.inputTokens > 0 &&
+    Number.isInteger(maximum.outputTokens) &&
+    maximum.outputTokens > 0 &&
+    Number.isInteger(maximum.costUsdMicros) &&
+    maximum.costUsdMicros > 0;
+  const capacityValid =
+    Number.isInteger(available.calls) &&
+    Number.isInteger(available.inputTokens) &&
+    Number.isInteger(available.outputTokens) &&
+    Number.isInteger(available.costUsdMicros) &&
+    available.calls >= maximum.calls &&
+    available.inputTokens >= maximum.inputTokens &&
+    available.outputTokens >= maximum.outputTokens &&
+    available.costUsdMicros >= maximum.costUsdMicros;
+  const plannerMatches =
+    input.actor.kind === "planner" &&
+    input.actor.provider ===
+      previousState.activePlanning.plannerAssignment.provider &&
+    input.actor.modelId ===
+      previousState.activePlanning.plannerAssignment.modelId;
+  const reviewerValid =
+    (input.reviewerAssignment.provider === "openai" ||
+      input.reviewerAssignment.provider === "anthropic") &&
+    input.reviewerAssignment.provider !==
+      previousState.activePlanning.plannerAssignment.provider &&
+    input.reviewerAssignment.modelId.length > 0;
+
+  if (
+    input.expectedStateVersion !== previousState.stateVersion ||
+    policy.policyHash !== previousState.policyHash ||
+    input.planPurposeId !== previousState.activePlanning.purposeId ||
+    input.originatingCommandId !== previousState.activePlanning.commandId ||
+    input.planVersionId.length === 0 ||
+    !input.planObjectVerified ||
+    !input.outputValid ||
+    !input.sectionContinuityValid ||
+    !input.sectionTransitionMapVerified ||
+    !input.provenanceVerified ||
+    !input.reviewerModelAllowed ||
+    !input.reviewerModelIdentityPinned ||
+    !input.reviewerIndependenceSatisfied ||
+    !reviewerValid ||
+    !input.reviewerPromptVerified ||
+    !input.reviewSchemaVerified ||
+    !input.componentRegistryVerified ||
+    !artifactReferencesValid ||
+    !input.auditChainVerified ||
+    !input.databaseIntegrityVerified ||
+    !input.schemaCompatible ||
+    !input.mutationLeaseAvailable ||
+    !plannerMatches ||
+    !maximumValid ||
+    !capacityValid ||
+    input.renderCommandId.length === 0 ||
+    input.reviewCommandId.length === 0 ||
+    input.renderCommandId === input.reviewCommandId
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "PlanGenerated requires verified continuous output and an independent baseline review",
+    );
+  }
+
+  const nextStateVersion = previousState.stateVersion + 1;
+  const reviewPurposeId = `${input.runId}:plan:${input.planVersionId}:baseline:1`;
+  const renderCommand = planCommand<RenderPlan>(input.renderCommandId, {
+    commandType: "render_plan",
+    schemaVersion: 1,
+    runId: input.runId,
+    triggeringStateVersion: nextStateVersion,
+    purposeId: `${input.runId}:plan:${input.planVersionId}:render`,
+    inputArtifactHashes: [input.planContentHash],
+    policyHash: policy.policyHash,
+    provider: "local",
+    budgetReservation: zeroBudgetReservation(),
+    payload: {
+      planVersionId: input.planVersionId,
+      planArtifactId: input.planArtifactId,
+    },
+  });
+  const reviewCommand = planCommand<BaselineReview>(input.reviewCommandId, {
+    commandType: "baseline_review",
+    schemaVersion: 1,
+    runId: input.runId,
+    triggeringStateVersion: nextStateVersion,
+    purposeId: reviewPurposeId,
+    inputArtifactHashes: [
+      previousState.currentLedger.contentHash,
+      input.planContentHash,
+      input.sectionTransitionMapContentHash,
+      input.provenanceContentHash,
+      input.reviewerPromptContentHash,
+      input.reviewSchemaContentHash,
+      input.componentRegistryContentHash,
+    ],
+    policyHash: policy.policyHash,
+    provider: input.reviewerAssignment.provider,
+    modelId: input.reviewerAssignment.modelId,
+    budgetReservation: input.reviewBudgetMaximum,
+    payload: {
+      ledgerVersionId: previousState.currentLedger.versionId,
+      ledgerArtifactId: previousState.currentLedger.artifactId,
+      planVersionId: input.planVersionId,
+      planArtifactId: input.planArtifactId,
+      renderPlanCommandId: input.renderCommandId,
+      reviewerPromptArtifactId: input.reviewerPromptArtifactId,
+      reviewSchemaArtifactId: input.reviewSchemaArtifactId,
+      componentRegistryArtifactId: input.componentRegistryArtifactId,
+      providerStorage: "minimize",
+    },
+  });
+  const planEvidence = artifactEvidence(
+    input.planArtifactId,
+    input.planContentHash,
+  );
+  const transitionMapEvidence = artifactEvidence(
+    input.sectionTransitionMapArtifactId,
+    input.sectionTransitionMapContentHash,
+  );
+  const provenanceEvidence = artifactEvidence(
+    input.provenanceArtifactId,
+    input.provenanceContentHash,
+  );
+  const reviewEvidence = [
+    artifactEvidence(
+      previousState.currentLedger.artifactId,
+      previousState.currentLedger.contentHash,
+    ),
+    planEvidence,
+    transitionMapEvidence,
+    provenanceEvidence,
+    artifactEvidence(
+      input.reviewerPromptArtifactId,
+      input.reviewerPromptContentHash,
+    ),
+    artifactEvidence(
+      input.reviewSchemaArtifactId,
+      input.reviewSchemaContentHash,
+    ),
+    artifactEvidence(
+      input.componentRegistryArtifactId,
+      input.componentRegistryContentHash,
+    ),
+  ];
+
+  return {
+    nextState: {
+      ...previousState,
+      state: "baseline_review",
+      stateVersion: nextStateVersion,
+      currentPlan: {
+        versionId: input.planVersionId,
+        artifactId: input.planArtifactId,
+        contentHash: input.planContentHash,
+        sectionTransitionMap: {
+          artifactId: input.sectionTransitionMapArtifactId,
+          contentHash: input.sectionTransitionMapContentHash,
+        },
+        provenance: {
+          artifactId: input.provenanceArtifactId,
+          contentHash: input.provenanceContentHash,
+        },
+      },
+      activeReview: {
+        cycle: 1,
+        reviewerAssignment: input.reviewerAssignment,
+        reviewPurposeId,
+      },
+    },
+    commands: [renderCommand, reviewCommand],
+    auditFacts: [
+      {
+        type: "plan_version_accepted",
+        actor: input.actor,
+        reason: "Accept the verified Planner output for baseline review",
+        evidence: [planEvidence, transitionMapEvidence, provenanceEvidence],
+        payload: {
+          planVersionId: input.planVersionId,
+          planArtifactId: input.planArtifactId,
+          planContentHash: input.planContentHash,
+          sectionTransitionMapArtifactId: input.sectionTransitionMapArtifactId,
+          sectionTransitionMapContentHash:
+            input.sectionTransitionMapContentHash,
+          provenanceArtifactId: input.provenanceArtifactId,
+          provenanceContentHash: input.provenanceContentHash,
+        },
+      },
+      commandPlannedFact(renderCommand, "Render the accepted plan", [
+        planEvidence,
+      ]),
+      commandPlannedFact(
+        reviewCommand,
+        "Run independent baseline review",
+        reviewEvidence,
       ),
     ],
   };
