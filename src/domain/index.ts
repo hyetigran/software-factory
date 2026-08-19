@@ -54,6 +54,7 @@ type RunStateBase = {
   policyHash: string;
   blockedReason: null;
   sourceExclusions?: SourceExclusion[];
+  reviewIndependenceOverride?: ReviewIndependenceOverride;
 };
 
 export type DraftRunState = RunStateBase & {
@@ -99,6 +100,14 @@ export type ActiveReview = {
         reduced: true;
         overrideEvidence: Omit<ArtifactEvidenceReference, "kind">;
       };
+};
+
+export type ReviewIndependenceOverride = {
+  normalReviewerAssignment: PlannerAssignment;
+  overrideReviewerAssignment: PlannerAssignment;
+  reason: string;
+  evidence: Omit<ArtifactEvidenceReference, "kind">;
+  actor: HumanActor;
 };
 
 export type AdvancedRunState = AdvancedStateBase &
@@ -253,13 +262,6 @@ export type PlanGenerated = {
   reviewPolicyArtifactId: string;
   reviewPolicyContentHash: string;
   reviewPolicyVerified: boolean;
-  independenceOverride?: {
-    artifactId: string;
-    contentHash: string;
-    verified: boolean;
-    reason: string;
-    actor: HumanActor;
-  };
   reviewerPromptArtifactId: string;
   reviewerPromptContentHash: string;
   reviewerPromptVerified: boolean;
@@ -278,6 +280,24 @@ export type PlanGenerated = {
   renderCommandId: string;
   reviewCommandId: string;
   actor: ModelActor & { kind: "planner" };
+};
+
+export type IndependenceOverrideGranted = {
+  type: "IndependenceOverrideGranted";
+  runId: string;
+  expectedStateVersion: number;
+  normalReviewerAssignment: PlannerAssignment;
+  overrideReviewerAssignment: PlannerAssignment;
+  evidenceArtifactId: string;
+  evidenceContentHash: string;
+  evidenceVerified: boolean;
+  beforeProviderDispatchVerified: boolean;
+  reason: string;
+  auditChainVerified: boolean;
+  databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
+  actor: HumanActor;
 };
 
 export type BudgetReservation = {
@@ -562,6 +582,18 @@ export type PlanVersionAcceptedFact = {
   };
 };
 
+export type IndependenceOverrideGrantedFact = {
+  type: "independence_override_granted";
+  actor: HumanActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    normalReviewerAssignment: PlannerAssignment;
+    overrideReviewerAssignment: PlannerAssignment;
+    reason: string;
+  };
+};
+
 export type TransitionResult = {
   nextState: NonterminalRunState;
   commands: Array<
@@ -582,6 +614,7 @@ export type TransitionResult = {
     | LedgerApprovedFact
     | PlanningRequestedFact
     | PlanVersionAcceptedFact
+    | IndependenceOverrideGrantedFact
     | CommandPlannedFact
   >;
 };
@@ -690,7 +723,8 @@ export function transition(
     | SourceExclusionApproved
     | LedgerApprovalRequested
     | PlanningRequested
-    | PlanGenerated,
+    | PlanGenerated
+    | IndependenceOverrideGranted,
   policy: PinnedRunPolicy,
 ): TransitionResult {
   switch (input.type) {
@@ -706,6 +740,8 @@ export function transition(
       return requestPlanning(previousState, input, policy);
     case "PlanGenerated":
       return acceptGeneratedPlan(previousState, input, policy);
+    case "IndependenceOverrideGranted":
+      return grantIndependenceOverride(previousState, input, policy);
     default:
       throw new DomainTransitionError(
         "INVALID_TRANSITION",
@@ -1386,6 +1422,86 @@ function requestPlanning(
   };
 }
 
+function grantIndependenceOverride(
+  previousState: NonterminalRunState | null,
+  input: IndependenceOverrideGranted,
+  policy: PinnedRunPolicy,
+): TransitionResult {
+  if (previousState === null || previousState.runId !== input.runId) {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      "IndependenceOverrideGranted requires a matching nonterminal run",
+    );
+  }
+
+  const assignmentValid = (assignment: PlannerAssignment): boolean =>
+    (assignment.provider === "openai" || assignment.provider === "anthropic") &&
+    assignment.modelId.length > 0;
+  if (
+    input.expectedStateVersion !== previousState.stateVersion ||
+    policy.policyHash !== previousState.policyHash ||
+    previousState.reviewIndependenceOverride !== undefined ||
+    !assignmentValid(input.normalReviewerAssignment) ||
+    !assignmentValid(input.overrideReviewerAssignment) ||
+    (input.normalReviewerAssignment.provider ===
+      input.overrideReviewerAssignment.provider &&
+      input.normalReviewerAssignment.modelId ===
+        input.overrideReviewerAssignment.modelId) ||
+    !input.evidenceVerified ||
+    !input.beforeProviderDispatchVerified ||
+    input.evidenceArtifactId.length === 0 ||
+    !/^[a-f0-9]{64}$/.test(input.evidenceContentHash) ||
+    input.reason.trim().length === 0 ||
+    !input.auditChainVerified ||
+    !input.databaseIntegrityVerified ||
+    !input.schemaCompatible ||
+    !input.mutationLeaseAvailable ||
+    input.actor.kind !== "human" ||
+    input.actor.displayName.length === 0 ||
+    input.actor.osAccount.length === 0
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "IndependenceOverrideGranted requires verified human authority before provider dispatch",
+    );
+  }
+
+  const evidence = artifactEvidence(
+    input.evidenceArtifactId,
+    input.evidenceContentHash,
+  );
+  return {
+    nextState: {
+      ...previousState,
+      stateVersion: previousState.stateVersion + 1,
+      reviewIndependenceOverride: {
+        normalReviewerAssignment: input.normalReviewerAssignment,
+        overrideReviewerAssignment: input.overrideReviewerAssignment,
+        reason: input.reason,
+        evidence: {
+          artifactId: input.evidenceArtifactId,
+          contentHash: input.evidenceContentHash,
+        },
+        actor: input.actor,
+      },
+    },
+    commands: [],
+    auditFacts: [
+      {
+        type: "independence_override_granted",
+        actor: input.actor,
+        reason: input.reason,
+        evidence: [evidence],
+        payload: {
+          normalReviewerAssignment: input.normalReviewerAssignment,
+          overrideReviewerAssignment: input.overrideReviewerAssignment,
+          reason: input.reason,
+        },
+      },
+    ],
+  };
+}
+
 function acceptGeneratedPlan(
   previousState: NonterminalRunState | null,
   input: PlanGenerated,
@@ -1438,17 +1554,14 @@ function acceptGeneratedPlan(
   const reducedIndependence =
     input.reviewerAssignment.provider ===
     previousState.activePlanning.plannerAssignment.provider;
-  const override = input.independenceOverride;
+  const override = previousState.reviewIndependenceOverride;
   const overrideValid =
     !reducedIndependence ||
     (override !== undefined &&
-      override.verified &&
-      override.artifactId.length > 0 &&
-      sha256.test(override.contentHash) &&
-      override.reason.trim().length > 0 &&
-      override.actor.kind === "human" &&
-      override.actor.displayName.length > 0 &&
-      override.actor.osAccount.length > 0);
+      override.overrideReviewerAssignment.provider ===
+        input.reviewerAssignment.provider &&
+      override.overrideReviewerAssignment.modelId ===
+        input.reviewerAssignment.modelId);
 
   if (
     input.expectedStateVersion !== previousState.stateVersion ||
@@ -1495,8 +1608,8 @@ function acceptGeneratedPlan(
       ? {
           reduced: true,
           overrideEvidence: {
-            artifactId: override.artifactId,
-            contentHash: override.contentHash,
+            artifactId: override.evidence.artifactId,
+            contentHash: override.evidence.contentHash,
           },
         }
       : { reduced: false };

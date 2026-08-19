@@ -4,6 +4,7 @@ import {
   transition,
   type AdvancedRunState,
   type DraftRunState,
+  type IndependenceOverrideGranted,
   type LedgerApprovalRequested,
   type LedgerSubmitted,
   type PlanGenerated,
@@ -166,6 +167,36 @@ function planningRequestedInput(): PlanningRequested {
     schemaCompatible: true,
     mutationLeaseAvailable: true,
     generateCommandId: "command_generate_plan_01JTEST",
+    actor: {
+      kind: "human",
+      displayName: "Tigran",
+      osAccount: "tig",
+    },
+  };
+}
+
+function independenceOverrideGrantedInput(): IndependenceOverrideGranted {
+  return {
+    type: "IndependenceOverrideGranted",
+    runId: "run_01JTEST0000000000000000000",
+    expectedStateVersion: 4,
+    normalReviewerAssignment: {
+      provider: "anthropic",
+      modelId: "claude-frontier-pinned-20260801",
+    },
+    overrideReviewerAssignment: {
+      provider: "openai",
+      modelId: "gpt-reviewer-pinned",
+    },
+    evidenceArtifactId: "artifact_independence_override_01JTEST",
+    evidenceContentHash: "9".repeat(64),
+    evidenceVerified: true,
+    beforeProviderDispatchVerified: true,
+    reason: "Anthropic Reviewer unavailable under the pinned policy",
+    auditChainVerified: true,
+    databaseIntegrityVerified: true,
+    schemaCompatible: true,
+    mutationLeaseAvailable: true,
     actor: {
       kind: "human",
       displayName: "Tigran",
@@ -2139,26 +2170,25 @@ describe("transition", () => {
   });
 
   it("accepts a policy-authorized reduced-independence review assignment", () => {
-    const input = {
+    const approved = requirementsApprovedState();
+    const override = transition(approved, independenceOverrideGrantedInput(), {
+      policyHash,
+    });
+    const planning = transition(
+      override.nextState,
+      { ...planningRequestedInput(), expectedStateVersion: 5 },
+      { policyHash },
+    );
+    const input: PlanGenerated = {
       ...planGeneratedInput(),
+      expectedStateVersion: 6,
       reviewerAssignment: {
         provider: "openai" as const,
         modelId: "gpt-reviewer-pinned",
       },
-      independenceOverride: {
-        artifactId: "artifact_independence_override_01JTEST",
-        contentHash: "9".repeat(64),
-        verified: true,
-        reason: "Anthropic Reviewer unavailable under the pinned policy",
-        actor: {
-          kind: "human" as const,
-          displayName: "Tigran",
-          osAccount: "tig",
-        },
-      },
     };
 
-    const result = transition(planningState(), input, { policyHash });
+    const result = transition(planning.nextState, input, { policyHash });
 
     expect(result.nextState.state).toBe("baseline_review");
     if (result.nextState.state !== "baseline_review") {
@@ -2171,5 +2201,76 @@ describe("transition", () => {
         contentHash: "9".repeat(64),
       },
     });
+    expect(override.auditFacts).toEqual([
+      {
+        type: "independence_override_granted",
+        actor: independenceOverrideGrantedInput().actor,
+        reason: "Anthropic Reviewer unavailable under the pinned policy",
+        evidence: [
+          {
+            kind: "artifact",
+            artifactId: "artifact_independence_override_01JTEST",
+            contentHash: "9".repeat(64),
+          },
+        ],
+        payload: {
+          normalReviewerAssignment:
+            independenceOverrideGrantedInput().normalReviewerAssignment,
+          overrideReviewerAssignment:
+            independenceOverrideGrantedInput().overrideReviewerAssignment,
+          reason: "Anthropic Reviewer unavailable under the pinned policy",
+        },
+      },
+    ]);
+  });
+
+  it.each([
+    ["a stale state version", { expectedStateVersion: 3 }],
+    ["unverified evidence", { evidenceVerified: false }],
+    [
+      "an already-started provider dispatch",
+      { beforeProviderDispatchVerified: false },
+    ],
+    ["an empty reason", { reason: "" }],
+    ["an invalid evidence hash", { evidenceContentHash: "invalid" }],
+    [
+      "an unauthorized actor",
+      { actor: { kind: "system", component: "test", version: "1" } },
+    ],
+    ["an unverified audit chain", { auditChainVerified: false }],
+    ["failed database integrity", { databaseIntegrityVerified: false }],
+    ["an incompatible schema", { schemaCompatible: false }],
+    ["a conflicting mutation lease", { mutationLeaseAvailable: false }],
+  ])("rejects IndependenceOverrideGranted with %s", (_name, override) => {
+    const input = {
+      ...independenceOverrideGrantedInput(),
+      ...override,
+    } as IndependenceOverrideGranted;
+
+    expect(() =>
+      transition(requirementsApprovedState(), input, { policyHash }),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("rejects a duplicate independence override", () => {
+    const granted = transition(
+      requirementsApprovedState(),
+      independenceOverrideGrantedInput(),
+      { policyHash },
+    );
+
+    expect(() =>
+      transition(
+        granted.nextState,
+        { ...independenceOverrideGrantedInput(), expectedStateVersion: 5 },
+        { policyHash },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("rejects IndependenceOverrideGranted without a run", () => {
+    expect(() =>
+      transition(null, independenceOverrideGrantedInput(), { policyHash }),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
   });
 });
