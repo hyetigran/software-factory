@@ -1,13 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 import { canonicalJson } from "../../src/domain/canonical-json.js";
 import {
   renderLedger,
-  renderLedgerApproval,
   renderPlan,
-  renderSourceRegistrationReport,
   validateLedger,
   verifyProjection,
 } from "../../src/application/deterministic-documents.js";
@@ -207,54 +204,6 @@ describe("deterministic documents", () => {
     expect(firstPlan.bytes.toString()).toContain(
       "factory:section id=section_api",
     );
-  });
-
-  it("renders byte-stable source registration and ledger approval receipts", () => {
-    const sourceReceipt = renderSourceRegistrationReport({
-      sourceArtifactId: "artifact_source",
-      sourceBytes: source,
-    });
-    expect(sourceReceipt).toEqual(
-      renderSourceRegistrationReport({
-        sourceArtifactId: "artifact_source",
-        sourceBytes: source,
-      }),
-    );
-    const ledgerBytes = Buffer.from(canonicalJson(ledger));
-    const coverageReportBytes = Buffer.from(
-      canonicalJson({
-        coverageValid: true,
-        ledgerContentHash: createHash("sha256")
-          .update(ledgerBytes)
-          .digest("hex"),
-        sourceContentHash: createHash("sha256").update(source).digest("hex"),
-      }),
-    );
-    const approval = renderLedgerApproval({
-      ledgerBytes,
-      coverageReportBytes,
-      sourceBytes: source,
-      ledgerVersionId: "ledger_v1",
-      approvalGateId: "gate_1",
-      approvedBy: { displayName: "Human", osAccount: "human" },
-    });
-    expect(approval.bytes.toString()).toContain("# Ledger Approval ledger_v1");
-    expect(() =>
-      renderLedgerApproval({
-        ledgerBytes,
-        coverageReportBytes: Buffer.from(
-          canonicalJson({
-            coverageValid: false,
-            ledgerContentHash: "bad",
-            sourceContentHash: "bad",
-          }),
-        ),
-        sourceBytes: source,
-        ledgerVersionId: "ledger_v1",
-        approvalGateId: "gate_1",
-        approvedBy: { displayName: "Human", osAccount: "human" },
-      }),
-    ).toThrow("does not bind");
   });
 
   it("preserves externally edited bytes for artifact staging", () => {

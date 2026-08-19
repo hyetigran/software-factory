@@ -707,7 +707,6 @@ export type RenderSourceRegistrationReport = {
   budgetReservation: BudgetReservation;
   payload: {
     sourceArtifactId: string;
-    configurationArtifactId: string;
   };
 };
 
@@ -765,7 +764,6 @@ export type RenderLedgerApproval = {
     ledgerVersionId: string;
     ledgerArtifactId: string;
     coverageReportArtifactId: string;
-    sourceArtifactId: string;
     coverageValidatedStateVersion: number;
     coverageValidatedPolicyHash: string;
     approvalGateId: string;
@@ -1691,7 +1689,6 @@ function startRun(
     budgetReservation,
     payload: {
       sourceArtifactId: input.sourceArtifactId,
-      configurationArtifactId: input.configurationArtifactId,
     },
   };
   const command = planCommand<RenderSourceRegistrationReport>(
@@ -2191,7 +2188,6 @@ function approveLedger(
       ledgerVersionId: previousState.currentLedger.versionId,
       ledgerArtifactId: previousState.currentLedger.artifactId,
       coverageReportArtifactId: input.coverageReportArtifactId,
-      sourceArtifactId: previousState.sourceArtifactId,
       coverageValidatedStateVersion: input.validatedStateVersion,
       coverageValidatedPolicyHash: input.validatedPolicyHash,
       approvalGateId: input.approvalGateId,

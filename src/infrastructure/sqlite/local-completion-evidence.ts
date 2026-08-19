@@ -49,7 +49,7 @@ export class LocalCompletionEvidence {
     const payload = command.payload as Record<string, unknown>;
     const fields =
       command.commandType === "render_source_registration_report"
-        ? ["sourceArtifactId", "configurationArtifactId"]
+        ? ["sourceArtifactId"]
         : command.commandType === "validate_ledger"
           ? ["ledgerArtifactId", "sourceArtifactId"]
           : command.commandType === "render_ledger_approval"

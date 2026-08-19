@@ -175,10 +175,7 @@ function transitionResult(
     runId,
     triggeringStateVersion: stateVersion,
     purposeId: `purpose_${stateVersion}`,
-    inputArtifactHashes: [
-      createHash("sha256").update("source").digest("hex"),
-      executionConfigurationHash,
-    ],
+    inputArtifactHashes: [createHash("sha256").update("source").digest("hex")],
     policyHash: "a".repeat(64),
     provider: "local" as const,
     budgetReservation: {
@@ -187,10 +184,7 @@ function transitionResult(
       outputTokens: 0,
       costUsdMicros: 0,
     },
-    payload: {
-      sourceArtifactId: "artifact_source",
-      configurationArtifactId: "artifact_configuration",
-    },
+    payload: { sourceArtifactId: "artifact_source" },
   };
   const commandKey =
     forcedCommandKey ??
@@ -412,7 +406,7 @@ describe("SQLite authority", () => {
       createdBy: "pid:provider",
       provenance: {
         method: "provider_generated",
-        sourceArtifactIds: ["artifact_source", "artifact_configuration"],
+        sourceArtifactIds: ["artifact_source"],
         commandId: "command_provider",
         attemptId: "attempt_provider_1",
       },
@@ -744,7 +738,7 @@ describe("SQLite authority", () => {
       provenance: {
         method: "application_generated",
         purpose: "source_registration",
-        sourceArtifactIds: ["artifact_source", "artifact_configuration"],
+        sourceArtifactIds: ["artifact_source"],
         commandId: "command_execute",
         attemptId: "attempt_execute_1",
       },
@@ -757,7 +751,7 @@ describe("SQLite authority", () => {
       provenance: {
         method: "application_generated",
         purpose: "local_usage",
-        sourceArtifactIds: ["artifact_source", "artifact_configuration"],
+        sourceArtifactIds: ["artifact_source"],
         commandId: "command_execute",
         attemptId: "attempt_execute_1",
       },
