@@ -11,11 +11,13 @@ import { canonicalJson } from "../../domain/canonical-json.js";
 import {
   completeLedgerRender,
   completeLedgerValidation,
+  completePlanRender,
   type NonterminalRunState,
 } from "../../domain/index.js";
 import {
   renderLedger,
   renderLedgerApproval,
+  renderPlan,
   renderSourceRegistrationReport,
   validateLedger,
 } from "../../application/deterministic-documents.js";
@@ -43,6 +45,7 @@ export class LocalCompletionEvidence {
       purpose:
         | "ledger_validation"
         | "ledger_render"
+        | "plan_render"
         | "source_registration"
         | "ledger_approval"
         | "local_usage",
@@ -381,6 +384,83 @@ export class LocalCompletionEvidence {
     if (canonicalJson(domain.result) !== canonicalJson(expected))
       throw new TypeError(
         "Ledger render domain outcome does not match deterministic output",
+      );
+  }
+
+  assertPlanRenderDomain(
+    request: CompleteAttemptRequest,
+    domain: {
+      expectedStateVersion: number;
+      result: PersistableTransition<object>;
+    },
+    validateTransition = true,
+  ): void {
+    const currentRow = this.database
+      .prepare("SELECT state_json FROM run_state_snapshots WHERE run_id = ?")
+      .get(request.runId) as { state_json: string } | undefined;
+    if (currentRow === undefined)
+      throw new AuthorityIntegrityError(
+        "Local completion run state is missing",
+      );
+    const currentState = JSON.parse(
+      currentRow.state_json,
+    ) as NonterminalRunState;
+    if (currentState.state !== "baseline_review")
+      throw new AuthorityIntegrityError("Current plan is missing");
+    const commandRow = this.database
+      .prepare(
+        "SELECT specification_json FROM logical_commands WHERE command_id = ?",
+      )
+      .get(request.commandId) as { specification_json: string } | undefined;
+    if (commandRow === undefined)
+      throw new AuthorityIntegrityError("Local render command is missing");
+    const command = JSON.parse(commandRow.specification_json) as Record<
+      string,
+      unknown
+    >;
+    const payload = command.payload as Record<string, unknown>;
+    const planRow = this.database
+      .prepare("SELECT content_hash FROM artifacts WHERE artifact_id = ?")
+      .get(String(payload.planArtifactId)) as
+      { content_hash: string } | undefined;
+    if (planRow === undefined)
+      throw new AuthorityIntegrityError("Plan render input is missing");
+    const expectedRender = renderPlan(
+      this.readRegisteredObject(planRow.content_hash),
+    );
+    const actualRender = this.readStagedArtifactBytes(request.resultArtifact);
+    if (
+      !actualRender.equals(expectedRender.bytes) ||
+      expectedRender.contentHash !== request.resultArtifact.contentHash ||
+      request.resultArtifact.kind !== "rendered_plan" ||
+      request.resultArtifact.mediaType !== expectedRender.mediaType
+    )
+      throw new TypeError(
+        "Plan render result does not match deterministic output",
+      );
+    if (!validateTransition) return;
+    const expected = completePlanRender(
+      currentState,
+      {
+        type: "PlanRendered",
+        runId: request.runId,
+        expectedStateVersion: domain.expectedStateVersion,
+        commandId: request.commandId,
+        planVersionId: String(payload.planVersionId),
+        planContentHash: planRow.content_hash,
+        renderedArtifactId: request.resultArtifact.artifactId,
+        renderedContentHash: request.resultArtifact.contentHash,
+        actor: {
+          kind: "system",
+          component: "deterministic-local-executor",
+          version: "0.0.0",
+        },
+      },
+      { policyHash: currentState.policyHash },
+    );
+    if (canonicalJson(domain.result) !== canonicalJson(expected))
+      throw new TypeError(
+        "Plan render domain outcome does not match deterministic output",
       );
   }
 }

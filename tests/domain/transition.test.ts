@@ -19,6 +19,7 @@ import {
   type LedgerApprovalRequested,
   type LedgerSubmitted,
   type PlanGenerated,
+  type PlanRendered,
   type PlanSubmitted,
   type PlanningRequested,
   type PinnedModelUnavailable,
@@ -2482,6 +2483,10 @@ describe("transition", () => {
           reviewPurposeId:
             "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
           independence: { reduced: false },
+          pendingReviewCommand: expect.objectContaining({
+            commandId: "command_baseline_review_01JTEST",
+            triggeringStateVersion: 9,
+          }),
         },
       }),
     );
@@ -2507,35 +2512,6 @@ describe("transition", () => {
         payload: {
           planVersionId: "plan_version_01JTEST",
           planArtifactId: "artifact_plan_01JTEST",
-        },
-      }),
-      expect.objectContaining({
-        commandId: "command_baseline_review_01JTEST",
-        commandType: "baseline_review",
-        triggeringStateVersion: 8,
-        prerequisiteCommandIds: ["command_render_plan_01JTEST"],
-        provider: "anthropic",
-        modelId: "claude-frontier-pinned-20260801",
-        budgetReservation: planGeneratedInput().reviewBudgetMaximum,
-        payload: {
-          ledgerVersionId: "ledger_01JTEST",
-          ledgerArtifactId: "artifact_ledger_01JTEST",
-          planVersionId: "plan_version_01JTEST",
-          planArtifactId: "artifact_plan_01JTEST",
-          renderPlanCommandId: "command_render_plan_01JTEST",
-          reviewerPromptArtifactId: "artifact_reviewer_prompt_01JTEST",
-          reviewSchemaArtifactId: "artifact_review_schema_01JTEST",
-          taxonomyArtifactId: "artifact_review_taxonomy_01JTEST",
-          componentRegistryArtifactId: "artifact_component_registry_01JTEST",
-          reviewPolicyArtifactId: "artifact_review_policy_01JTEST",
-          evidenceArtifactIds: [
-            "artifact_section_map_01JTEST",
-            "artifact_plan_provenance_01JTEST",
-            "artifact_review_taxonomy_01JTEST",
-            "artifact_coverage_01JTEST",
-          ],
-          independence: { reduced: false },
-          providerStorage: "minimize",
         },
       }),
     ]);
@@ -2570,6 +2546,56 @@ describe("transition", () => {
         provenanceContentHash: reviewContentHash,
       },
     });
+  });
+
+  it("records the deterministic plan projection before baseline review is eligible", () => {
+    const accepted = transition(
+      planningState(),
+      planGeneratedInput(),
+      pinnedPolicy,
+    );
+    const input: PlanRendered = {
+      type: "PlanRendered",
+      runId: accepted.nextState.runId,
+      expectedStateVersion: accepted.nextState.stateVersion,
+      commandId: "command_render_plan_01JTEST",
+      planVersionId: "plan_version_01JTEST",
+      planContentHash: planGeneratedInput().planArtifact.contentHash,
+      renderedArtifactId: "artifact_rendered_plan_01JTEST",
+      renderedContentHash: "9".repeat(64),
+      actor: {
+        kind: "system",
+        component: "deterministic-local-executor",
+        version: "0.0.0",
+      },
+    };
+    const rendered = transition(accepted.nextState, input, pinnedPolicy);
+    expect(rendered.nextState.stateVersion).toBe(
+      accepted.nextState.stateVersion + 1,
+    );
+    if (rendered.nextState.state !== "baseline_review")
+      throw new Error("Expected baseline review state");
+    expect(rendered.nextState.currentPlan.renderedProjection).toEqual({
+      artifactId: input.renderedArtifactId,
+      contentHash: input.renderedContentHash,
+      renderedStateVersion: rendered.nextState.stateVersion,
+    });
+    expect(rendered.commands).toEqual([
+      expect.objectContaining({
+        commandId: "command_baseline_review_01JTEST",
+        commandType: "baseline_review",
+        triggeringStateVersion: rendered.nextState.stateVersion,
+      }),
+    ]);
+    expect(rendered.auditFacts).toEqual([
+      expect.objectContaining({ type: "plan_rendered" }),
+      expect.objectContaining({
+        type: "command_planned",
+        payload: expect.objectContaining({
+          commandId: "command_baseline_review_01JTEST",
+        }),
+      }),
+    ]);
   });
 
   it.each([
@@ -2858,7 +2884,6 @@ describe("transition", () => {
     );
     expect(result.commands.map(({ commandType }) => commandType)).toEqual([
       "render_plan",
-      "baseline_review",
     ]);
     expect(result.auditFacts[0]?.type).toBe("plan_version_accepted");
     expect(result.auditFacts[0]?.actor).toEqual(planSubmittedInput().actor);

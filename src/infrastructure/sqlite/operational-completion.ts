@@ -199,7 +199,9 @@ export class SqliteOperationalCompletion {
             domain,
             accepted,
           );
-        else this.evidence.assertLedgerRenderDomain(request, domain, accepted);
+        else if (command.commandType === "render_ledger")
+          this.evidence.assertLedgerRenderDomain(request, domain, accepted);
+        else this.evidence.assertPlanRenderDomain(request, domain, accepted);
       }
       database
         .prepare(

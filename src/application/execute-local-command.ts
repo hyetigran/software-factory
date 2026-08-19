@@ -10,6 +10,7 @@ import type { ArtifactStagingPort } from "./artifact-port.js";
 import {
   renderLedger,
   renderLedgerApproval,
+  renderPlan,
   renderSourceRegistrationReport,
   validateLedger,
 } from "./deterministic-documents.js";
@@ -158,6 +159,8 @@ export async function executeNextLocalCommand(input: {
         resultBytes = Buffer.from(canonicalJson(report));
       } else if (command.commandType === "render_ledger") {
         resultBytes = renderLedger(ledgerBytes).bytes;
+      } else if (command.commandType === "render_plan") {
+        resultBytes = renderPlan(ledgerBytes).bytes;
       } else if (command.commandType === "render_source_registration_report") {
         const configurationBytes = inputBytes[1];
         if (configurationBytes === undefined)
@@ -289,7 +292,23 @@ export async function executeNextLocalCommand(input: {
                   version: "0.0.0",
                 },
               }
-            : null;
+            : command.commandType === "render_plan"
+              ? {
+                  type: "PlanRendered" as const,
+                  runId: input.runId,
+                  expectedStateVersion: input.currentState.stateVersion,
+                  commandId: command.commandId,
+                  planVersionId: String(payload.planVersionId),
+                  planContentHash: ledgerHash,
+                  renderedArtifactId: result.artifactId,
+                  renderedContentHash: result.contentHash,
+                  actor: {
+                    kind: "system" as const,
+                    component: "deterministic-local-executor",
+                    version: "0.0.0",
+                  },
+                }
+              : null;
       if (domainInput === null) {
         await input.execution.completeAttempt(completion);
       } else {

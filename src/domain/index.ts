@@ -108,6 +108,11 @@ export type CurrentPlan = {
   contentHash: string;
   sectionTransitionMap: Omit<ArtifactEvidenceReference, "kind">;
   provenance: Omit<ArtifactEvidenceReference, "kind">;
+  renderedProjection?: {
+    artifactId: string;
+    contentHash: string;
+    renderedStateVersion: number;
+  };
   origin:
     | {
         kind: "planner";
@@ -129,6 +134,7 @@ export type ActiveReview = {
         reduced: true;
         overrideEvidence: Omit<ArtifactEvidenceReference, "kind">;
       };
+  pendingReviewCommand?: BaselineReview;
 };
 
 export type FindingSeverity = "critical" | "high" | "medium" | "low";
@@ -355,6 +361,18 @@ export type LedgerRendered = {
   commandId: string;
   ledgerVersionId: string;
   ledgerContentHash: string;
+  renderedArtifactId: string;
+  renderedContentHash: string;
+  actor: SystemActor;
+};
+
+export type PlanRendered = {
+  type: "PlanRendered";
+  runId: string;
+  expectedStateVersion: number;
+  commandId: string;
+  planVersionId: string;
+  planContentHash: string;
   renderedArtifactId: string;
   renderedContentHash: string;
   actor: SystemActor;
@@ -1075,6 +1093,19 @@ export type LedgerRenderedFact = {
   };
 };
 
+export type PlanRenderedFact = {
+  type: "plan_rendered";
+  actor: SystemActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    commandId: string;
+    planVersionId: string;
+    renderedArtifactId: string;
+    renderedContentHash: string;
+  };
+};
+
 export type LedgerApprovedFact = {
   type: "ledger_approved";
   actor: HumanActor;
@@ -1244,6 +1275,7 @@ export type TransitionResult = {
     | SourceExclusionApprovedFact
     | LedgerValidationCompletedFact
     | LedgerRenderedFact
+    | PlanRenderedFact
     | LedgerApprovedFact
     | PlanningRequestedFact
     | PlanVersionAcceptedFact
@@ -1435,6 +1467,7 @@ type NonterminalDomainInput =
   | SourceExclusionApproved
   | LedgerValidationCompleted
   | LedgerRendered
+  | PlanRendered
   | LedgerApprovalRequested
   | PlanningRequested
   | PlanGenerated
@@ -1654,6 +1687,8 @@ export function transition(
       return completeLedgerValidation(previousState, input, policy);
     case "LedgerRendered":
       return completeLedgerRender(previousState, input, policy);
+    case "PlanRendered":
+      return completePlanRender(previousState, input, policy);
     case "LedgerApprovalRequested":
       return approveLedger(previousState, input, policy);
     case "PlanningRequested":
@@ -1942,6 +1977,81 @@ function submitLedger(
       commandPlannedFact(validateCommand, "Plan validate_ledger", [
         ledgerEvidence,
       ]),
+    ],
+  };
+}
+
+export function completePlanRender(
+  previousState: NonterminalRunState | null,
+  input: PlanRendered,
+  policy: Pick<PinnedRunPolicy, "policyHash">,
+): TransitionResult {
+  if (
+    previousState === null ||
+    previousState.state !== "baseline_review" ||
+    previousState.runId !== input.runId ||
+    previousState.stateVersion !== input.expectedStateVersion ||
+    previousState.currentPlan.versionId !== input.planVersionId ||
+    previousState.currentPlan.contentHash !== input.planContentHash ||
+    previousState.currentPlan.renderedProjection !== undefined ||
+    previousState.activeReview.renderCommandId !== input.commandId ||
+    previousState.policyHash !== policy.policyHash ||
+    input.renderedArtifactId.trim().length === 0 ||
+    !/^[a-f0-9]{64}$/u.test(input.renderedContentHash) ||
+    input.actor.kind !== "system"
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "PlanRendered requires the current accepted plan render command",
+    );
+  }
+  const nextStateVersion = previousState.stateVersion + 1;
+  const renderedEvidence = artifactEvidence(
+    input.renderedArtifactId,
+    input.renderedContentHash,
+  );
+  const pendingReviewCommand = previousState.activeReview.pendingReviewCommand;
+  if (pendingReviewCommand === undefined)
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "PlanRendered requires the pending baseline review command",
+    );
+  const { pendingReviewCommand: _pending, ...activeReview } =
+    previousState.activeReview;
+  void _pending;
+  return {
+    nextState: {
+      ...previousState,
+      stateVersion: nextStateVersion,
+      currentPlan: {
+        ...previousState.currentPlan,
+        renderedProjection: {
+          artifactId: input.renderedArtifactId,
+          contentHash: input.renderedContentHash,
+          renderedStateVersion: nextStateVersion,
+        },
+      },
+      activeReview,
+    },
+    commands: [pendingReviewCommand],
+    auditFacts: [
+      {
+        type: "plan_rendered",
+        actor: input.actor,
+        reason: "Record deterministic plan projection",
+        evidence: [renderedEvidence],
+        payload: {
+          commandId: input.commandId,
+          planVersionId: input.planVersionId,
+          renderedArtifactId: input.renderedArtifactId,
+          renderedContentHash: input.renderedContentHash,
+        },
+      },
+      commandPlannedFact(
+        pendingReviewCommand,
+        "Run independent baseline review",
+        previousState.reviewContext.evidence,
+      ),
     ],
   };
 }
@@ -2827,7 +2937,7 @@ function acceptPlanForBaseline(
     commandType: "baseline_review",
     schemaVersion: 1,
     runId: input.runId,
-    triggeringStateVersion: nextStateVersion,
+    triggeringStateVersion: nextStateVersion + 1,
     prerequisiteCommandIds: [input.renderCommandId],
     purposeId: reviewPurposeId,
     inputArtifactHashes: [
@@ -2980,6 +3090,7 @@ function acceptPlanForBaseline(
         reviewerAssignment: input.reviewerAssignment,
         reviewPurposeId,
         independence,
+        pendingReviewCommand: reviewCommand,
       },
       reviewContext: {
         prompt: {
@@ -3005,7 +3116,7 @@ function acceptPlanForBaseline(
         evidence: reviewEvidence,
       },
     },
-    commands: [renderCommand, reviewCommand],
+    commands: [renderCommand],
     auditFacts: [
       {
         type: "plan_version_accepted",
@@ -3030,11 +3141,6 @@ function acceptPlanForBaseline(
       commandPlannedFact(renderCommand, "Render the accepted plan", [
         planEvidence,
       ]),
-      commandPlannedFact(
-        reviewCommand,
-        "Run independent baseline review",
-        reviewEvidence,
-      ),
     ],
   };
 }

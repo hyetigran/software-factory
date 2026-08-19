@@ -7,6 +7,7 @@ export type LocalCommandSpecification = {
     | "source_registration"
     | "ledger_validation"
     | "ledger_render"
+    | "plan_render"
     | "ledger_approval";
   resultKind: ArtifactKind;
   resultMediaType: string;
@@ -35,6 +36,14 @@ const specifications = {
     controlledArtifactFields: ["ledgerArtifactId"],
     resultPurpose: "ledger_render",
     resultKind: "rendered_ledger",
+    resultMediaType: "text/markdown; charset=utf-8",
+    stateChanging: true,
+    executable: true,
+  },
+  render_plan: {
+    controlledArtifactFields: ["planArtifactId"],
+    resultPurpose: "plan_render",
+    resultKind: "rendered_plan",
     resultMediaType: "text/markdown; charset=utf-8",
     stateChanging: true,
     executable: true,
