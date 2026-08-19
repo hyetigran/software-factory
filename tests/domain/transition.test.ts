@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   transition,
+  type AdvancedRunState,
   type LedgerSubmitted,
   type RunStarted,
 } from "../../src/domain/index.js";
@@ -10,6 +11,8 @@ const policyHash = "a".repeat(64);
 const sourceContentHash = "b".repeat(64);
 const configurationContentHash = "c".repeat(64);
 const ledgerContentHash = "d".repeat(64);
+const planContentHash = "e".repeat(64);
+const reviewContentHash = "f".repeat(64);
 
 function runStartedInput(): RunStarted {
   return {
@@ -56,6 +59,37 @@ function ledgerSubmittedInput(): LedgerSubmitted {
       kind: "human",
       displayName: "Tigran",
       osAccount: "tig",
+    },
+  };
+}
+
+function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
+  const draft = transition(null, runStartedInput(), { policyHash }).nextState;
+  return {
+    ...draft,
+    state,
+    stateVersion: 7,
+    policyLocked: true,
+    currentLedger: {
+      versionId: "ledger_01JTEST",
+      artifactId: "artifact_ledger_01JTEST",
+      contentHash: ledgerContentHash,
+      validationStatus: "approved",
+    },
+    downstreamQualification: {
+      artifacts: [
+        {
+          kind: "artifact",
+          artifactId: "artifact_plan_01JTEST",
+          contentHash: planContentHash,
+        },
+        {
+          kind: "artifact",
+          artifactId: "artifact_review_01JTEST",
+          contentHash: reviewContentHash,
+        },
+      ],
+      gateIds: ["gate_closure_01JTEST", "gate_qualification_01JTEST"],
     },
   };
 }
@@ -482,6 +516,17 @@ describe("transition", () => {
       },
       "PRECONDITION_FAILED",
     ],
+    [
+      "after the run is terminal",
+      () => {
+        const terminal = {
+          ...advancedRunState("qualified"),
+          state: "approved",
+        } as unknown as AdvancedRunState;
+        return transition(terminal, ledgerSubmittedInput(), { policyHash });
+      },
+      "INVALID_TRANSITION",
+    ],
   ])("rejects a ledger submission %s", (_caseName, submit, expectedCode) => {
     expect(submit).toThrowError(
       expect.objectContaining({ code: expectedCode }),
@@ -507,5 +552,124 @@ describe("transition", () => {
       expect.objectContaining({ triggeringStateVersion: 3 }),
       expect.objectContaining({ triggeringStateVersion: 3 }),
     ]);
+  });
+
+  it("invalidates downstream qualification when revising an advanced run", () => {
+    const draft = transition(null, runStartedInput(), { policyHash }).nextState;
+    const qualified = advancedRunState("qualified");
+    const revision = {
+      ...ledgerSubmittedInput(),
+      expectedStateVersion: 7,
+      ledgerVersionId: "ledger_02JTEST",
+      ledgerArtifactId: "artifact_ledger_02JTEST",
+      validateCommandId: "command_validate_ledger_02JTEST",
+      renderCommandId: "command_render_ledger_02JTEST",
+    };
+
+    const result = transition(qualified, revision, { policyHash });
+
+    expect(result.nextState).toEqual({
+      runId: draft.runId,
+      state: "draft",
+      stateVersion: 8,
+      sourceArtifactId: draft.sourceArtifactId,
+      sourceContentHash,
+      configurationArtifactId: draft.configurationArtifactId,
+      configurationContentHash,
+      policyHash,
+      policyLocked: true,
+      blockedReason: null,
+      currentLedger: {
+        versionId: "ledger_02JTEST",
+        artifactId: "artifact_ledger_02JTEST",
+        contentHash: ledgerContentHash,
+        validationStatus: "pending",
+      },
+    });
+    expect(result.auditFacts[0]).toEqual({
+      type: "downstream_invalidated",
+      actor: {
+        kind: "system",
+        component: "domain-transition",
+        version: "0.0.0",
+      },
+      reason: "Invalidate downstream qualification after ledger revision",
+      evidence: [
+        {
+          kind: "artifact",
+          artifactId: "artifact_ledger_01JTEST",
+          contentHash: ledgerContentHash,
+        },
+        {
+          kind: "artifact",
+          artifactId: "artifact_plan_01JTEST",
+          contentHash: planContentHash,
+        },
+        {
+          kind: "artifact",
+          artifactId: "artifact_review_01JTEST",
+          contentHash: reviewContentHash,
+        },
+      ],
+      payload: {
+        cause: {
+          type: "ledger_revised",
+          previousLedgerVersionId: "ledger_01JTEST",
+          nextLedgerVersionId: "ledger_02JTEST",
+        },
+        affectedArtifactIds: [
+          "artifact_plan_01JTEST",
+          "artifact_review_01JTEST",
+        ],
+        affectedGateIds: ["gate_closure_01JTEST", "gate_qualification_01JTEST"],
+      },
+    });
+    expect(result.commands).toEqual([
+      expect.objectContaining({ triggeringStateVersion: 8 }),
+      expect.objectContaining({ triggeringStateVersion: 8 }),
+    ]);
+  });
+
+  it.each<AdvancedRunState["state"]>([
+    "requirements_approved",
+    "planning",
+    "baseline_review",
+    "remediation",
+    "closure",
+    "qualified",
+    "qualified_with_waivers",
+  ])("accepts a ledger revision from %s", (state) => {
+    const previousState = advancedRunState(state);
+    const revision = {
+      ...ledgerSubmittedInput(),
+      expectedStateVersion: 7,
+      ledgerVersionId: "ledger_02JTEST",
+    };
+
+    const result = transition(previousState, revision, { policyHash });
+
+    expect(result.nextState).toEqual(
+      expect.objectContaining({
+        state: "draft",
+        stateVersion: 8,
+        policyLocked: true,
+      }),
+    );
+    expect(result.auditFacts[0]).toEqual(
+      expect.objectContaining({ type: "downstream_invalidated" }),
+    );
+  });
+
+  it("rejects a ledger revision that changes a locked policy", () => {
+    const qualified = advancedRunState("qualified");
+    const revision = {
+      ...ledgerSubmittedInput(),
+      expectedStateVersion: 7,
+      ledgerVersionId: "ledger_02JTEST",
+    };
+
+    expect(() =>
+      transition(qualified, revision, { policyHash: "f".repeat(64) }),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 });

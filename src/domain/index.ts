@@ -20,24 +20,54 @@ export type ArtifactEvidenceReference = {
   contentHash: string;
 };
 
-export type DraftRunState = {
+export type CurrentLedger = {
+  versionId: string;
+  artifactId: string;
+  contentHash: string;
+  validationStatus: "pending" | "approved";
+};
+
+type RunStateBase = {
   runId: string;
-  state: "draft";
   stateVersion: number;
   sourceArtifactId: string;
   sourceContentHash: string;
   configurationArtifactId: string;
   configurationContentHash: string;
   policyHash: string;
-  policyLocked: false;
   blockedReason: null;
-  currentLedger?: {
-    versionId: string;
-    artifactId: string;
-    contentHash: string;
-    validationStatus: "pending";
+};
+
+export type DraftRunState = RunStateBase & {
+  state: "draft";
+  policyLocked: boolean;
+  currentLedger?: CurrentLedger;
+};
+
+type AdvancedStateBase = RunStateBase & {
+  currentLedger: CurrentLedger & { validationStatus: "approved" };
+  downstreamQualification: {
+    artifacts: ArtifactEvidenceReference[];
+    gateIds: string[];
   };
 };
+
+export type AdvancedRunState = AdvancedStateBase &
+  (
+    | { state: "requirements_approved"; policyLocked: boolean }
+    | {
+        state:
+          | "planning"
+          | "baseline_review"
+          | "remediation"
+          | "closure"
+          | "qualified"
+          | "qualified_with_waivers";
+        policyLocked: true;
+      }
+  );
+
+export type NonterminalRunState = DraftRunState | AdvancedRunState;
 
 export type RunStarted = {
   type: "RunStarted";
@@ -192,6 +222,22 @@ export type LedgerSubmittedFact = {
   };
 };
 
+export type DownstreamInvalidatedFact = {
+  type: "downstream_invalidated";
+  actor: SystemActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    cause: {
+      type: "ledger_revised";
+      previousLedgerVersionId: string;
+      nextLedgerVersionId: string;
+    };
+    affectedArtifactIds: string[];
+    affectedGateIds: string[];
+  };
+};
+
 export type TransitionResult = {
   nextState: DraftRunState;
   commands: Array<
@@ -201,6 +247,7 @@ export type TransitionResult = {
     | RunStartedFact
     | SourceRegisteredFact
     | LedgerSubmittedFact
+    | DownstreamInvalidatedFact
     | CommandPlannedFact
   >;
 };
@@ -218,7 +265,7 @@ export class DomainTransitionError extends Error {
 }
 
 export function transition(
-  previousState: DraftRunState | null,
+  previousState: NonterminalRunState | null,
   input: RunStarted | LedgerSubmitted,
   policy: PinnedRunPolicy,
 ): TransitionResult {
@@ -236,7 +283,7 @@ export function transition(
 }
 
 function startRun(
-  previousState: DraftRunState | null,
+  previousState: NonterminalRunState | null,
   input: RunStarted,
   policy: PinnedRunPolicy,
 ): TransitionResult {
@@ -364,23 +411,25 @@ function startRun(
 }
 
 function submitLedger(
-  previousState: DraftRunState | null,
+  previousState: NonterminalRunState | null,
   input: LedgerSubmitted,
   policy: PinnedRunPolicy,
 ): TransitionResult {
   if (
     previousState === null ||
-    previousState.state !== "draft" ||
+    !isNonterminalState(previousState.state) ||
     previousState.runId !== input.runId
   ) {
     throw new DomainTransitionError(
       "INVALID_TRANSITION",
-      "LedgerSubmitted requires the matching draft run",
+      "LedgerSubmitted requires the matching nonterminal run",
     );
   }
 
   if (
     previousState.stateVersion !== input.expectedStateVersion ||
+    (previousState.policyLocked &&
+      previousState.policyHash !== policy.policyHash) ||
     previousState.currentLedger?.versionId === input.ledgerVersionId ||
     !input.ledgerObjectVerified ||
     !input.ledgerSchemaValid ||
@@ -466,6 +515,38 @@ function submitLedger(
     artifactId: previousState.sourceArtifactId,
     contentHash: previousState.sourceContentHash,
   };
+  const downstreamInvalidatedFact: DownstreamInvalidatedFact | null =
+    previousState.state === "draft"
+      ? null
+      : {
+          type: "downstream_invalidated",
+          actor: {
+            kind: "system",
+            component: "domain-transition",
+            version: "0.0.0",
+          },
+          reason: "Invalidate downstream qualification after ledger revision",
+          evidence: [
+            {
+              kind: "artifact",
+              artifactId: previousState.currentLedger.artifactId,
+              contentHash: previousState.currentLedger.contentHash,
+            },
+            ...previousState.downstreamQualification.artifacts,
+          ],
+          payload: {
+            cause: {
+              type: "ledger_revised",
+              previousLedgerVersionId: previousState.currentLedger.versionId,
+              nextLedgerVersionId: input.ledgerVersionId,
+            },
+            affectedArtifactIds:
+              previousState.downstreamQualification.artifacts.map(
+                (artifact) => artifact.artifactId,
+              ),
+            affectedGateIds: previousState.downstreamQualification.gateIds,
+          },
+        };
   const commandFact = (
     command: ValidateLedger | RenderLedger,
   ): CommandPlannedFact => ({
@@ -487,8 +568,16 @@ function submitLedger(
 
   return {
     nextState: {
-      ...previousState,
+      runId: previousState.runId,
+      state: "draft",
       stateVersion: nextStateVersion,
+      sourceArtifactId: previousState.sourceArtifactId,
+      sourceContentHash: previousState.sourceContentHash,
+      configurationArtifactId: previousState.configurationArtifactId,
+      configurationContentHash: previousState.configurationContentHash,
+      policyHash: previousState.policyHash,
+      policyLocked: previousState.policyLocked,
+      blockedReason: null,
       currentLedger: {
         versionId: input.ledgerVersionId,
         artifactId: input.ledgerArtifactId,
@@ -498,6 +587,9 @@ function submitLedger(
     },
     commands: [validateCommand, renderCommand],
     auditFacts: [
+      ...(downstreamInvalidatedFact === null
+        ? []
+        : [downstreamInvalidatedFact]),
       {
         type: "ledger_submitted",
         actor: input.actor,
@@ -513,4 +605,17 @@ function submitLedger(
       commandFact(renderCommand),
     ],
   };
+}
+
+function isNonterminalState(state: string): boolean {
+  return (
+    state === "draft" ||
+    state === "requirements_approved" ||
+    state === "planning" ||
+    state === "baseline_review" ||
+    state === "remediation" ||
+    state === "closure" ||
+    state === "qualified" ||
+    state === "qualified_with_waivers"
+  );
 }
