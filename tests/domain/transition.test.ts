@@ -8,6 +8,7 @@ import {
   type LedgerApprovalRequested,
   type LedgerSubmitted,
   type PlanGenerated,
+  type PlanSubmitted,
   type PlanningRequested,
   type RunStarted,
   type SourceExclusionApproved,
@@ -30,13 +31,19 @@ const configuredReviewerAssignment = {
   provider: "anthropic" as const,
   modelId: "claude-frontier-pinned-20260801",
 };
+const configuredPlannerAssignment = {
+  provider: "openai" as const,
+  modelId: "gpt-5.6-2026-08-01",
+};
 const pinnedPolicy = {
   policyHash,
+  plannerAssignment: configuredPlannerAssignment,
   reviewerAssignment: configuredReviewerAssignment,
 };
 function policyWithHash(nextPolicyHash: string) {
   return {
     policyHash: nextPolicyHash,
+    plannerAssignment: configuredPlannerAssignment,
     reviewerAssignment: configuredReviewerAssignment,
   };
 }
@@ -305,6 +312,42 @@ function planGeneratedInput(): PlanGenerated {
       kind: "planner",
       provider: "openai",
       modelId: "gpt-5.6-2026-08-01",
+    },
+  };
+}
+
+function planSubmittedInput(): PlanSubmitted {
+  const generated = planGeneratedInput();
+  return {
+    type: "PlanSubmitted",
+    runId: generated.runId,
+    expectedStateVersion: 4,
+    planVersionId: generated.planVersionId,
+    planArtifact: generated.planArtifact,
+    canonicalSchemaValid: true,
+    sectionContinuityValid: true,
+    sectionTransitionMapArtifact: generated.sectionTransitionMapArtifact,
+    provenanceArtifact: generated.provenanceArtifact,
+    reviewerAssignment: generated.reviewerAssignment,
+    reviewerModelAllowed: generated.reviewerModelAllowed,
+    reviewerModelIdentityPinned: generated.reviewerModelIdentityPinned,
+    reviewerAssignmentAuthorized: generated.reviewerAssignmentAuthorized,
+    reviewPolicyArtifact: generated.reviewPolicyArtifact,
+    reviewerPromptArtifact: generated.reviewerPromptArtifact,
+    reviewSchemaArtifact: generated.reviewSchemaArtifact,
+    componentRegistryArtifact: generated.componentRegistryArtifact,
+    reviewBudgetMaximum: generated.reviewBudgetMaximum,
+    availableBudget: generated.availableBudget,
+    auditChainVerified: true,
+    databaseIntegrityVerified: true,
+    schemaCompatible: true,
+    mutationLeaseAvailable: true,
+    renderCommandId: "command_render_submitted_plan_01JTEST",
+    reviewCommandId: "command_review_submitted_plan_01JTEST",
+    actor: {
+      kind: "human",
+      displayName: "Tigran",
+      osAccount: "tig",
     },
   };
 }
@@ -2356,15 +2399,79 @@ describe("transition", () => {
       transition(
         planningState(),
         { ...planGeneratedInput(), reviewerAssignment },
-        { policyHash, reviewerAssignment },
+        {
+          policyHash,
+          plannerAssignment: configuredPlannerAssignment,
+          reviewerAssignment,
+        },
       ),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("accepts a human-submitted canonical plan for baseline review", () => {
+    const result = transition(
+      requirementsApprovedState(),
+      planSubmittedInput(),
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.state).toBe("baseline_review");
+    if (result.nextState.state !== "baseline_review") {
+      throw new Error("Expected baseline review state");
+    }
+    expect(result.nextState.stateVersion).toBe(5);
+    expect(result.nextState.currentPlan).toEqual(
+      expect.objectContaining({
+        versionId: "plan_version_01JTEST",
+        artifactId: "artifact_plan_01JTEST",
+        contentHash: planContentHash,
+      }),
+    );
+    expect(result.commands.map(({ commandType }) => commandType)).toEqual([
+      "render_plan",
+      "baseline_review",
+    ]);
+    expect(result.auditFacts[0]?.type).toBe("plan_version_accepted");
+    expect(result.auditFacts[0]?.actor).toEqual(planSubmittedInput().actor);
+    expect(result.auditFacts[0]?.reason).toBe(
+      "Accept the human-submitted canonical plan for baseline review",
+    );
+  });
+
+  it.each([
+    ["a stale state version", { expectedStateVersion: 3 }],
+    ["an invalid canonical schema", { canonicalSchemaValid: false }],
+    ["invalid section continuity", { sectionContinuityValid: false }],
+    [
+      "an unauthorized actor",
+      { actor: { kind: "system", component: "test", version: "1" } },
+    ],
+  ])("rejects PlanSubmitted with %s", (_name, override) => {
+    const input = { ...planSubmittedInput(), ...override } as PlanSubmitted;
+
+    expect(() =>
+      transition(requirementsApprovedState(), input, pinnedPolicy),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("rejects PlanSubmitted after provider planning has started", () => {
+    expect(() =>
+      transition(
+        planningState(),
+        {
+          ...planSubmittedInput(),
+          expectedStateVersion: 5,
+        },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
   });
 
   it("accepts a policy-authorized reduced-independence review assignment", () => {
     const approved = requirementsApprovedState();
     const override = transition(approved, independenceOverrideGrantedInput(), {
       policyHash,
+      plannerAssignment: configuredPlannerAssignment,
       reviewerAssignment: configuredReviewerAssignment,
     });
     const planning = transition(
@@ -2444,6 +2551,7 @@ describe("transition", () => {
     expect(() =>
       transition(requirementsApprovedState(), input, {
         policyHash,
+        plannerAssignment: configuredPlannerAssignment,
         reviewerAssignment: configuredReviewerAssignment,
       }),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
@@ -2453,14 +2561,22 @@ describe("transition", () => {
     const granted = transition(
       requirementsApprovedState(),
       independenceOverrideGrantedInput(),
-      { policyHash, reviewerAssignment: configuredReviewerAssignment },
+      {
+        policyHash,
+        plannerAssignment: configuredPlannerAssignment,
+        reviewerAssignment: configuredReviewerAssignment,
+      },
     );
 
     expect(() =>
       transition(
         granted.nextState,
         { ...independenceOverrideGrantedInput(), expectedStateVersion: 5 },
-        { policyHash, reviewerAssignment: configuredReviewerAssignment },
+        {
+          policyHash,
+          plannerAssignment: configuredPlannerAssignment,
+          reviewerAssignment: configuredReviewerAssignment,
+        },
       ),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
@@ -2481,6 +2597,7 @@ describe("transition", () => {
         },
         {
           policyHash,
+          plannerAssignment: configuredPlannerAssignment,
           reviewerAssignment: configuredReviewerAssignment,
         },
       ),
@@ -2494,6 +2611,7 @@ describe("transition", () => {
         independenceOverrideGrantedInput(),
         {
           policyHash,
+          plannerAssignment: configuredPlannerAssignment,
           reviewerAssignment: {
             provider: "openai",
             modelId: "different-pinned-reviewer",

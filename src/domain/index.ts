@@ -149,6 +149,7 @@ export type RunStarted = {
 
 export type PinnedRunPolicy = {
   policyHash: string;
+  plannerAssignment: ProviderModelAssignment;
   reviewerAssignment: ProviderModelAssignment;
 };
 
@@ -273,6 +274,35 @@ export type PlanGenerated = {
   renderCommandId: string;
   reviewCommandId: string;
   actor: ModelActor & { kind: "planner" };
+};
+
+export type PlanSubmitted = {
+  type: "PlanSubmitted";
+  runId: string;
+  expectedStateVersion: number;
+  planVersionId: string;
+  planArtifact: VerifiedArtifactInput;
+  canonicalSchemaValid: boolean;
+  sectionContinuityValid: boolean;
+  sectionTransitionMapArtifact: VerifiedArtifactInput;
+  provenanceArtifact: VerifiedArtifactInput;
+  reviewerAssignment: ProviderModelAssignment;
+  reviewerModelAllowed: boolean;
+  reviewerModelIdentityPinned: boolean;
+  reviewerAssignmentAuthorized: boolean;
+  reviewPolicyArtifact: VerifiedArtifactInput;
+  reviewerPromptArtifact: VerifiedArtifactInput;
+  reviewSchemaArtifact: VerifiedArtifactInput;
+  componentRegistryArtifact: VerifiedArtifactInput;
+  reviewBudgetMaximum: BudgetReservation;
+  availableBudget: BudgetReservation;
+  auditChainVerified: boolean;
+  databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
+  renderCommandId: string;
+  reviewCommandId: string;
+  actor: HumanActor;
 };
 
 export type IndependenceOverrideGranted = {
@@ -561,7 +591,7 @@ export type PlanningRequestedFact = {
 
 export type PlanVersionAcceptedFact = {
   type: "plan_version_accepted";
-  actor: ModelActor & { kind: "planner" };
+  actor: (ModelActor & { kind: "planner" }) | HumanActor;
   reason: string;
   evidence: ArtifactEvidenceReference[];
   payload: {
@@ -744,6 +774,7 @@ export function transition(
     | LedgerApprovalRequested
     | PlanningRequested
     | PlanGenerated
+    | PlanSubmitted
     | IndependenceOverrideGranted,
   policy: PinnedRunPolicy,
 ): TransitionResult {
@@ -759,7 +790,9 @@ export function transition(
     case "PlanningRequested":
       return requestPlanning(previousState, input, policy);
     case "PlanGenerated":
-      return acceptGeneratedPlan(previousState, input, policy);
+      return acceptPlanForBaseline(previousState, input, policy);
+    case "PlanSubmitted":
+      return acceptPlanForBaseline(previousState, input, policy);
     case "IndependenceOverrideGranted":
       return grantIndependenceOverride(previousState, input, policy);
     default:
@@ -1528,19 +1561,34 @@ function grantIndependenceOverride(
   };
 }
 
-function acceptGeneratedPlan(
+function acceptPlanForBaseline(
   previousState: NonterminalRunState | null,
-  input: PlanGenerated,
+  input: PlanGenerated | PlanSubmitted,
   policy: PinnedRunPolicy,
 ): TransitionResult {
+  if (previousState === null || previousState.runId !== input.runId) {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      "Plan acceptance requires a matching run",
+    );
+  }
   if (
-    previousState === null ||
-    previousState.state !== "planning" ||
-    previousState.runId !== input.runId
+    previousState.state !== "planning" &&
+    previousState.state !== "requirements_approved"
   ) {
     throw new DomainTransitionError(
       "INVALID_TRANSITION",
-      "PlanGenerated requires an active planning command",
+      `${input.type} is not valid from ${previousState.state}`,
+    );
+  }
+  if (
+    (input.type === "PlanGenerated" && previousState.state !== "planning") ||
+    (input.type === "PlanSubmitted" &&
+      previousState.state !== "requirements_approved")
+  ) {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      `${input.type} is not valid from ${previousState.state}`,
     );
   }
 
@@ -1557,12 +1605,19 @@ function acceptGeneratedPlan(
     input.reviewBudgetMaximum,
     input.availableBudget,
   );
-  const plannerMatches =
-    input.actor.kind === "planner" &&
-    input.actor.provider ===
-      previousState.activePlanning.plannerAssignment.provider &&
-    input.actor.modelId ===
-      previousState.activePlanning.plannerAssignment.modelId;
+  const actorAuthorized =
+    input.type === "PlanGenerated"
+      ? input.actor.kind === "planner" &&
+        input.actor.provider === policy.plannerAssignment.provider &&
+        input.actor.modelId === policy.plannerAssignment.modelId &&
+        previousState.state === "planning" &&
+        providerModelAssignmentsEqual(
+          previousState.activePlanning.plannerAssignment,
+          policy.plannerAssignment,
+        )
+      : input.actor.kind === "human" &&
+        input.actor.displayName.length > 0 &&
+        input.actor.osAccount.length > 0;
   const reviewerValid = providerModelAssignmentIsValid(
     input.reviewerAssignment,
   );
@@ -1574,18 +1629,22 @@ function acceptGeneratedPlan(
     expectedReviewerAssignment,
   );
   const providerIndependenceSatisfied =
-    input.reviewerAssignment.provider !==
-      previousState.activePlanning.plannerAssignment.provider ||
+    input.reviewerAssignment.provider !== policy.plannerAssignment.provider ||
     override !== undefined;
   const reducedIndependence = override !== undefined;
 
   if (
     input.expectedStateVersion !== previousState.stateVersion ||
     policy.policyHash !== previousState.policyHash ||
-    input.planPurposeId !== previousState.activePlanning.purposeId ||
-    input.originatingCommandId !== previousState.activePlanning.commandId ||
+    (input.type === "PlanGenerated" &&
+      (previousState.state !== "planning" ||
+        input.planPurposeId !== previousState.activePlanning.purposeId ||
+        input.originatingCommandId !==
+          previousState.activePlanning.commandId)) ||
     input.planVersionId.length === 0 ||
-    !input.outputValid ||
+    !(input.type === "PlanGenerated"
+      ? input.outputValid
+      : input.canonicalSchemaValid) ||
     !input.sectionContinuityValid ||
     !input.reviewerModelAllowed ||
     !input.reviewerModelIdentityPinned ||
@@ -1599,7 +1658,7 @@ function acceptGeneratedPlan(
     !input.databaseIntegrityVerified ||
     !input.schemaCompatible ||
     !input.mutationLeaseAvailable ||
-    !plannerMatches ||
+    !actorAuthorized ||
     !budgetEligible ||
     input.renderCommandId.length === 0 ||
     input.reviewCommandId.length === 0 ||
@@ -1735,6 +1794,7 @@ function acceptGeneratedPlan(
       ...previousState,
       state: "baseline_review",
       stateVersion: nextStateVersion,
+      policyLocked: true,
       currentPlan: {
         versionId: input.planVersionId,
         artifactId: input.planArtifact.artifactId,
@@ -1760,7 +1820,10 @@ function acceptGeneratedPlan(
       {
         type: "plan_version_accepted",
         actor: input.actor,
-        reason: "Accept the verified Planner output for baseline review",
+        reason:
+          input.type === "PlanGenerated"
+            ? "Accept the verified Planner output for baseline review"
+            : "Accept the human-submitted canonical plan for baseline review",
         evidence: [planEvidence, transitionMapEvidence, provenanceEvidence],
         payload: {
           planVersionId: input.planVersionId,
