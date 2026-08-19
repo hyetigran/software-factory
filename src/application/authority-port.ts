@@ -46,15 +46,57 @@ export type PersistTransitionRequest = {
 export type StagedArtifactRegistration = {
   schemaVersion: 1;
   artifactId: string;
-  kind: string;
+  kind:
+    | "raw_requirements"
+    | "requirements_ledger"
+    | "coverage_report"
+    | "structured_plan"
+    | "rendered_plan"
+    | "external_edit"
+    | "review"
+    | "provider_request"
+    | "provider_response"
+    | "native_usage"
+    | "terminal_manifest"
+    | "terminal_report"
+    | "backup_manifest"
+    | "other";
   contentHash: string;
   byteLength: number;
   mediaType: string;
   schemaId?: string;
   createdBy: string;
-  provenance: object;
-  objectPath: string;
+  provenance:
+    | { method: "copied"; sourcePath: string }
+    | { method: "human_submitted"; sourceArtifactIds?: string[] }
+    | {
+        method: "provider_generated";
+        sourceArtifactIds: string[];
+        commandId: string;
+        attemptId: string;
+      }
+    | {
+        method: "deterministic_render";
+        sourceArtifactIds: string[];
+        commandId: string;
+      }
+    | {
+        method: "external_edit";
+        sourceArtifactIds: string[];
+        expectedContentHash: string;
+      }
+    | { method: "exported"; sourceArtifactIds: string[] };
 };
+
+export interface ArtifactStagingPort {
+  stageArtifact(
+    bytes: Uint8Array,
+    registration: Omit<
+      StagedArtifactRegistration,
+      "schemaVersion" | "contentHash" | "byteLength"
+    >,
+  ): Promise<StagedArtifactRegistration>;
+}
 
 export type ValidatedProjectionData = {
   validator: "deterministic-authority-projection-v1";

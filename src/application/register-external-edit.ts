@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   transition,
   type ExternalEditDetected,
@@ -5,22 +7,29 @@ import {
   type PinnedRunPolicy,
   type SystemActor,
 } from "../domain/index.js";
-import type { ContentAddressedArtifactStore } from "../infrastructure/artifacts/object-store.js";
-import type { AuthorityPort, PersistableTransition } from "./authority-port.js";
+import type {
+  ArtifactStagingPort,
+  AuthorityPort,
+  PersistableTransition,
+} from "./authority-port.js";
 import { commitTransition } from "./commit-transition.js";
-import { verifyProjection } from "./deterministic-documents.js";
+import {
+  renderLedger,
+  renderPlan,
+  verifyProjection,
+} from "./deterministic-documents.js";
 
 export async function registerExternalEdit(input: {
-  store: ContentAddressedArtifactStore;
+  store: ArtifactStagingPort;
   authority: AuthorityPort;
   policy: PinnedRunPolicy;
   runId: string;
   expectedStateVersion: number;
   projectionKind: "ledger" | "plan";
-  expectedProjection: { artifactId: string; contentHash: string };
+  canonicalArtifactId: string;
+  canonicalBytes: Uint8Array;
   workingBytes: Uint8Array;
   artifactId: string;
-  sourceArtifactIds: string[];
   actor: SystemActor;
   workspaceEvidence: {
     auditChainVerified: boolean;
@@ -29,9 +38,16 @@ export async function registerExternalEdit(input: {
     mutationLeaseAvailable: boolean;
   };
 }): Promise<PersistableTransition<NonterminalRunState> | null> {
+  const canonicalContentHash = createHash("sha256")
+    .update(input.canonicalBytes)
+    .digest("hex");
+  const expectedRender =
+    input.projectionKind === "ledger"
+      ? renderLedger(input.canonicalBytes)
+      : renderPlan(input.canonicalBytes);
   const verification = verifyProjection(
     input.workingBytes,
-    input.expectedProjection.contentHash,
+    expectedRender.contentHash,
   );
   if (verification.status === "verified") return null;
   const descriptor = await input.store.stageArtifact(verification.editedBytes, {
@@ -42,8 +58,8 @@ export async function registerExternalEdit(input: {
     createdBy: `${input.actor.component}@${input.actor.version}`,
     provenance: {
       method: "external_edit",
-      sourceArtifactIds: input.sourceArtifactIds,
-      verifiedRenderArtifactId: input.expectedProjection.artifactId,
+      sourceArtifactIds: [input.canonicalArtifactId],
+      expectedContentHash: expectedRender.contentHash,
     },
   });
   return commitTransition<NonterminalRunState>(input.authority, {
@@ -51,13 +67,13 @@ export async function registerExternalEdit(input: {
     expectedStateVersion: input.expectedStateVersion,
     stagedArtifacts: [descriptor],
     transition: (previousState) => {
-      assertExpectedProjection(previousState, input);
+      assertCanonicalDocument(previousState, input, canonicalContentHash);
       const detected: ExternalEditDetected = {
         type: "ExternalEditDetected",
         runId: input.runId,
         expectedStateVersion: input.expectedStateVersion,
         projectionKind: input.projectionKind,
-        expectedContentHash: input.expectedProjection.contentHash,
+        expectedContentHash: expectedRender.contentHash,
         editedArtifact: {
           artifactId: descriptor.artifactId,
           contentHash: descriptor.contentHash,
@@ -71,27 +87,29 @@ export async function registerExternalEdit(input: {
   });
 }
 
-function assertExpectedProjection(
+function assertCanonicalDocument(
   state: NonterminalRunState | null,
   input: {
     projectionKind: "ledger" | "plan";
-    expectedProjection: { artifactId: string; contentHash: string };
+    canonicalArtifactId: string;
   },
+  canonicalContentHash: string,
 ): void {
   if (state === null)
     throw new TypeError("External edit requires an active run");
-  if (input.projectionKind === "plan" && "renderedPlan" in state) {
-    if (
-      state.renderedPlan.artifactId !== input.expectedProjection.artifactId ||
-      state.renderedPlan.contentHash !== input.expectedProjection.contentHash
-    ) {
-      throw new TypeError(
-        "External edit must be compared with the authoritative rendered plan",
-      );
-    }
-    return;
+  const canonical =
+    input.projectionKind === "plan" && "currentPlan" in state
+      ? state.currentPlan
+      : input.projectionKind === "ledger"
+        ? state.currentLedger
+        : undefined;
+  if (
+    canonical === undefined ||
+    canonical.artifactId !== input.canonicalArtifactId ||
+    canonical.contentHash !== canonicalContentHash
+  ) {
+    throw new TypeError(
+      "External edit must be derived from the authoritative canonical document",
+    );
   }
-  throw new TypeError(
-    "The authoritative rendered projection is not recorded in run state",
-  );
 }

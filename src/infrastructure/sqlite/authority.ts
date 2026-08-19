@@ -8,7 +8,7 @@ import {
   openSync,
   readFileSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { canonicalJson } from "../../domain/canonical-json.js";
@@ -24,6 +24,7 @@ import type {
 import { commandIsValid } from "../../application/command-validation.js";
 import type { StagedArtifactDescriptor } from "../artifacts/object-store.js";
 import type { ContentAddressedArtifactStore } from "../artifacts/object-store.js";
+import { artifactRegistrationIsValid } from "../artifacts/object-store.js";
 import {
   persistValidatedProjection,
   projectAuthoritativeState,
@@ -667,10 +668,21 @@ export class SqliteAuthority implements AuthorityPort {
   }
 
   private verifyStagedArtifact(artifact: StagedArtifactRegistration): void {
+    if (
+      this.artifactStore === undefined ||
+      artifact.schemaVersion !== 1 ||
+      !artifactRegistrationIsValid(artifact)
+    ) {
+      throw new AuthorityIntegrityError(
+        `Staged artifact registration is invalid: ${artifact.artifactId}`,
+      );
+    }
     let handle: number | undefined;
     try {
       handle = openSync(
-        artifact.objectPath,
+        this.artifactStore === undefined
+          ? ""
+          : join(this.artifactStore.workspace.objects, artifact.contentHash),
         constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
       );
       const stat = fstatSync(handle);

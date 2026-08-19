@@ -2149,12 +2149,21 @@ function acceptPlanForBaseline(
     !(
       (input.type === "PlanGenerated" && previousState.state === "planning") ||
       (input.type === "PlanSubmitted" &&
-        previousState.state === "requirements_approved")
+        (previousState.state === "requirements_approved" ||
+          (previousState.projectionBlock?.projectionKind === "plan" &&
+            "currentLedger" in previousState &&
+            previousState.currentLedger.validationStatus === "approved")))
     )
   ) {
     throw new DomainTransitionError(
       "INVALID_TRANSITION",
       "Plan acceptance requires the matching run and input state",
+    );
+  }
+  if (previousState.state === "draft") {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      "Plan acceptance requires an approved requirements ledger",
     );
   }
 

@@ -108,7 +108,7 @@ describe("workspace and content-addressed artifact store", () => {
         provenance: {
           method: "external_edit",
           sourceArtifactIds: ["artifact_plan_01JTEST"],
-          verifiedRenderArtifactId: "artifact_rendered_plan_01JTEST",
+          expectedContentHash: "a".repeat(64),
         },
       }),
     ).resolves.toEqual(expect.objectContaining({ kind: "external_edit" }));

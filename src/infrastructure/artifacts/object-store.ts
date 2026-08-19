@@ -56,7 +56,7 @@ export type ArtifactProvenance =
   | {
       method: "external_edit";
       sourceArtifactIds: string[];
-      verifiedRenderArtifactId: string;
+      expectedContentHash: string;
     }
   | { method: "exported"; sourceArtifactIds: string[] };
 
@@ -169,11 +169,11 @@ function provenanceIsValid(provenance: ArtifactProvenance): boolean {
         hasExactKeys(provenance, [
           "method",
           "sourceArtifactIds",
-          "verifiedRenderArtifactId",
+          "expectedContentHash",
         ]) &&
         identifiersAreValid(provenance.sourceArtifactIds) &&
-        typeof provenance.verifiedRenderArtifactId === "string" &&
-        provenance.verifiedRenderArtifactId.trim().length > 0
+        typeof provenance.expectedContentHash === "string" &&
+        /^[a-f0-9]{64}$/u.test(provenance.expectedContentHash)
       );
     case "exported":
       return (
@@ -181,6 +181,17 @@ function provenanceIsValid(provenance: ArtifactProvenance): boolean {
         identifiersAreValid(provenance.sourceArtifactIds)
       );
   }
+}
+
+export function artifactRegistrationIsValid(
+  registration: ArtifactRegistration,
+): boolean {
+  return (
+    /^[A-Za-z][A-Za-z0-9_-]{2,127}$/u.test(registration.artifactId) &&
+    registration.mediaType.trim().length > 0 &&
+    registration.createdBy.trim().length > 0 &&
+    provenanceIsValid(registration.provenance)
+  );
 }
 
 function sha256(bytes: Uint8Array): string {
@@ -271,12 +282,7 @@ export class ContentAddressedArtifactStore {
     bytes: Uint8Array,
     registration: ArtifactRegistration,
   ): Promise<StagedArtifactDescriptor> {
-    if (
-      !/^[A-Za-z][A-Za-z0-9_-]{2,127}$/u.test(registration.artifactId) ||
-      registration.mediaType.trim().length === 0 ||
-      registration.createdBy.trim().length === 0 ||
-      !provenanceIsValid(registration.provenance)
-    ) {
+    if (!artifactRegistrationIsValid(registration)) {
       throw new TypeError("Artifact registration is invalid");
     }
     const staged = await this.stage(bytes);
