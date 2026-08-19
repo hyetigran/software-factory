@@ -638,6 +638,15 @@ export class SqliteAuthority implements AuthorityPort {
       .prepare("SELECT schema_version FROM schema_metadata WHERE singleton = 1")
       .get() as { schema_version: number } | undefined;
     if (newlyInitialized) {
+      this.database.exec(
+        readFileSync(
+          resolve(
+            dirname(fileURLToPath(import.meta.url)),
+            "../../../database/migrations/0002_run_state_snapshots.sql",
+          ),
+          "utf8",
+        ),
+      );
       this.database
         .prepare(
           `INSERT INTO workspaces
@@ -645,9 +654,10 @@ export class SqliteAuthority implements AuthorityPort {
            VALUES (?, ?, ?, 1)`,
         )
         .run(this.workspaceId, this.now(), ZERO_HASH);
+      version = { schema_version: 2 };
     }
     if (version?.schema_version === 1) {
-      this.database.exec("PRAGMA wal_checkpoint(TRUNCATE); BEGIN IMMEDIATE");
+      this.database.exec("BEGIN IMMEDIATE");
       try {
         this.verifyLegacyAuthority();
         const integrity = this.database
@@ -673,8 +683,6 @@ export class SqliteAuthority implements AuthorityPort {
         );
         mkdirSync(backupDirectory, { recursive: true, mode: 0o700 });
         const backupPath = resolve(backupDirectory, "state.db");
-        const backupBytes = readFileSync(this.databasePath);
-        writeFileSync(backupPath, backupBytes, { mode: 0o600, flag: "wx" });
         const objectHashes = (
           this.database
             .prepare("SELECT content_hash FROM artifacts ORDER BY content_hash")
@@ -701,29 +709,80 @@ export class SqliteAuthority implements AuthorityPort {
             );
           }
         }
+        const migrationRun = this.database
+          .prepare(
+            "SELECT run_id, state_version FROM runs ORDER BY run_id LIMIT 1",
+          )
+          .get() as { run_id: string; state_version: number } | undefined;
+        if (migrationRun === undefined) {
+          throw new AuthorityIntegrityError(
+            "Legacy migration requires an authoritative run for lease ownership",
+          );
+        }
+        const migrationCommandId = `migration:${backupId}`;
+        this.database
+          .prepare(
+            `INSERT INTO logical_commands
+              (command_id, run_id, command_key, command_type, schema_version,
+               triggering_state_version, status, specification_json, planned_at)
+             VALUES (?, ?, ?, 'backup_workspace', 1, ?, 'running', ?, ?)`,
+          )
+          .run(
+            migrationCommandId,
+            migrationRun.run_id,
+            sha256(migrationCommandId),
+            migrationRun.state_version,
+            canonicalJson({ purpose: "schema_migration", backupId }),
+            this.now(),
+          );
+        this.database
+          .prepare(
+            `INSERT INTO mutation_lease
+              (singleton, command_id, owner_process, acquired_at, heartbeat_at)
+             VALUES (1, ?, 'sqlite_migration', ?, ?)`,
+          )
+          .run(migrationCommandId, this.now(), this.now());
+        this.database.exec("COMMIT");
+        this.database.exec(
+          `VACUUM main INTO '${backupPath.replaceAll("'", "''")}'`,
+        );
+        this.database.exec("BEGIN IMMEDIATE");
+        const ownedLease = this.database
+          .prepare(
+            `SELECT 1 FROM mutation_lease
+             WHERE singleton = 1 AND command_id = ? AND owner_process = 'sqlite_migration'`,
+          )
+          .get(migrationCommandId);
+        if (ownedLease === undefined) {
+          throw new AuthorityIntegrityError(
+            "Migration mutation lease was lost",
+          );
+        }
+        const backupBytes = readFileSync(backupPath);
         const chain = this.database
           .prepare(
             "SELECT audit_chain_head FROM workspaces WHERE workspace_id = ?",
           )
           .get(this.workspaceId) as { audit_chain_head: string } | undefined;
         const manifestPath = resolve(backupDirectory, "manifest.json");
+        const executingCliVersion = (
+          JSON.parse(
+            readFileSync(
+              resolve(
+                dirname(fileURLToPath(import.meta.url)),
+                "../../../package.json",
+              ),
+              "utf8",
+            ),
+          ) as { version: string }
+        ).version;
         const manifest = canonicalJson({
           backupId,
           databaseHash: sha256(backupBytes),
           fromSchemaVersion: 1,
           objectHashes,
           auditChainHead: chain?.audit_chain_head ?? ZERO_HASH,
-          cliVersion: (
-            JSON.parse(
-              readFileSync(
-                resolve(
-                  dirname(fileURLToPath(import.meta.url)),
-                  "../../../package.json",
-                ),
-                "utf8",
-              ),
-            ) as { version: string }
-          ).version,
+          cliVersion: executingCliVersion,
           createdAt: this.now(),
         });
         writeFileSync(manifestPath, manifest, { mode: 0o600, flag: "wx" });
@@ -744,7 +803,7 @@ export class SqliteAuthority implements AuthorityPort {
             (chain?.audit_chain_head ?? ZERO_HASH) ||
           canonicalJson(verifiedManifest.objectHashes) !==
             canonicalJson(objectHashes) ||
-          verifiedManifest.cliVersion.length === 0 ||
+          verifiedManifest.cliVersion !== executingCliVersion ||
           sha256(readFileSync(backupPath)) !== verifiedManifest.databaseHash
         ) {
           throw new AuthorityIntegrityError(
@@ -856,9 +915,35 @@ export class SqliteAuthority implements AuthorityPort {
             "Post-migration integrity verification failed",
           );
         }
+        this.database
+          .prepare("DELETE FROM mutation_lease WHERE singleton = 1")
+          .run();
+        this.database
+          .prepare("DELETE FROM logical_commands WHERE command_id = ?")
+          .run(migrationCommandId);
         this.database.exec("COMMIT");
       } catch (error) {
-        this.database.exec("ROLLBACK");
+        try {
+          this.database.exec("ROLLBACK");
+        } catch {
+          // The preflight may fail before a transaction is active.
+        }
+        const strandedLease = this.database
+          .prepare(
+            `SELECT command_id FROM mutation_lease
+             WHERE singleton = 1 AND owner_process = 'sqlite_migration'`,
+          )
+          .get() as { command_id: string } | undefined;
+        if (strandedLease !== undefined) {
+          this.database.exec("BEGIN IMMEDIATE");
+          this.database
+            .prepare("DELETE FROM mutation_lease WHERE singleton = 1")
+            .run();
+          this.database
+            .prepare("DELETE FROM logical_commands WHERE command_id = ?")
+            .run(strandedLease.command_id);
+          this.database.exec("COMMIT");
+        }
         throw error;
       }
       version = this.database
