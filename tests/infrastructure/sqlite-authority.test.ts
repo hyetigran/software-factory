@@ -316,7 +316,7 @@ describe("SQLite authority", () => {
         normalizedRequestHash: requestArtifact.contentHash,
         artifact: requestArtifact,
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe("claimed");
     await expect(
       authority.registerPreparedProviderRequest({
         attempt,

@@ -81,7 +81,7 @@ describe("executeProviderCall", () => {
     );
     const registerPreparedProviderRequest = vi.fn(() => {
       events.push("register");
-      return Promise.resolve();
+      return Promise.resolve("claimed" as const);
     });
 
     const result = await executeProviderCall({
@@ -147,6 +147,8 @@ describe("executeProviderCall", () => {
       expect.objectContaining({ artifact: descriptor }),
     );
     expect(result.requestArtifact).toEqual(descriptor);
+    expect(result.status).toBe("dispatched");
+    if (result.status !== "dispatched") throw new Error("must dispatch");
     expect(result.execution.kind).toBe("completed");
   });
 

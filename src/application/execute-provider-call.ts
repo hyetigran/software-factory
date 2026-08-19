@@ -26,13 +26,19 @@ export interface PreparedProviderRequestRegistrationPort {
     providerRequest: ProviderRequest;
     normalizedRequestHash: string;
     artifact: StagedArtifactRegistration;
-  }): Promise<void>;
+  }): Promise<"claimed" | "already_claimed">;
 }
 
-export type ExecutedProviderCall = {
-  requestArtifact: StagedArtifactRegistration;
-  execution: ProviderExecution;
-};
+export type ExecutedProviderCall =
+  | {
+      status: "dispatched";
+      requestArtifact: StagedArtifactRegistration;
+      execution: ProviderExecution;
+    }
+  | {
+      status: "already_claimed";
+      requestArtifact: StagedArtifactRegistration;
+    };
 
 export async function executeProviderCall(
   input: ExecuteProviderCallRequest,
@@ -48,7 +54,8 @@ export async function executeProviderCall(
     throw new TypeError("Provider call recording identity is invalid");
   }
 
-  const prepared = input.adapter.prepare(input.providerRequest);
+  const providerRequest = structuredClone(input.providerRequest);
+  const prepared = input.adapter.prepare(providerRequest);
   const registration: ArtifactRegistration = {
     artifactId: input.requestArtifactId,
     kind: "provider_request",
@@ -59,11 +66,9 @@ export async function executeProviderCall(
       method: "application_generated",
       purpose: "provider_request",
       sourceArtifactIds: [
-        input.providerRequest.systemPromptArtifactId,
-        input.providerRequest.outputSchemaArtifactId,
-        ...input.providerRequest.inputArtifacts.map(
-          ({ artifactId }) => artifactId,
-        ),
+        providerRequest.systemPromptArtifactId,
+        providerRequest.outputSchemaArtifactId,
+        ...providerRequest.inputArtifacts.map(({ artifactId }) => artifactId),
       ],
       commandId: input.attempt.commandId,
       attemptId: input.attempt.attemptId,
@@ -89,11 +94,20 @@ export async function executeProviderCall(
       "Staged provider request does not match its requested identity",
     );
   }
-  await input.requestRegistration.registerPreparedProviderRequest({
-    attempt: input.attempt,
-    providerRequest: input.providerRequest,
-    normalizedRequestHash: prepared.normalizedRequestHash,
-    artifact: requestArtifact,
-  });
-  return { requestArtifact, execution: await prepared.dispatch() };
+  const claim = await input.requestRegistration.registerPreparedProviderRequest(
+    {
+      attempt: input.attempt,
+      providerRequest,
+      normalizedRequestHash: prepared.normalizedRequestHash,
+      artifact: requestArtifact,
+    },
+  );
+  if (claim === "already_claimed") {
+    return { status: "already_claimed", requestArtifact };
+  }
+  return {
+    status: "dispatched",
+    requestArtifact,
+    execution: await prepared.dispatch(),
+  };
 }

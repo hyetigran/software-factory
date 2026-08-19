@@ -233,7 +233,7 @@ export class SqliteAuthority
     providerRequest: ProviderRequest;
     normalizedRequestHash: string;
     artifact: StagedArtifactRegistration;
-  }): Promise<void> {
+  }): Promise<"claimed" | "already_claimed"> {
     if (this.preparedRequestRegistration === undefined) {
       throw new TypeError(
         "Provider request registration requires a bound object store",

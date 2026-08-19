@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
 import type { StagedArtifactRegistration } from "../../application/artifact-port.js";
@@ -73,7 +74,9 @@ function controlledArtifactIds(command: PersistableCommand): {
 export class SqlitePreparedRequestRegistration {
   constructor(private readonly dependencies: Dependencies) {}
 
-  async register(input: RegistrationInput): Promise<void> {
+  async register(
+    input: RegistrationInput,
+  ): Promise<"claimed" | "already_claimed"> {
     const { database } = this.dependencies;
     database.exec("BEGIN IMMEDIATE");
     try {
@@ -92,7 +95,13 @@ export class SqlitePreparedRequestRegistration {
           `SELECT c.run_id, c.command_key, c.specification_json,
                   a.status AS attempt_status, a.correlation_id,
                   l.command_id AS lease_command_id,
-                  l.attempt_id AS lease_attempt_id, l.owner_process
+                  l.attempt_id AS lease_attempt_id, l.owner_process,
+                  (SELECT json_extract(e.payload_json, '$.attemptKind')
+                     FROM audit_entries e
+                    WHERE e.run_id = c.run_id
+                      AND e.fact_type = 'command_attempt_started'
+                      AND json_extract(e.payload_json, '$.attemptId') = a.attempt_id
+                    ORDER BY e.sequence DESC LIMIT 1) AS attempt_kind
              FROM logical_commands c
              JOIN command_attempts a ON a.command_id = c.command_id
              LEFT JOIN mutation_lease l ON l.singleton = 1
@@ -108,10 +117,14 @@ export class SqlitePreparedRequestRegistration {
             lease_command_id: string | null;
             lease_attempt_id: string | null;
             owner_process: string | null;
+            attempt_kind: string | null;
           }
         | undefined;
       const command = row && parseCommand(row.specification_json);
-      const role = command && expectedRole(command.commandType);
+      const role =
+        row?.attempt_kind === "schema_repair"
+          ? "schema_repair"
+          : command && expectedRole(command.commandType);
       const payload = command?.payload as Record<string, unknown> | undefined;
       if (
         row === undefined ||
@@ -155,8 +168,13 @@ export class SqlitePreparedRequestRegistration {
           "Command attempt already has a different provider request",
         );
       }
+      if (existing !== undefined) {
+        database.exec("COMMIT");
+        return "already_claimed";
+      }
       this.dependencies.persistArtifactMetadata(input.artifact);
       database.exec("COMMIT");
+      return "claimed";
     } catch (error) {
       database.exec("ROLLBACK");
       if (error instanceof AuthorityIntegrityError) {
@@ -201,6 +219,11 @@ export class SqlitePreparedRequestRegistration {
   ): void {
     const controlled = controlledArtifactIds(command);
     if (
+      createHash("sha256").update(request.systemPrompt).digest("hex") !==
+        request.systemPromptContentHash ||
+      createHash("sha256")
+        .update(canonicalJson(request.outputSchema))
+        .digest("hex") !== request.outputSchemaContentHash ||
       (controlled.promptId !== undefined &&
         controlled.promptId !== request.systemPromptArtifactId) ||
       (controlled.schemaId !== undefined &&
