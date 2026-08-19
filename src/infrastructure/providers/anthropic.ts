@@ -7,7 +7,7 @@ import type {
   ProviderRequest,
   PreparedProviderCall,
 } from "../../application/provider-port.js";
-import { sealProviderExecution } from "./execution-capability.js";
+import { defensiveProviderExecutionCopy } from "./execution-capability.js";
 import {
   assertProviderRequest,
   bytes,
@@ -22,6 +22,17 @@ import { structuredTextFromProviderResponse } from "./recording-codec.js";
 
 const endpoint = "https://api.anthropic.com/v1/messages";
 const apiVersion = "2023-06-01";
+const authenticExecutions = new WeakSet<object>();
+
+function sealExecution<T extends ProviderExecution>(execution: T): T {
+  const copy = defensiveProviderExecutionCopy(execution);
+  authenticExecutions.add(copy);
+  return copy;
+}
+
+export function isAuthenticAnthropicExecution(execution: ProviderExecution) {
+  return authenticExecutions.has(execution);
+}
 
 export class AnthropicMessagesAdapter implements ProviderAdapter {
   constructor(
@@ -90,7 +101,7 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
           wireBodyBytes,
           visibleHeaders,
           preflight,
-        ).then(sealProviderExecution);
+        ).then(sealExecution);
       },
     });
   }

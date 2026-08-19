@@ -1,8 +1,6 @@
 import type { ProviderExecution } from "../../application/provider-port.js";
 
-const authenticProviderExecutions = new WeakSet<object>();
-
-export function sealProviderExecution<T extends ProviderExecution>(
+export function defensiveProviderExecutionCopy<T extends ProviderExecution>(
   execution: T,
 ): T {
   const cloned = structuredClone(execution);
@@ -45,12 +43,5 @@ export function sealProviderExecution<T extends ProviderExecution>(
     Object.freeze(value);
   };
   freeze(copy);
-  authenticProviderExecutions.add(copy);
   return copy;
-}
-
-export function providerExecutionIsAuthentic(
-  execution: ProviderExecution,
-): boolean {
-  return authenticProviderExecutions.has(execution);
 }

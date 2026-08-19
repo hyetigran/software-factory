@@ -7,7 +7,7 @@ import type {
   ProviderRequest,
   PreparedProviderCall,
 } from "../../application/provider-port.js";
-import { sealProviderExecution } from "./execution-capability.js";
+import { defensiveProviderExecutionCopy } from "./execution-capability.js";
 import {
   assertProviderRequest,
   bytes,
@@ -21,6 +21,17 @@ import {
 import type { HttpTransport, ProviderPreflight } from "./transport.js";
 
 const endpoint = "https://api.openai.com/v1/responses";
+const authenticExecutions = new WeakSet<object>();
+
+function sealExecution<T extends ProviderExecution>(execution: T): T {
+  const copy = defensiveProviderExecutionCopy(execution);
+  authenticExecutions.add(copy);
+  return copy;
+}
+
+export function isAuthenticOpenAiExecution(execution: ProviderExecution) {
+  return authenticExecutions.has(execution);
+}
 
 export class OpenAiResponsesAdapter implements ProviderAdapter {
   constructor(
@@ -89,7 +100,7 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
         }
         dispatched = true;
         return this.dispatch(preparedRequest, wireBodyBytes, preflight).then(
-          sealProviderExecution,
+          sealExecution,
         );
       },
     });

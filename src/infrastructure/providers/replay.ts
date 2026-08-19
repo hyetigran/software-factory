@@ -6,10 +6,22 @@ import type {
   ProviderExecution,
   ProviderRequest,
 } from "../../application/provider-port.js";
-import { sealProviderExecution } from "./execution-capability.js";
+import { defensiveProviderExecutionCopy } from "./execution-capability.js";
 import { assertJsonSchema } from "../../application/json-schema-validator.js";
 import { canonicalJson } from "../../domain/canonical-json.js";
 import { preparedProviderCall } from "./common.js";
+
+const authenticExecutions = new WeakSet<object>();
+
+function sealExecution<T extends ProviderExecution>(execution: T): T {
+  const copy = defensiveProviderExecutionCopy(execution);
+  authenticExecutions.add(copy);
+  return copy;
+}
+
+export function isAuthenticReplayExecution(execution: ProviderExecution) {
+  return authenticExecutions.has(execution);
+}
 
 export class UnrecordedRequestError extends Error {
   readonly code = "UNRECORDED_REQUEST";
@@ -110,7 +122,7 @@ export class StrictReplayAdapter implements ProviderAdapter {
             preparedRequest.outputSchema,
           );
         }
-        return sealProviderExecution(recorded.execution);
+        return sealExecution(recorded.execution);
       },
     });
   }

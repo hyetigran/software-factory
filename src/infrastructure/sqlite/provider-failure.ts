@@ -17,7 +17,9 @@ import {
   providerEvidenceMatchesRecording,
   providerResponseMatchesEvidence,
 } from "./provider-completion.js";
-import { providerExecutionIsAuthentic } from "../providers/execution-capability.js";
+import { isAuthenticOpenAiExecution } from "../providers/openai.js";
+import { isAuthenticAnthropicExecution } from "../providers/anthropic.js";
+import { isAuthenticReplayExecution } from "../providers/replay.js";
 
 type Dependencies = {
   database: DatabaseSync;
@@ -110,7 +112,11 @@ export class SqliteProviderFailure {
       row.request_artifact_id !== request.requestArtifactId ||
       row.request_content_hash !== request.requestContentHash ||
       policy.runId !== request.runId ||
-      !providerExecutionIsAuthentic(request.execution) ||
+      !(
+        isAuthenticOpenAiExecution(request.execution) ||
+        isAuthenticAnthropicExecution(request.execution) ||
+        isAuthenticReplayExecution(request.execution)
+      ) ||
       policy.configurationArtifactId !== row.configuration_artifact_id ||
       policy.configurationHash !== row.configuration_content_hash ||
       createHash("sha256")
