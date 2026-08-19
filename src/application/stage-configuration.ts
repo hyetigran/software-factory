@@ -101,7 +101,9 @@ function containsCredentialMaterial(value: unknown): boolean {
   );
 }
 
-function configurationIsValid(value: ResolvedConfigurationSnapshot): boolean {
+export function resolvedConfigurationIsValid(
+  value: ResolvedConfigurationSnapshot,
+): boolean {
   return (
     value.schemaVersion === 1 &&
     /^[a-f0-9]{64}$/u.test(value.policyHash) &&
@@ -168,7 +170,7 @@ export async function stageResolvedConfiguration(
   >;
   if (
     Object.keys(runtimeConfiguration).some((key) => !allowedKeys.has(key)) ||
-    !configurationIsValid(configurationInput)
+    !resolvedConfigurationIsValid(configurationInput)
   ) {
     throw new TypeError(
       "Resolved configuration must be complete, valid, and secret-free",

@@ -1,0 +1,92 @@
+import { createHash } from "node:crypto";
+
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  beginEligibleCommandAttempt,
+  ExecutionPolicy,
+} from "../../src/application/execution-port.js";
+import { canonicalJson } from "../../src/domain/canonical-json.js";
+import type { ResolvedConfigurationSnapshot } from "../../src/application/stage-configuration.js";
+
+const configuration: ResolvedConfigurationSnapshot = {
+  schemaVersion: 1,
+  policyHash: "a".repeat(64),
+  plannerAssignment: { provider: "openai", modelId: "planner" },
+  reviewerAssignment: { provider: "anthropic", modelId: "reviewer" },
+  artifactHashes: {
+    requirementsSchema: "1".repeat(64),
+    artifactSchema: "2".repeat(64),
+    planSchema: "3".repeat(64),
+    reviewSchema: "4".repeat(64),
+    taxonomy: "5".repeat(64),
+    componentRegistry: "6".repeat(64),
+    plannerPrompt: "7".repeat(64),
+    reviewerPrompt: "8".repeat(64),
+    reviewPolicy: "9".repeat(64),
+  },
+  hardCeilings: {
+    calls: 8,
+    physicalAttempts: 12,
+    inputTokens: 100_000,
+    outputTokens: 50_000,
+    costUsdMicros: 100_000_000,
+    retries: 2,
+    repairs: 1,
+    remediationCycles: 3,
+    closureCycles: 2,
+  },
+  credentialReferences: {
+    openai: { kind: "environment", reference: "OPENAI_API_KEY" },
+    anthropic: { kind: "environment", reference: "ANTHROPIC_API_KEY" },
+  },
+};
+
+describe("execution policy and attempt boundary", () => {
+  it("binds hard ceilings to the immutable resolved configuration", async () => {
+    const expectedContentHash = createHash("sha256")
+      .update(canonicalJson(configuration))
+      .digest("hex");
+    const policy = ExecutionPolicy.fromConfiguration({
+      configuration,
+      expectedContentHash,
+    });
+    const beginAttempt = vi.fn().mockResolvedValue({
+      runId: "run_1",
+      commandId: "command_1",
+      attemptId: "attempt_1",
+      attemptNumber: 1,
+      correlationId: "correlation_1",
+      reservation: {
+        calls: 1,
+        inputTokens: 100,
+        outputTokens: 100,
+        costUsdMicros: 1_000,
+      },
+      startedAt: "2026-08-19T00:00:00.000Z",
+    });
+
+    await expect(
+      beginEligibleCommandAttempt(
+        { beginAttempt },
+        {
+          commandId: "command_1",
+          attemptId: "attempt_1",
+          correlationId: "correlation_1",
+          ownerProcess: "pid:1",
+          policy,
+        },
+      ),
+    ).resolves.toMatchObject({ attemptNumber: 1 });
+    expect(beginAttempt).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a configuration hash mismatch", () => {
+    expect(() =>
+      ExecutionPolicy.fromConfiguration({
+        configuration,
+        expectedContentHash: "f".repeat(64),
+      }),
+    ).toThrow("hash does not match");
+  });
+});
