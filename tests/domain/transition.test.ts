@@ -252,7 +252,14 @@ function planGeneratedInput(): PlanGenerated {
       verified: true,
     },
     outputValid: true,
-    sectionContinuityValid: true,
+    sectionTransitionValidation: {
+      validator: "deterministic-section-transition-v1",
+      validatedPlanContentHash: planContentHash,
+      validatedTransitionMapContentHash: sectionMapContentHash,
+      classificationsComplete: true,
+      existingSectionIdsPreserved: true,
+      onlyDeclaredNewSectionsAssignedIds: true,
+    },
     sectionTransitionMapArtifact: {
       artifactId: "artifact_section_map_01JTEST",
       contentHash: sectionMapContentHash,
@@ -325,7 +332,7 @@ function planSubmittedInput(): PlanSubmitted {
     planVersionId: generated.planVersionId,
     planArtifact: generated.planArtifact,
     canonicalSchemaValid: true,
-    sectionContinuityValid: true,
+    sectionTransitionValidation: generated.sectionTransitionValidation,
     sectionTransitionMapArtifact: generated.sectionTransitionMapArtifact,
     provenanceArtifact: generated.provenanceArtifact,
     reviewerAssignment: generated.reviewerAssignment,
@@ -2162,7 +2169,15 @@ describe("transition", () => {
       },
     ],
     ["invalid structured output", { outputValid: false }],
-    ["invalid section continuity", { sectionContinuityValid: false }],
+    [
+      "invalid section continuity",
+      {
+        sectionTransitionValidation: {
+          ...planGeneratedInput().sectionTransitionValidation,
+          existingSectionIdsPreserved: false,
+        },
+      },
+    ],
     [
       "an unverified transition map",
       {
@@ -2438,10 +2453,56 @@ describe("transition", () => {
     );
   });
 
+  it("does not require Planner/Reviewer provider separation for a human-submitted plan", () => {
+    const reviewerAssignment = {
+      provider: "openai" as const,
+      modelId: "gpt-reviewer-pinned",
+    };
+    const result = transition(
+      requirementsApprovedState(),
+      { ...planSubmittedInput(), reviewerAssignment },
+      { ...pinnedPolicy, reviewerAssignment },
+    );
+
+    expect(result.nextState.state).toBe("baseline_review");
+    if (result.nextState.state !== "baseline_review") {
+      throw new Error("Expected baseline review state");
+    }
+    expect(result.nextState.activeReview.independence).toEqual({
+      reduced: false,
+    });
+  });
+
   it.each([
     ["a stale state version", { expectedStateVersion: 3 }],
     ["an invalid canonical schema", { canonicalSchemaValid: false }],
-    ["invalid section continuity", { sectionContinuityValid: false }],
+    [
+      "an incomplete section transition map",
+      {
+        sectionTransitionValidation: {
+          ...planSubmittedInput().sectionTransitionValidation,
+          classificationsComplete: false,
+        },
+      },
+    ],
+    [
+      "an illegal ID assignment",
+      {
+        sectionTransitionValidation: {
+          ...planSubmittedInput().sectionTransitionValidation,
+          onlyDeclaredNewSectionsAssignedIds: false,
+        },
+      },
+    ],
+    [
+      "validation evidence for another transition map",
+      {
+        sectionTransitionValidation: {
+          ...planSubmittedInput().sectionTransitionValidation,
+          validatedTransitionMapContentHash: "9".repeat(64),
+        },
+      },
+    ],
     [
       "an unauthorized actor",
       { actor: { kind: "system", component: "test", version: "1" } },

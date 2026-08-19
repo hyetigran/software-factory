@@ -245,6 +245,15 @@ export type VerifiedArtifactInput = {
   verified: boolean;
 };
 
+export type SectionTransitionValidation = {
+  validator: "deterministic-section-transition-v1";
+  validatedPlanContentHash: string;
+  validatedTransitionMapContentHash: string;
+  classificationsComplete: boolean;
+  existingSectionIdsPreserved: boolean;
+  onlyDeclaredNewSectionsAssignedIds: boolean;
+};
+
 export type PlanGenerated = {
   type: "PlanGenerated";
   runId: string;
@@ -254,7 +263,7 @@ export type PlanGenerated = {
   planVersionId: string;
   planArtifact: VerifiedArtifactInput;
   outputValid: boolean;
-  sectionContinuityValid: boolean;
+  sectionTransitionValidation: SectionTransitionValidation;
   sectionTransitionMapArtifact: VerifiedArtifactInput;
   provenanceArtifact: VerifiedArtifactInput;
   reviewerAssignment: ProviderModelAssignment;
@@ -283,7 +292,7 @@ export type PlanSubmitted = {
   planVersionId: string;
   planArtifact: VerifiedArtifactInput;
   canonicalSchemaValid: boolean;
-  sectionContinuityValid: boolean;
+  sectionTransitionValidation: SectionTransitionValidation;
   sectionTransitionMapArtifact: VerifiedArtifactInput;
   provenanceArtifact: VerifiedArtifactInput;
   reviewerAssignment: ProviderModelAssignment;
@@ -1566,29 +1575,18 @@ function acceptPlanForBaseline(
   input: PlanGenerated | PlanSubmitted,
   policy: PinnedRunPolicy,
 ): TransitionResult {
-  if (previousState === null || previousState.runId !== input.runId) {
-    throw new DomainTransitionError(
-      "INVALID_TRANSITION",
-      "Plan acceptance requires a matching run",
-    );
-  }
   if (
-    previousState.state !== "planning" &&
-    previousState.state !== "requirements_approved"
+    previousState === null ||
+    previousState.runId !== input.runId ||
+    !(
+      (input.type === "PlanGenerated" && previousState.state === "planning") ||
+      (input.type === "PlanSubmitted" &&
+        previousState.state === "requirements_approved")
+    )
   ) {
     throw new DomainTransitionError(
       "INVALID_TRANSITION",
-      `${input.type} is not valid from ${previousState.state}`,
-    );
-  }
-  if (
-    (input.type === "PlanGenerated" && previousState.state !== "planning") ||
-    (input.type === "PlanSubmitted" &&
-      previousState.state !== "requirements_approved")
-  ) {
-    throw new DomainTransitionError(
-      "INVALID_TRANSITION",
-      `${input.type} is not valid from ${previousState.state}`,
+      "Plan acceptance requires the matching run and input state",
     );
   }
 
@@ -1629,9 +1627,21 @@ function acceptPlanForBaseline(
     expectedReviewerAssignment,
   );
   const providerIndependenceSatisfied =
+    input.type === "PlanSubmitted" ||
     input.reviewerAssignment.provider !== policy.plannerAssignment.provider ||
     override !== undefined;
   const reducedIndependence = override !== undefined;
+  const sectionTransitionValidation = input.sectionTransitionValidation;
+  const sectionTransitionValid =
+    sectionTransitionValidation.validator ===
+      "deterministic-section-transition-v1" &&
+    sectionTransitionValidation.validatedPlanContentHash ===
+      input.planArtifact.contentHash &&
+    sectionTransitionValidation.validatedTransitionMapContentHash ===
+      input.sectionTransitionMapArtifact.contentHash &&
+    sectionTransitionValidation.classificationsComplete &&
+    sectionTransitionValidation.existingSectionIdsPreserved &&
+    sectionTransitionValidation.onlyDeclaredNewSectionsAssignedIds;
 
   if (
     input.expectedStateVersion !== previousState.stateVersion ||
@@ -1645,7 +1655,7 @@ function acceptPlanForBaseline(
     !(input.type === "PlanGenerated"
       ? input.outputValid
       : input.canonicalSchemaValid) ||
-    !input.sectionContinuityValid ||
+    !sectionTransitionValid ||
     !input.reviewerModelAllowed ||
     !input.reviewerModelIdentityPinned ||
     !input.reviewerAssignmentAuthorized ||
@@ -1666,7 +1676,7 @@ function acceptPlanForBaseline(
   ) {
     throw new DomainTransitionError(
       "PRECONDITION_FAILED",
-      "PlanGenerated requires verified continuous output and an independent baseline review",
+      "Plan acceptance requires verified canonical output, section continuity, and an authorized baseline review",
     );
   }
 
