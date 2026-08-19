@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { canonicalJson } from "../../domain/canonical-json.js";
 import type { StagedArtifactDescriptor } from "../artifacts/object-store.js";
 import type { ContentAddressedArtifactStore } from "../artifacts/object-store.js";
+import { projectAuthoritativeState } from "./projections.js";
 
 const ZERO_HASH = "0".repeat(64);
 
@@ -48,10 +49,9 @@ export type PersistableTransition<TState extends object> = {
   auditFacts: PersistableAuditFact[];
 };
 
-export type CommitTransitionRequest<TState extends object> = {
+export type PersistTransitionRequest = {
   runId: string;
   expectedStateVersion: number;
-  transition: (previousState: TState | null) => PersistableTransition<TState>;
   causationId?: string;
   correlationId?: string;
 };
@@ -96,6 +96,23 @@ function sha256(value: string): string {
 }
 
 function commandIsValid(command: PersistableCommand): boolean {
+  const commandTypes = new Set([
+    "render_source_registration_report",
+    "validate_ledger",
+    "render_ledger",
+    "render_ledger_approval",
+    "generate_plan",
+    "render_plan",
+    "baseline_review",
+    "generate_remediation",
+    "verify_remediation",
+    "closure_review",
+    "repair_schema",
+    "export_terminal",
+    "attempt_provider_cancel",
+    "backup_workspace",
+    "verify_integrity",
+  ]);
   const commandWithoutIdentity = Object.fromEntries(
     Object.entries(command).filter(
       ([key]) => key !== "commandId" && key !== "commandKey",
@@ -104,10 +121,18 @@ function commandIsValid(command: PersistableCommand): boolean {
   return (
     command.schemaVersion === 1 &&
     command.commandId.length > 0 &&
-    command.commandType.length > 0 &&
+    commandTypes.has(command.commandType) &&
     command.purposeId.length > 0 &&
     /^[a-f0-9]{64}$/u.test(command.policyHash) &&
     command.inputArtifactHashes.every((hash) => /^[a-f0-9]{64}$/u.test(hash)) &&
+    (command.prerequisiteCommandIds === undefined ||
+      (command.prerequisiteCommandIds.length > 0 &&
+        new Set(command.prerequisiteCommandIds).size ===
+          command.prerequisiteCommandIds.length &&
+        command.prerequisiteCommandIds.every((id) => id.length > 0))) &&
+    (command.provider === "openai" || command.provider === "anthropic"
+      ? typeof command.modelId === "string" && command.modelId.length > 0
+      : command.modelId === undefined) &&
     Object.values(command.budgetReservation).every(
       (value) => Number.isInteger(value) && value >= 0,
     ) &&
@@ -276,9 +301,14 @@ export class SqliteAuthority {
         }),
         this.now(),
       );
+    const metadataJson = canonicalJson({
+      createdBy: descriptor.createdBy,
+      provenance: descriptor.provenance,
+      schemaVersion: descriptor.schemaVersion,
+    });
     const stored = this.database
       .prepare(
-        `SELECT kind, content_hash, byte_length, media_type, schema_id
+        `SELECT kind, content_hash, byte_length, media_type, schema_id, metadata_json
          FROM artifacts WHERE artifact_id = ?`,
       )
       .get(descriptor.artifactId) as
@@ -288,6 +318,7 @@ export class SqliteAuthority {
           byte_length: number;
           media_type: string;
           schema_id: string | null;
+          metadata_json: string;
         }
       | undefined;
     if (
@@ -296,7 +327,8 @@ export class SqliteAuthority {
       stored.content_hash !== descriptor.contentHash ||
       stored.byte_length !== descriptor.byteLength ||
       stored.media_type !== descriptor.mediaType ||
-      stored.schema_id !== (descriptor.schemaId ?? null)
+      stored.schema_id !== (descriptor.schemaId ?? null) ||
+      stored.metadata_json !== metadataJson
     ) {
       throw new AuthorityIntegrityError(
         `Artifact identity is already bound to different metadata: ${descriptor.artifactId}`,
@@ -304,7 +336,7 @@ export class SqliteAuthority {
     }
   }
 
-  verifyIntegrity(): void {
+  async verifyIntegrity(): Promise<void> {
     try {
       const result = this.database.prepare("PRAGMA integrity_check").get() as
         { integrity_check: string } | undefined;
@@ -320,6 +352,34 @@ export class SqliteAuthority {
         throw new AuthorityIntegrityError("SQLite foreign-key check failed");
       }
       this.verifyAuditChain();
+      if (this.artifactStore === undefined) {
+        throw new AuthorityIntegrityError(
+          "Integrity verification requires a bound artifact store",
+        );
+      }
+      const artifacts = this.database
+        .prepare("SELECT artifact_id, content_hash, byte_length FROM artifacts")
+        .all() as Array<{
+        artifact_id: string;
+        content_hash: string;
+        byte_length: number;
+      }>;
+      for (const artifact of artifacts) {
+        let bytes: Buffer;
+        try {
+          bytes = await this.artifactStore.readVerified(artifact.content_hash);
+        } catch (error) {
+          throw new AuthorityIntegrityError(
+            `Registered artifact body is missing or corrupt: ${artifact.artifact_id}`,
+            { cause: error },
+          );
+        }
+        if (bytes.byteLength !== artifact.byte_length) {
+          throw new AuthorityIntegrityError(
+            `Registered artifact length is invalid: ${artifact.artifact_id}`,
+          );
+        }
+      }
     } catch (error) {
       if (error instanceof AuthorityIntegrityError) {
         this.quarantine(error.message);
@@ -418,16 +478,21 @@ export class SqliteAuthority {
                 run_state_snapshots.state_version AS snapshot_state_version,
                 run_state_snapshots.state_json
          FROM runs
-         JOIN run_state_snapshots USING (run_id)`,
+         LEFT JOIN run_state_snapshots USING (run_id)`,
       )
       .all() as Array<{
       run_id: string;
       state: string;
       state_version: number;
       snapshot_state_version: number;
-      state_json: string;
+      state_json: string | null;
     }>;
     for (const run of runs) {
+      if (run.state_json === null) {
+        throw new AuthorityIntegrityError(
+          `Authoritative run snapshot is missing: ${run.run_id}`,
+        );
+      }
       const state = parseObject(run.state_json);
       const audited = versionsByRun.get(run.run_id);
       if (
@@ -476,46 +541,60 @@ export class SqliteAuthority {
     ).map(auditEntryFromRow);
   }
 
-  commitTransition<TState extends object>(
-    request: CommitTransitionRequest<TState>,
-  ): PersistableTransition<TState> {
+  async beginMutation(): Promise<void> {
     this.assertWritable();
+    await this.verifyIntegrity();
     this.database.exec("BEGIN IMMEDIATE");
-    try {
-      this.verifyIntegrity();
-      const previousState = this.loadRun<TState>(request.runId);
-      const actualVersion =
-        previousState === null
-          ? 0
-          : Number((previousState as Record<string, unknown>).stateVersion);
-      if (actualVersion !== request.expectedStateVersion) {
-        throw new StaleStateError(
-          request.runId,
-          request.expectedStateVersion,
-          previousState === null ? null : actualVersion,
-        );
-      }
+    this.verifyAuditChain();
+  }
 
-      const result = request.transition(previousState);
-      const nextState = result.nextState as Record<string, unknown>;
-      const nextVersion = Number(nextState.stateVersion);
-      if (
-        nextState.runId !== request.runId ||
-        nextVersion !== actualVersion + 1 ||
-        result.auditFacts.length === 0 ||
-        result.commands.some(
-          (command) =>
-            command.runId !== request.runId ||
-            command.triggeringStateVersion !== nextVersion ||
-            !commandIsValid(command),
-        )
-      ) {
-        throw new TypeError("Transition output violates authority invariants");
-      }
+  commitMutation(): void {
+    this.database.exec("COMMIT");
+  }
 
-      this.database
-        .prepare(
-          `INSERT INTO runs
+  rollbackMutation(error: unknown): void {
+    this.database.exec("ROLLBACK");
+    if (error instanceof AuthorityIntegrityError) {
+      this.quarantine(error.message);
+    }
+  }
+
+  persistAcceptedTransition<TState extends object>(
+    request: PersistTransitionRequest,
+    result: PersistableTransition<TState>,
+  ): void {
+    const previousState = this.loadRun<TState>(request.runId);
+    const actualVersion =
+      previousState === null
+        ? 0
+        : Number((previousState as Record<string, unknown>).stateVersion);
+    if (actualVersion !== request.expectedStateVersion) {
+      throw new StaleStateError(
+        request.runId,
+        request.expectedStateVersion,
+        previousState === null ? null : actualVersion,
+      );
+    }
+
+    const nextState = result.nextState as Record<string, unknown>;
+    const nextVersion = Number(nextState.stateVersion);
+    if (
+      nextState.runId !== request.runId ||
+      nextVersion !== actualVersion + 1 ||
+      result.auditFacts.length === 0 ||
+      result.commands.some(
+        (command) =>
+          command.runId !== request.runId ||
+          command.triggeringStateVersion !== nextVersion ||
+          !commandIsValid(command),
+      )
+    ) {
+      throw new TypeError("Transition output violates authority invariants");
+    }
+
+    this.database
+      .prepare(
+        `INSERT INTO runs
              (run_id, workspace_id, parent_run_id, state, state_version,
               source_artifact_id, configuration_artifact_id, policy_hash,
               policy_locked_at, created_at, terminal_at)
@@ -526,61 +605,68 @@ export class SqliteAuthority {
              policy_hash = excluded.policy_hash,
              policy_locked_at = COALESCE(runs.policy_locked_at, excluded.policy_locked_at),
              terminal_at = excluded.terminal_at`,
-        )
-        .run(
-          request.runId,
-          this.workspaceId,
-          (nextState.parentRunId as string | undefined) ?? null,
-          String(nextState.state),
-          nextVersion,
-          String(nextState.sourceArtifactId),
-          String(nextState.configurationArtifactId),
-          String(nextState.policyHash),
-          nextState.policyLocked === true ? this.now() : null,
-          this.now(),
-          stateIsTerminal(nextState) ? this.now() : null,
-        );
-      this.database
-        .prepare(
-          `INSERT INTO run_state_snapshots (run_id, state_version, state_json)
+      )
+      .run(
+        request.runId,
+        this.workspaceId,
+        (nextState.parentRunId as string | undefined) ?? null,
+        String(nextState.state),
+        nextVersion,
+        String(nextState.sourceArtifactId),
+        String(nextState.configurationArtifactId),
+        String(nextState.policyHash),
+        nextState.policyLocked === true ? this.now() : null,
+        this.now(),
+        stateIsTerminal(nextState) ? this.now() : null,
+      );
+    this.database
+      .prepare(
+        `INSERT INTO run_state_snapshots (run_id, state_version, state_json)
            VALUES (?, ?, ?)
            ON CONFLICT(run_id) DO UPDATE SET
              state_version = excluded.state_version,
              state_json = excluded.state_json`,
-        )
-        .run(request.runId, nextVersion, canonicalJson(result.nextState));
+      )
+      .run(request.runId, nextVersion, canonicalJson(result.nextState));
+    projectAuthoritativeState(
+      this.database,
+      request.runId,
+      nextState,
+      result.auditFacts,
+      this.now(),
+    );
 
-      const insertCommand = this.database.prepare(`
+    const insertCommand = this.database.prepare(`
         INSERT INTO logical_commands
           (command_id, run_id, command_key, command_type, schema_version,
            triggering_state_version, status, specification_json, planned_at)
         VALUES (?, ?, ?, ?, ?, ?, 'planned', ?, ?)
       `);
-      for (const command of result.commands) {
-        insertCommand.run(
-          command.commandId,
-          command.runId,
-          command.commandKey,
-          command.commandType,
-          command.schemaVersion,
-          command.triggeringStateVersion,
-          canonicalJson(command),
-          this.now(),
-        );
-      }
+    for (const command of result.commands) {
+      insertCommand.run(
+        command.commandId,
+        command.runId,
+        command.commandKey,
+        command.commandType,
+        command.schemaVersion,
+        command.triggeringStateVersion,
+        canonicalJson(command),
+        this.now(),
+      );
+    }
 
-      const metadata = this.database
-        .prepare(
-          `SELECT next_audit_sequence, audit_chain_head
+    const metadata = this.database
+      .prepare(
+        `SELECT next_audit_sequence, audit_chain_head
            FROM workspaces WHERE workspace_id = ?`,
-        )
-        .get(this.workspaceId) as {
-        next_audit_sequence: number;
-        audit_chain_head: string;
-      };
-      let sequence = metadata.next_audit_sequence - 1;
-      let previousEntryHash = metadata.audit_chain_head;
-      const insertAudit = this.database.prepare(`
+      )
+      .get(this.workspaceId) as {
+      next_audit_sequence: number;
+      audit_chain_head: string;
+    };
+    let sequence = metadata.next_audit_sequence - 1;
+    let previousEntryHash = metadata.audit_chain_head;
+    const insertAudit = this.database.prepare(`
         INSERT INTO audit_entries
           (audit_entry_id, workspace_id, run_id, sequence,
            state_version_before, state_version_after, fact_type, schema_version,
@@ -588,66 +674,57 @@ export class SqliteAuthority {
            recorded_at, payload_json, previous_entry_hash, entry_hash)
         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      for (const fact of result.auditFacts) {
-        sequence += 1;
-        const withoutHash = {
-          auditEntryId: `${request.runId}:audit:${sequence}`,
-          sequence,
-          runId: request.runId,
-          stateVersionBefore: actualVersion,
-          stateVersionAfter: nextVersion,
-          factType: fact.type,
-          schemaVersion: 1 as const,
-          actor: fact.actor,
-          ...(fact.reason === undefined ? {} : { reason: fact.reason }),
-          evidence: fact.evidence,
-          ...(request.causationId === undefined
-            ? {}
-            : { causationId: request.causationId }),
-          ...(request.correlationId === undefined
-            ? {}
-            : { correlationId: request.correlationId }),
-          recordedAt: this.now(),
-          payload: fact.payload,
-          previousEntryHash,
-        };
-        const entryHash = sha256(canonicalJson(withoutHash));
-        const entry: AuditEntry = { ...withoutHash, entryHash };
-        insertAudit.run(
-          entry.auditEntryId,
-          this.workspaceId,
-          request.runId,
-          sequence,
-          actualVersion,
-          nextVersion,
-          fact.type,
-          canonicalJson(fact.actor),
-          fact.reason ?? null,
-          canonicalJson(fact.evidence),
-          request.causationId ?? null,
-          request.correlationId ?? null,
-          entry.recordedAt,
-          canonicalJson(fact.payload),
-          previousEntryHash,
-          entryHash,
-        );
-        previousEntryHash = entryHash;
-      }
-      this.database
-        .prepare(
-          `UPDATE workspaces
+    for (const fact of result.auditFacts) {
+      sequence += 1;
+      const withoutHash = {
+        auditEntryId: `${request.runId}:audit:${sequence}`,
+        sequence,
+        runId: request.runId,
+        stateVersionBefore: actualVersion,
+        stateVersionAfter: nextVersion,
+        factType: fact.type,
+        schemaVersion: 1 as const,
+        actor: fact.actor,
+        ...(fact.reason === undefined ? {} : { reason: fact.reason }),
+        evidence: fact.evidence,
+        ...(request.causationId === undefined
+          ? {}
+          : { causationId: request.causationId }),
+        ...(request.correlationId === undefined
+          ? {}
+          : { correlationId: request.correlationId }),
+        recordedAt: this.now(),
+        payload: fact.payload,
+        previousEntryHash,
+      };
+      const entryHash = sha256(canonicalJson(withoutHash));
+      const entry: AuditEntry = { ...withoutHash, entryHash };
+      insertAudit.run(
+        entry.auditEntryId,
+        this.workspaceId,
+        request.runId,
+        sequence,
+        actualVersion,
+        nextVersion,
+        fact.type,
+        canonicalJson(fact.actor),
+        fact.reason ?? null,
+        canonicalJson(fact.evidence),
+        request.causationId ?? null,
+        request.correlationId ?? null,
+        entry.recordedAt,
+        canonicalJson(fact.payload),
+        previousEntryHash,
+        entryHash,
+      );
+      previousEntryHash = entryHash;
+    }
+    this.database
+      .prepare(
+        `UPDATE workspaces
            SET next_audit_sequence = ?, audit_chain_head = ?
            WHERE workspace_id = ?`,
-        )
-        .run(sequence + 1, previousEntryHash, this.workspaceId);
-      this.database.exec("COMMIT");
-      return result;
-    } catch (error) {
-      this.database.exec("ROLLBACK");
-      if (error instanceof AuthorityIntegrityError) {
-        this.quarantine(error.message);
-      }
-      throw error;
-    }
+      )
+      .run(sequence + 1, previousEntryHash, this.workspaceId);
   }
 }

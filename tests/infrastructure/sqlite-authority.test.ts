@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { commitTransition } from "../../src/application/commit-transition.js";
 import { canonicalJson } from "../../src/domain/canonical-json.js";
 import {
   transition,
@@ -158,7 +159,7 @@ describe("SQLite authority", () => {
       },
     };
 
-    authority.commitTransition<NonterminalRunState>({
+    await commitTransition<NonterminalRunState>(authority, {
       runId: input.runId,
       expectedStateVersion: 0,
       transition: (previousState) => transition(previousState, input, policy),
@@ -178,7 +179,7 @@ describe("SQLite authority", () => {
     const authority = await openAuthority(path, {
       now: () => "2026-08-19T00:00:00.000Z",
     });
-    authority.commitTransition<TestState>({
+    await commitTransition<TestState>(authority, {
       runId: "run_one",
       expectedStateVersion: 0,
       causationId: "input_one",
@@ -187,53 +188,73 @@ describe("SQLite authority", () => {
     });
     expect(authority.loadRun<TestState>("run_one")?.stateVersion).toBe(1);
     expect(authority.listCommands("run_one")).toHaveLength(1);
-    expect(() => authority.verifyIntegrity()).not.toThrow();
+    await expect(authority.verifyIntegrity()).resolves.toBeUndefined();
     authority.close();
   });
 
   it("rolls back the complete transition on an invalid command key", async () => {
     const path = await databasePath();
     const authority = await openAuthority(path);
-    authority.commitTransition<TestState>({
+    await commitTransition<TestState>(authority, {
       runId: "run_one",
       expectedStateVersion: 0,
       transition: () => transitionResult("run_one", 1),
     });
-    expect(() =>
-      authority.commitTransition<TestState>({
+    await expect(
+      commitTransition<TestState>(authority, {
         runId: "run_one",
         expectedStateVersion: 1,
         transition: () =>
           transitionResult("run_one", 2, "command_2", "f".repeat(64)),
       }),
-    ).toThrow("authority invariants");
+    ).rejects.toThrow("authority invariants");
     expect(authority.loadRun<TestState>("run_one")?.stateVersion).toBe(1);
     expect(authority.listAuditEntries()).toHaveLength(1);
+    const unknown = transitionResult("run_one", 2, "command_unknown");
+    unknown.commands[0] = {
+      ...unknown.commands[0]!,
+      commandType: "unknown_effect",
+    };
+    const unknownBody = Object.fromEntries(
+      Object.entries(unknown.commands[0]).filter(
+        ([key]) => key !== "commandId" && key !== "commandKey",
+      ),
+    );
+    unknown.commands[0].commandKey = createHash("sha256")
+      .update(canonicalJson(unknownBody))
+      .digest("hex");
+    await expect(
+      commitTransition<TestState>(authority, {
+        runId: "run_one",
+        expectedStateVersion: 1,
+        transition: () => unknown,
+      }),
+    ).rejects.toThrow("authority invariants");
     authority.close();
   });
 
   it("rejects stale writes and a second active run", async () => {
     const path = await databasePath();
     const authority = await openAuthority(path);
-    authority.commitTransition<TestState>({
+    await commitTransition<TestState>(authority, {
       runId: "run_one",
       expectedStateVersion: 0,
       transition: () => transitionResult("run_one", 1),
     });
-    expect(() =>
-      authority.commitTransition<TestState>({
+    await expect(
+      commitTransition<TestState>(authority, {
         runId: "run_one",
         expectedStateVersion: 0,
         transition: () => transitionResult("run_one", 2),
       }),
-    ).toThrow(StaleStateError);
-    expect(() =>
-      authority.commitTransition<TestState>({
+    ).rejects.toThrow(StaleStateError);
+    await expect(
+      commitTransition<TestState>(authority, {
         runId: "run_two",
         expectedStateVersion: 0,
         transition: () => transitionResult("run_two", 1, "command_other"),
       }),
-    ).toThrow();
+    ).rejects.toThrow();
     expect(authority.loadRun<TestState>("run_two")).toBeNull();
     authority.close();
   });
@@ -241,7 +262,7 @@ describe("SQLite authority", () => {
   it("quarantines audit or authoritative-state tampering", async () => {
     const path = await databasePath();
     const authority = await openAuthority(path);
-    authority.commitTransition<TestState>({
+    await commitTransition<TestState>(authority, {
       runId: "run_one",
       expectedStateVersion: 0,
       transition: () => transitionResult("run_one", 1),
@@ -255,15 +276,82 @@ describe("SQLite authority", () => {
     raw.close();
 
     const reopened = await openAuthority(path);
-    expect(() => reopened.verifyIntegrity()).toThrow(AuthorityIntegrityError);
+    await expect(reopened.verifyIntegrity()).rejects.toThrow(
+      AuthorityIntegrityError,
+    );
     expect(reopened.readOnlyReason()).toContain("disagrees with audit");
-    expect(() =>
-      reopened.commitTransition<TestState>({
+    await expect(
+      commitTransition<TestState>(reopened, {
         runId: "run_one",
         expectedStateVersion: 9,
         transition: () => transitionResult("run_one", 10),
       }),
-    ).toThrow("read-only");
+    ).rejects.toThrow("read-only");
     reopened.close();
+  });
+
+  it("quarantines a missing state snapshot or artifact body", async () => {
+    const snapshotPath = await databasePath();
+    const snapshotAuthority = await openAuthority(snapshotPath);
+    await commitTransition<TestState>(snapshotAuthority, {
+      runId: "run_one",
+      expectedStateVersion: 0,
+      transition: () => transitionResult("run_one", 1),
+    });
+    snapshotAuthority.close();
+    const raw = new DatabaseSync(snapshotPath);
+    raw
+      .prepare("DELETE FROM run_state_snapshots WHERE run_id = 'run_one'")
+      .run();
+    raw.close();
+    const snapshotStore = await ContentAddressedArtifactStore.open(
+      resolve(snapshotPath, "../.."),
+    );
+    const missingSnapshot = SqliteAuthority.open(snapshotPath, {
+      artifactStore: snapshotStore,
+    });
+    await expect(missingSnapshot.verifyIntegrity()).rejects.toThrow(
+      "snapshot is missing",
+    );
+    expect(missingSnapshot.readOnlyReason()).toContain("snapshot is missing");
+    missingSnapshot.close();
+
+    const objectPath = await databasePath();
+    const objectAuthority = await openAuthority(objectPath);
+    const objectHash = createHash("sha256").update("source").digest("hex");
+    objectAuthority.close();
+    await unlink(
+      join(resolve(objectPath, "../.."), ".factory", "objects", objectHash),
+    );
+    const objectStore = await ContentAddressedArtifactStore.open(
+      resolve(objectPath, "../.."),
+    );
+    const missingObject = SqliteAuthority.open(objectPath, {
+      artifactStore: objectStore,
+    });
+    await expect(missingObject.verifyIntegrity()).rejects.toThrow(
+      "missing or corrupt",
+    );
+    expect(missingObject.readOnlyReason()).toContain("missing or corrupt");
+    missingObject.close();
+  });
+
+  it("rejects changed immutable artifact provenance", async () => {
+    const path = await databasePath();
+    const authority = await openAuthority(path);
+    const store = await ContentAddressedArtifactStore.open(
+      resolve(path, "../.."),
+    );
+    const descriptor = await store.stageArtifact(Buffer.from("source"), {
+      artifactId: "artifact_source",
+      kind: "raw_requirements",
+      mediaType: "application/octet-stream",
+      createdBy: "human:different",
+      provenance: { method: "human_submitted" },
+    });
+    await expect(authority.registerArtifact(descriptor)).rejects.toThrow(
+      "different metadata",
+    );
+    authority.close();
   });
 });
