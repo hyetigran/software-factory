@@ -138,6 +138,14 @@ export type ReviewContext = {
   evidence: ArtifactEvidenceReference[];
 };
 
+export type AcceptedBaselineReview = {
+  reviewId: string;
+  artifactId: string;
+  contentHash: string;
+  cycle: number;
+  reviewerAssignment: ProviderModelAssignment;
+};
+
 export type ReviewIndependenceOverride = {
   normalReviewerAssignment: ProviderModelAssignment;
   overrideReviewerAssignment: ProviderModelAssignment;
@@ -165,6 +173,7 @@ export type AdvancedRunState = AdvancedStateBase &
         activeReview: ActiveReview;
         reviewContext: ReviewContext;
         renderedPlan: Omit<ArtifactEvidenceReference, "kind">;
+        baselineReview: AcceptedBaselineReview;
         activePlanning: ActivePlanning;
       }
     | {
@@ -175,6 +184,7 @@ export type AdvancedRunState = AdvancedStateBase &
         activeReview: ActiveReview;
         reviewContext: ReviewContext;
         renderedPlan: Omit<ArtifactEvidenceReference, "kind">;
+        baselineReview: AcceptedBaselineReview;
       }
     | {
         state: "qualified" | "qualified_with_waivers";
@@ -2456,6 +2466,13 @@ function evolveAfterBaselineReview(
     commandId: command.commandId,
     reviewPurposeId: command.purposeId,
   };
+  const baselineReview: AcceptedBaselineReview = {
+    reviewId: input.reviewId,
+    artifactId: input.reviewArtifact.artifactId,
+    contentHash: input.reviewArtifact.contentHash,
+    cycle: input.reviewCycle,
+    reviewerAssignment: state.activeReview.reviewerAssignment,
+  };
 
   return command.commandType === "generate_remediation"
     ? {
@@ -2465,6 +2482,7 @@ function evolveAfterBaselineReview(
         activeFindings: findings,
         activeReview,
         renderedPlan,
+        baselineReview,
         activePlanning: {
           purposeId: command.purposeId,
           commandId: command.commandId,
@@ -2478,6 +2496,7 @@ function evolveAfterBaselineReview(
         activeFindings: findings,
         activeReview,
         renderedPlan,
+        baselineReview,
       };
 }
 
@@ -2855,6 +2874,78 @@ function haltAfterProviderFailure(
         command,
         "Export the evidence-rich terminal report",
         failureEvidence,
+      ),
+    ],
+  };
+}
+
+export type ProvisionalBaselineExport = {
+  outcome: "provisional_baseline_reviewed";
+  qualified: false;
+  approved: false;
+  runId: string;
+  stateVersion: number;
+  currentStage: "remediation" | "closure";
+  ledgerVersionId: string;
+  ledgerArtifact: Omit<ArtifactEvidenceReference, "kind">;
+  planVersionId: string;
+  planArtifact: Omit<ArtifactEvidenceReference, "kind">;
+  renderedPlanArtifact: Omit<ArtifactEvidenceReference, "kind">;
+  reviewId: string;
+  reviewArtifact: Omit<ArtifactEvidenceReference, "kind">;
+  policyHash: string;
+  reviewerAssignment: ProviderModelAssignment;
+  independence: ActiveReview["independence"];
+  openFindingIds: string[];
+  evidence: ArtifactEvidenceReference[];
+};
+
+export function createProvisionalBaselineExport(
+  state: NonterminalRunState,
+): ProvisionalBaselineExport {
+  if (state.state !== "remediation" && state.state !== "closure") {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      "A provisional baseline export requires an accepted baseline review",
+    );
+  }
+
+  return {
+    outcome: "provisional_baseline_reviewed",
+    qualified: false,
+    approved: false,
+    runId: state.runId,
+    stateVersion: state.stateVersion,
+    currentStage: state.state,
+    ledgerVersionId: state.currentLedger.versionId,
+    ledgerArtifact: {
+      artifactId: state.currentLedger.artifactId,
+      contentHash: state.currentLedger.contentHash,
+    },
+    planVersionId: state.currentPlan.versionId,
+    planArtifact: {
+      artifactId: state.currentPlan.artifactId,
+      contentHash: state.currentPlan.contentHash,
+    },
+    renderedPlanArtifact: state.renderedPlan,
+    reviewId: state.baselineReview.reviewId,
+    reviewArtifact: {
+      artifactId: state.baselineReview.artifactId,
+      contentHash: state.baselineReview.contentHash,
+    },
+    policyHash: state.policyHash,
+    reviewerAssignment: state.baselineReview.reviewerAssignment,
+    independence: state.activeReview.independence,
+    openFindingIds: state.activeFindings.map(({ findingId }) => findingId),
+    evidence: [
+      ...state.reviewContext.evidence,
+      artifactEvidence(
+        state.renderedPlan.artifactId,
+        state.renderedPlan.contentHash,
+      ),
+      artifactEvidence(
+        state.baselineReview.artifactId,
+        state.baselineReview.contentHash,
       ),
     ],
   };

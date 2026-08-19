@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createProvisionalBaselineExport,
   transition,
   type AdvancedRunState,
   type DraftRunState,
@@ -640,6 +641,13 @@ function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
       renderedPlan: {
         artifactId: "artifact_rendered_plan_01JTEST",
         contentHash: "2".repeat(64),
+      },
+      baselineReview: {
+        reviewId: "review_baseline_01JTEST",
+        artifactId: "artifact_review_baseline_01JTEST",
+        contentHash: reviewContentHash,
+        cycle: 1,
+        reviewerAssignment: configuredReviewerAssignment,
       },
     };
     return state === "remediation"
@@ -2807,6 +2815,36 @@ describe("transition", () => {
       "finding_created",
       "command_planned",
     ]);
+  });
+
+  it("exports a non-final provisional baseline result", () => {
+    const reviewed = transition(
+      baselineReviewState(),
+      reviewAcceptedInput(["finding_architecture_01JTEST"]),
+      pinnedPolicy,
+    ).nextState;
+
+    const exported = createProvisionalBaselineExport(reviewed);
+
+    expect(exported).toEqual(
+      expect.objectContaining({
+        outcome: "provisional_baseline_reviewed",
+        qualified: false,
+        approved: false,
+        planVersionId: "plan_version_01JTEST",
+        reviewId: "review_baseline_01JTEST",
+        openFindingIds: ["finding_architecture_01JTEST"],
+      }),
+    );
+    expect(createProvisionalBaselineExport(reviewed)).toEqual(exported);
+    expect(JSON.stringify(exported)).not.toContain('"approved":true');
+    expect(JSON.stringify(exported)).not.toContain('"qualified":true');
+  });
+
+  it("rejects provisional export before baseline review is accepted", () => {
+    expect(() =>
+      createProvisionalBaselineExport(baselineReviewState()),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
   });
 
   it("routes an accepted baseline review without blockers to closure", () => {
