@@ -189,10 +189,15 @@ export class SqliteOperationalCompletion {
         row.accepted_attempt_id === null &&
         (row.state_version === row.triggering_state_version ||
           explicitlyExpected);
-      if (domain !== undefined && accepted) {
+      if (domain !== undefined) {
         if (command.commandType === "validate_ledger")
-          this.evidence.assertValidationDomain(request, command, domain);
-        else this.evidence.assertLedgerRenderDomain(request, domain);
+          this.evidence.assertValidationDomain(
+            request,
+            command,
+            domain,
+            accepted,
+          );
+        else this.evidence.assertLedgerRenderDomain(request, domain, accepted);
       }
       database
         .prepare(
@@ -236,7 +241,7 @@ export class SqliteOperationalCompletion {
         {
           ...row,
           state_version:
-            domain === undefined
+            domain === undefined || !accepted
               ? row.state_version
               : Number(
                   (domain.result.nextState as Record<string, unknown>)

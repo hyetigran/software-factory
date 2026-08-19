@@ -141,6 +141,7 @@ export class LocalCompletionEvidence {
       expectedStateVersion: number;
       result: PersistableTransition<object>;
     },
+    validateTransition = true,
   ): void {
     const currentRow = this.database
       .prepare("SELECT state_json FROM run_state_snapshots WHERE run_id = ?")
@@ -199,6 +200,11 @@ export class LocalCompletionEvidence {
     });
     const reportBytes = this.readStagedArtifactBytes(request.resultArtifact);
     const expectedReportBytes = Buffer.from(canonicalJson(report));
+    if (!reportBytes.equals(expectedReportBytes))
+      throw new TypeError(
+        "Ledger validation result does not match deterministic output",
+      );
+    if (!validateTransition) return;
     const proposedCommand = domain.result.commands[0];
     if (proposedCommand === undefined)
       throw new TypeError("Ledger validation must plan its render command");
@@ -228,10 +234,7 @@ export class LocalCompletionEvidence {
       },
       { policyHash: currentState.policyHash },
     );
-    if (
-      !reportBytes.equals(expectedReportBytes) ||
-      canonicalJson(domain.result) !== canonicalJson(expected)
-    )
+    if (canonicalJson(domain.result) !== canonicalJson(expected))
       throw new TypeError(
         "Ledger validation domain outcome does not match the completed attempt",
       );
@@ -243,6 +246,7 @@ export class LocalCompletionEvidence {
       expectedStateVersion: number;
       result: PersistableTransition<object>;
     },
+    validateTransition = true,
   ): void {
     const currentRow = this.database
       .prepare("SELECT state_json FROM run_state_snapshots WHERE run_id = ?")
@@ -277,6 +281,16 @@ export class LocalCompletionEvidence {
     const ledgerBytes = this.readRegisteredObject(ledgerRow.content_hash);
     const expectedRender = renderLedger(ledgerBytes);
     const actualRender = this.readStagedArtifactBytes(request.resultArtifact);
+    if (
+      !actualRender.equals(expectedRender.bytes) ||
+      expectedRender.contentHash !== request.resultArtifact.contentHash ||
+      request.resultArtifact.kind !== "rendered_ledger" ||
+      request.resultArtifact.mediaType !== expectedRender.mediaType
+    )
+      throw new TypeError(
+        "Ledger render result does not match deterministic output",
+      );
+    if (!validateTransition) return;
     const expected = completeLedgerRender(
       currentState,
       {
@@ -296,13 +310,7 @@ export class LocalCompletionEvidence {
       },
       { policyHash: currentState.policyHash },
     );
-    if (
-      !actualRender.equals(expectedRender.bytes) ||
-      expectedRender.contentHash !== request.resultArtifact.contentHash ||
-      request.resultArtifact.kind !== "rendered_ledger" ||
-      request.resultArtifact.mediaType !== expectedRender.mediaType ||
-      canonicalJson(domain.result) !== canonicalJson(expected)
-    )
+    if (canonicalJson(domain.result) !== canonicalJson(expected))
       throw new TypeError(
         "Ledger render domain outcome does not match deterministic output",
       );
