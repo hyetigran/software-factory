@@ -455,6 +455,8 @@ describe("provider adapter contract", () => {
       preflight,
     );
     const prepared = adapter.prepare(request);
+    prepared.redactedRequestBytes[0] = 0;
+    prepared.identity.endpoint = "https://mutated.invalid";
     (request.outputSchema as { properties: object }).properties = {};
     await expect(prepared.dispatch()).resolves.toMatchObject({
       kind: "completed",
@@ -468,6 +470,9 @@ describe("provider adapter contract", () => {
       timeoutMs: 30_000,
       preflight: { inputTokens: 100 },
     });
+    expect(prepared.identity.endpoint).toBe(
+      "https://api.openai.com/v1/responses",
+    );
     expect(() => prepared.dispatch()).toThrow("already been dispatched");
   });
 
@@ -539,34 +544,93 @@ describe("provider adapter contract", () => {
     }
   });
 
-  it("preserves a late response as stageable evidence for cancellation handling", async () => {
-    const raw = Buffer.from(
-      JSON.stringify({
-        id: "response_after_cancel",
-        model: "frontier-pinned",
-        status: "completed",
-        output: [
-          {
-            type: "message",
-            content: [{ type: "output_text", text: '{"plan":"late"}' }],
-          },
-        ],
-        usage: { input_tokens: 2, output_tokens: 1 },
-      }),
-    );
-    const adapter = new OpenAiResponsesAdapter(
-      {
-        send: vi
-          .fn()
-          .mockResolvedValue({ status: 200, headers: {}, body: raw }),
-      },
-      () => "secret",
-      preflight,
-    );
-    const result = await adapter
-      .prepare({ ...baseRequest, provider: "openai" })
-      .dispatch();
-    expect(result.recording.rawResponseBytes).toEqual(raw);
-    expect(result.recording.nativeUsageBytes).toBeDefined();
+  it("rejects successful responses missing model, response ID, or usage", async () => {
+    for (const provider of ["openai", "anthropic"] as const) {
+      const body =
+        provider === "openai"
+          ? {
+              status: "completed",
+              output: [
+                {
+                  type: "message",
+                  content: [{ type: "output_text", text: '{"plan":"ok"}' }],
+                },
+              ],
+            }
+          : {
+              stop_reason: "end_turn",
+              content: [{ type: "text", text: '{"plan":"ok"}' }],
+            };
+      const transport: HttpTransport = {
+        send: vi.fn().mockResolvedValue({
+          status: 200,
+          headers: {},
+          body: Buffer.from(JSON.stringify(body)),
+        }),
+      };
+      const adapter =
+        provider === "openai"
+          ? new OpenAiResponsesAdapter(transport, () => "secret", preflight)
+          : new AnthropicMessagesAdapter(transport, () => "secret", preflight);
+      await expect(
+        adapter.prepare({ ...baseRequest, provider }).dispatch(),
+      ).resolves.toMatchObject({
+        kind: "transport_failure",
+        retryable: false,
+      });
+    }
+  });
+
+  it("preserves late results from both providers after cancellation", async () => {
+    for (const provider of ["openai", "anthropic"] as const) {
+      const responseBody =
+        provider === "openai"
+          ? {
+              id: "response_after_cancel",
+              model: "frontier-pinned",
+              status: "completed",
+              output: [
+                {
+                  type: "message",
+                  content: [{ type: "output_text", text: '{"plan":"late"}' }],
+                },
+              ],
+              usage: { input_tokens: 2, output_tokens: 1 },
+            }
+          : {
+              id: "message_after_cancel",
+              model: "frontier-pinned",
+              stop_reason: "end_turn",
+              content: [{ type: "text", text: '{"plan":"late"}' }],
+              usage: { input_tokens: 2, output_tokens: 1 },
+            };
+      const raw = Buffer.from(JSON.stringify(responseBody));
+      let resolveResponse:
+        | ((value: {
+            status: number;
+            headers: Record<string, string>;
+            body: Uint8Array;
+          }) => void)
+        | undefined;
+      const response = new Promise<{
+        status: number;
+        headers: Record<string, string>;
+        body: Uint8Array;
+      }>((resolve) => {
+        resolveResponse = resolve;
+      });
+      const transport: HttpTransport = { send: vi.fn(() => response) };
+      const adapter =
+        provider === "openai"
+          ? new OpenAiResponsesAdapter(transport, () => "secret", preflight)
+          : new AnthropicMessagesAdapter(transport, () => "secret", preflight);
+      const pending = adapter.prepare({ ...baseRequest, provider }).dispatch();
+      const attemptState = "cancelled" as const;
+      resolveResponse?.({ status: 200, headers: {}, body: raw });
+      const result = await pending;
+      expect(attemptState).toBe("cancelled");
+      expect(result.recording.rawResponseBytes).toEqual(raw);
+      expect(result.recording.nativeUsageBytes).toBeDefined();
+    }
   });
 });

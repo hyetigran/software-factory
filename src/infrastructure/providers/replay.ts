@@ -8,6 +8,7 @@ import type {
 } from "../../application/provider-port.js";
 import { assertJsonSchema } from "../../application/json-schema-validator.js";
 import { canonicalJson } from "../../domain/canonical-json.js";
+import { preparedProviderCall } from "./common.js";
 
 export class UnrecordedRequestError extends Error {
   readonly code = "UNRECORDED_REQUEST";
@@ -40,8 +41,9 @@ export class StrictReplayAdapter implements ProviderAdapter {
   prepare(request: ProviderRequest): PreparedProviderCall {
     const preparedRequest = structuredClone(request);
     const prepared = this.formatter.prepare(preparedRequest);
+    const expectedIdentity = prepared.identity;
     let dispatched = false;
-    return {
+    return preparedProviderCall({
       redactedRequestBytes: prepared.redactedRequestBytes,
       normalizedRequestHash: prepared.normalizedRequestHash,
       identity: prepared.identity,
@@ -82,12 +84,12 @@ export class StrictReplayAdapter implements ProviderAdapter {
           manifest.modelId !== preparedRequest.modelId ||
           manifest.logicalCommandKey !== preparedRequest.logicalCommandKey ||
           manifest.normalizedRequestHash !== prepared.normalizedRequestHash ||
-          manifest.endpoint !== prepared.identity.endpoint ||
-          manifest.apiVersion !== (prepared.identity.apiVersion ?? null) ||
+          manifest.endpoint !== expectedIdentity.endpoint ||
+          manifest.apiVersion !== (expectedIdentity.apiVersion ?? null) ||
           canonicalJson(manifest.behaviorHeaders) !==
-            canonicalJson(prepared.identity.behaviorHeaders) ||
+            canonicalJson(expectedIdentity.behaviorHeaders) ||
           canonicalJson(manifest.preflight) !==
-            canonicalJson(prepared.identity.preflight) ||
+            canonicalJson(expectedIdentity.preflight) ||
           manifest.resultHash !== resultHash ||
           manifest.rawResponseHash !== rawResponseHash ||
           manifest.nativeUsageHash !== nativeUsageHash ||
@@ -109,7 +111,7 @@ export class StrictReplayAdapter implements ProviderAdapter {
         }
         return structuredClone(recorded.execution);
       },
-    };
+    });
   }
 }
 

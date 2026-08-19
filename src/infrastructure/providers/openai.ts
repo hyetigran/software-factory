@@ -13,6 +13,7 @@ import {
   evidence,
   labeledInputs,
   objectFromBytes,
+  preparedProviderCall,
   semanticModelUnavailable,
   textFromOpenAi,
 } from "./common.js";
@@ -65,7 +66,7 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
       preflight,
     });
     let dispatched = false;
-    return {
+    return preparedProviderCall({
       redactedRequestBytes,
       normalizedRequestHash: createHash("sha256")
         .update(redactedRequestBytes)
@@ -88,7 +89,7 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
         dispatched = true;
         return this.dispatch(preparedRequest, wireBodyBytes, preflight);
       },
-    };
+    });
   }
 
   private async dispatch(
@@ -185,6 +186,22 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
         ? {}
         : { nativeUsageBytes: bytes(parsed.usage) }),
     };
+    if (
+      typeof parsed.model !== "string" ||
+      parsed.model.trim().length === 0 ||
+      typeof parsed.id !== "string" ||
+      parsed.id.trim().length === 0 ||
+      parsed.usage === null ||
+      typeof parsed.usage !== "object" ||
+      Array.isArray(parsed.usage)
+    ) {
+      return {
+        kind: "transport_failure",
+        retryable: false,
+        evidence: common,
+        recording,
+      };
+    }
     if (typeof parsed.model === "string" && parsed.model !== request.modelId) {
       return {
         kind: "model_mismatch",

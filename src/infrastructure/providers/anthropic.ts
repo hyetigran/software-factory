@@ -13,6 +13,7 @@ import {
   evidence,
   labeledInputs,
   objectFromBytes,
+  preparedProviderCall,
   semanticModelUnavailable,
 } from "./common.js";
 import type { HttpTransport, ProviderPreflight } from "./transport.js";
@@ -60,7 +61,7 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
       preflight,
     });
     let dispatched = false;
-    return {
+    return preparedProviderCall({
       redactedRequestBytes,
       normalizedRequestHash: createHash("sha256")
         .update(redactedRequestBytes)
@@ -89,7 +90,7 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
           preflight,
         );
       },
-    };
+    });
   }
 
   private async dispatch(
@@ -187,6 +188,22 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
         ? {}
         : { nativeUsageBytes: bytes(parsed.usage) }),
     };
+    if (
+      typeof parsed.model !== "string" ||
+      parsed.model.trim().length === 0 ||
+      typeof parsed.id !== "string" ||
+      parsed.id.trim().length === 0 ||
+      parsed.usage === null ||
+      typeof parsed.usage !== "object" ||
+      Array.isArray(parsed.usage)
+    ) {
+      return {
+        kind: "transport_failure",
+        retryable: false,
+        evidence: common,
+        recording,
+      };
+    }
     if (typeof parsed.model === "string" && parsed.model !== request.modelId) {
       return {
         kind: "model_mismatch",

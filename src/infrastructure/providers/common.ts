@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type {
+  PreparedProviderCall,
   ProviderEvidence,
   ProviderRequest,
 } from "../../application/provider-port.js";
@@ -67,6 +68,26 @@ export function labeledInputs(request: ProviderRequest): string {
 
 export function bytes(value: unknown): Buffer {
   return Buffer.from(canonicalJson(value));
+}
+
+export function preparedProviderCall(input: {
+  redactedRequestBytes: Uint8Array;
+  normalizedRequestHash: string;
+  identity: PreparedProviderCall["identity"];
+  dispatch: PreparedProviderCall["dispatch"];
+}): PreparedProviderCall {
+  const recordedBytes = Buffer.from(input.redactedRequestBytes);
+  const identity = structuredClone(input.identity);
+  return {
+    get redactedRequestBytes() {
+      return Buffer.from(recordedBytes);
+    },
+    normalizedRequestHash: input.normalizedRequestHash,
+    get identity() {
+      return structuredClone(identity);
+    },
+    dispatch: input.dispatch,
+  };
 }
 
 export function objectFromBytes(value: Uint8Array): Record<string, unknown> {
