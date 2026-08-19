@@ -13,6 +13,7 @@ import {
   evidence,
   labeledInputs,
   objectFromBytes,
+  semanticModelUnavailable,
   textFromOpenAi,
 } from "./common.js";
 import type { HttpTransport, ProviderPreflight } from "./transport.js";
@@ -27,46 +28,62 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
   ) {}
 
   prepare(request: ProviderRequest): PreparedProviderCall {
-    assertProviderRequest(request, "openai", this.preflight);
+    const preparedRequest = structuredClone(request);
+    const preflight = assertProviderRequest(
+      preparedRequest,
+      "openai",
+      this.preflight,
+    );
     const body = {
-      model: request.modelId,
-      instructions: request.systemPrompt,
-      input: labeledInputs(request),
-      max_output_tokens: request.maxOutputTokens,
-      store: request.providerStorage !== "minimize",
+      model: preparedRequest.modelId,
+      instructions: preparedRequest.systemPrompt,
+      input: labeledInputs(preparedRequest),
+      max_output_tokens: preparedRequest.maxOutputTokens,
+      store: preparedRequest.providerStorage !== "minimize",
       text: {
         format: {
           type: "json_schema",
-          name: `${request.role}_result`,
+          name: `${preparedRequest.role}_result`,
           strict: true,
-          schema: request.outputSchema,
+          schema: preparedRequest.outputSchema,
         },
       },
-      ...(request.reasoning === undefined
+      ...(preparedRequest.reasoning === undefined
         ? {}
-        : { reasoning: { effort: request.reasoning } }),
+        : { reasoning: { effort: preparedRequest.reasoning } }),
     };
+    const wireBodyBytes = bytes(body);
     const redactedRequestBytes = bytes({
       method: "POST",
       endpoint,
       headers: {
         "content-type": "application/json",
-        "x-client-request-id": request.correlationId,
+        "x-client-request-id": preparedRequest.correlationId,
       },
       body,
+      timeoutMs: preparedRequest.timeoutMs,
+      preflight,
     });
+    let dispatched = false;
     return {
       redactedRequestBytes,
       normalizedRequestHash: createHash("sha256")
         .update(redactedRequestBytes)
         .digest("hex"),
-      dispatch: () => this.dispatch(request, body),
+      dispatch: () => {
+        if (dispatched) {
+          throw new Error("Prepared provider call has already been dispatched");
+        }
+        dispatched = true;
+        return this.dispatch(preparedRequest, wireBodyBytes, preflight);
+      },
     };
   }
 
   private async dispatch(
     request: ProviderRequest,
-    body: object,
+    wireBodyBytes: Uint8Array,
+    preflight: ReturnType<typeof assertProviderRequest>,
   ): Promise<ProviderExecution> {
     let response;
     try {
@@ -77,12 +94,17 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
           authorization: `Bearer ${this.credential()}`,
           "x-client-request-id": request.correlationId,
         },
-        body: bytes(body),
+        body: wireBodyBytes,
         timeoutMs: request.timeoutMs,
       });
     } catch (error) {
       const failure = error as { dispatched?: boolean; retryable?: boolean };
-      const common = evidence({ request, endpoint, behaviorHeaders: {} });
+      const common = evidence({
+        request,
+        endpoint,
+        behaviorHeaders: {},
+        ...preflight,
+      });
       return {
         kind:
           failure.dispatched === true ? "unknown_outcome" : "transport_failure",
@@ -95,16 +117,20 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
     }
     const rawResponseBytes = Buffer.from(response.body);
     if (response.status < 200 || response.status >= 300) {
+      const unavailable = semanticModelUnavailable(
+        rawResponseBytes,
+        request.modelId,
+      );
       return {
-        kind:
-          response.status === 404 ? "model_unavailable" : "transport_failure",
-        ...(response.status === 404
+        kind: unavailable ? "model_unavailable" : "transport_failure",
+        ...(unavailable
           ? {}
           : { retryable: response.status === 429 || response.status >= 500 }),
         evidence: evidence({
           request,
           endpoint,
           behaviorHeaders: {},
+          ...preflight,
           ...(response.headers["x-request-id"] === undefined
             ? {}
             : { providerRequestId: response.headers["x-request-id"] }),
@@ -124,6 +150,7 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
           request,
           endpoint,
           behaviorHeaders: {},
+          ...preflight,
           completionStatus: "malformed_success",
         }),
         recording: { rawResponseBytes },
@@ -139,6 +166,7 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
         : { providerRequestId: response.headers["x-request-id"] }),
       providerResponseId: parsed.id,
       completionStatus: parsed.status,
+      ...preflight,
     });
     const recording = {
       rawResponseBytes,

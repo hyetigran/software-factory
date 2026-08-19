@@ -13,6 +13,7 @@ import {
   evidence,
   labeledInputs,
   objectFromBytes,
+  semanticModelUnavailable,
 } from "./common.js";
 import type { HttpTransport, ProviderPreflight } from "./transport.js";
 
@@ -27,49 +28,65 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
   ) {}
 
   prepare(request: ProviderRequest): PreparedProviderCall {
-    assertProviderRequest(request, "anthropic", this.preflight);
+    const preparedRequest = structuredClone(request);
+    const preflight = assertProviderRequest(
+      preparedRequest,
+      "anthropic",
+      this.preflight,
+    );
     const body = {
-      model: request.modelId,
-      max_tokens: request.maxOutputTokens,
-      system: request.systemPrompt,
-      messages: [{ role: "user", content: labeledInputs(request) }],
+      model: preparedRequest.modelId,
+      max_tokens: preparedRequest.maxOutputTokens,
+      system: preparedRequest.systemPrompt,
+      messages: [{ role: "user", content: labeledInputs(preparedRequest) }],
       output_config: {
-        format: { type: "json_schema", schema: request.outputSchema },
-        ...(request.reasoning === undefined
+        format: { type: "json_schema", schema: preparedRequest.outputSchema },
+        ...(preparedRequest.reasoning === undefined
           ? {}
-          : { effort: request.reasoning }),
+          : { effort: preparedRequest.reasoning }),
       },
     };
     const visibleHeaders = {
       "content-type": "application/json",
       "anthropic-version": apiVersion,
     };
+    const wireBodyBytes = bytes(body);
     const redactedRequestBytes = bytes({
       method: "POST",
       endpoint,
       headers: visibleHeaders,
       body,
+      timeoutMs: preparedRequest.timeoutMs,
+      preflight,
     });
+    let dispatched = false;
     return {
       redactedRequestBytes,
       normalizedRequestHash: createHash("sha256")
         .update(redactedRequestBytes)
         .digest("hex"),
-      dispatch: () => this.dispatch(request, body, visibleHeaders),
+      dispatch: () => {
+        if (dispatched) {
+          throw new Error("Prepared provider call has already been dispatched");
+        }
+        dispatched = true;
+        return this.dispatch(request, wireBodyBytes, visibleHeaders, preflight);
+      },
     };
   }
 
   private async dispatch(
     request: ProviderRequest,
-    body: object,
+    wireBodyBytes: Uint8Array,
     visibleHeaders: Record<string, string>,
+    preflight: ReturnType<typeof assertProviderRequest>,
   ): Promise<ProviderExecution> {
     let response;
     try {
       response = await this.transport.send({
         url: endpoint,
         headers: { ...visibleHeaders, "x-api-key": this.credential() },
-        body: bytes(body),
+        body: wireBodyBytes,
         timeoutMs: request.timeoutMs,
       });
     } catch (error) {
@@ -79,6 +96,7 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
         endpoint,
         apiVersion,
         behaviorHeaders: { "anthropic-version": apiVersion },
+        ...preflight,
       });
       return {
         kind:
@@ -92,10 +110,13 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
     }
     const rawResponseBytes = Buffer.from(response.body);
     if (response.status < 200 || response.status >= 300) {
+      const unavailable = semanticModelUnavailable(
+        rawResponseBytes,
+        request.modelId,
+      );
       return {
-        kind:
-          response.status === 404 ? "model_unavailable" : "transport_failure",
-        ...(response.status === 404
+        kind: unavailable ? "model_unavailable" : "transport_failure",
+        ...(unavailable
           ? {}
           : { retryable: response.status === 429 || response.status >= 500 }),
         evidence: evidence({
@@ -103,6 +124,7 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
           endpoint,
           apiVersion,
           behaviorHeaders: { "anthropic-version": apiVersion },
+          ...preflight,
           ...(response.headers["request-id"] === undefined
             ? {}
             : { providerRequestId: response.headers["request-id"] }),
@@ -123,6 +145,7 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
           endpoint,
           apiVersion,
           behaviorHeaders: { "anthropic-version": apiVersion },
+          ...preflight,
           completionStatus: "malformed_success",
         }),
         recording: { rawResponseBytes },
@@ -139,6 +162,7 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
         : { providerRequestId: response.headers["request-id"] }),
       providerResponseId: parsed.id,
       completionStatus: parsed.stop_reason,
+      ...preflight,
     });
     const recording = {
       rawResponseBytes,

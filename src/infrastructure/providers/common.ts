@@ -11,7 +11,10 @@ export function assertProviderRequest(
   request: ProviderRequest,
   provider: ProviderRequest["provider"],
   preflight: ProviderPreflight,
-): void {
+): {
+  capability: NonNullable<ReturnType<ProviderPreflight["resolve"]>>;
+  inputTokens: number;
+} {
   const capability = preflight.resolve(request);
   const inputTokens = preflight.countInputTokens(request);
   if (
@@ -31,6 +34,13 @@ export function assertProviderRequest(
         createHash("sha256").update(content).digest("hex") !== contentHash,
     ) ||
     capability === null ||
+    capability.canonicalModelId.trim().length === 0 ||
+    !Number.isInteger(capability.contextWindowTokens) ||
+    capability.contextWindowTokens < 1 ||
+    !Number.isInteger(capability.maxOutputTokens) ||
+    capability.maxOutputTokens < 1 ||
+    !Number.isInteger(inputTokens) ||
+    inputTokens < 0 ||
     capability.canonicalModelId !== request.modelId ||
     !capability.structuredOutput ||
     request.maxOutputTokens > capability.maxOutputTokens ||
@@ -39,6 +49,7 @@ export function assertProviderRequest(
   ) {
     throw new TypeError("Provider request is invalid");
   }
+  return { capability, inputTokens };
 }
 
 export function labeledInputs(request: ProviderRequest): string {
@@ -75,6 +86,13 @@ export function evidence(input: {
   providerRequestId?: string;
   providerResponseId?: unknown;
   completionStatus?: unknown;
+  capability: {
+    canonicalModelId: string;
+    structuredOutput: boolean;
+    contextWindowTokens: number;
+    maxOutputTokens: number;
+  };
+  inputTokens: number;
 }): ProviderEvidence {
   return {
     requestedModel: input.request.modelId,
@@ -94,7 +112,38 @@ export function evidence(input: {
     ...(typeof input.completionStatus === "string"
       ? { completionStatus: input.completionStatus }
       : {}),
+    preflight: {
+      canonicalModelId: input.capability.canonicalModelId,
+      structuredOutput: true,
+      contextWindowTokens: input.capability.contextWindowTokens,
+      maxOutputTokens: input.capability.maxOutputTokens,
+      inputTokens: input.inputTokens,
+    },
   };
+}
+
+export function semanticModelUnavailable(
+  bytesValue: Uint8Array,
+  modelId: string,
+): boolean {
+  try {
+    const parsed = objectFromBytes(bytesValue);
+    const error =
+      parsed.error !== null &&
+      typeof parsed.error === "object" &&
+      !Array.isArray(parsed.error)
+        ? (parsed.error as Record<string, unknown>)
+        : parsed;
+    const code = typeof error.code === "string" ? error.code : "";
+    const type = typeof error.type === "string" ? error.type : "";
+    const message = typeof error.message === "string" ? error.message : "";
+    return (
+      ["model_not_found", "invalid_model", "model_retired"].includes(code) ||
+      (type === "not_found_error" && message.includes(modelId))
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function textFromOpenAi(response: Record<string, unknown>): {

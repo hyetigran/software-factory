@@ -9,6 +9,7 @@ import {
   StrictReplayAdapter,
   UnrecordedRequestError,
 } from "../../src/infrastructure/providers/replay.js";
+import type { ProviderCassetteStore } from "../../src/infrastructure/providers/replay.js";
 import type {
   HttpTransport,
   ProviderPreflight,
@@ -312,11 +313,23 @@ describe("provider adapter contract", () => {
         endpoint: "https://api.openai.com/v1/responses",
         behaviorHeaders: {},
         correlationId: "correlation_1",
+        preflight: {
+          canonicalModelId: "frontier-pinned",
+          structuredOutput: true as const,
+          contextWindowTokens: 100_000,
+          maxOutputTokens: 10_000,
+          inputTokens: 100,
+        },
       },
       recording: {},
     };
     const replay = new StrictReplayAdapter(formatter, {
-      lookup: vi.fn().mockResolvedValue(completed),
+      lookup: vi
+        .fn()
+        .mockImplementation(
+          (identity: Parameters<ProviderCassetteStore["lookup"]>[0]) =>
+            Promise.resolve({ ...identity, execution: completed }),
+        ),
     });
     await expect(
       replay.prepare({ ...baseRequest, provider: "openai" }).dispatch(),
@@ -341,6 +354,18 @@ describe("provider adapter contract", () => {
       adapter.prepare({ ...baseRequest, provider: "openai" }),
     ).toThrow("Provider request is invalid");
     expect(send).not.toHaveBeenCalled();
+
+    const invalidNumbers = new OpenAiResponsesAdapter(
+      { send },
+      () => "secret",
+      {
+        ...preflight,
+        countInputTokens: () => Number.NaN,
+      },
+    );
+    expect(() =>
+      invalidNumbers.prepare({ ...baseRequest, provider: "openai" }),
+    ).toThrow("Provider request is invalid");
   });
 
   it("maps arbitrary HTTP failures before attempting JSON decoding", async () => {
@@ -362,6 +387,85 @@ describe("provider adapter contract", () => {
         kind: "transport_failure",
         retryable: true,
       });
+    }
+  });
+
+  it("dispatches immutable prepared bytes once and records timeout identity", async () => {
+    const send = vi.fn<HttpTransport["send"]>().mockResolvedValue({
+      status: 200,
+      headers: {},
+      body: Buffer.from(
+        JSON.stringify({
+          id: "response_immutable",
+          model: "frontier-pinned",
+          status: "completed",
+          output: [
+            {
+              type: "message",
+              content: [{ type: "output_text", text: '{"plan":"ok"}' }],
+            },
+          ],
+          usage: {},
+        }),
+      ),
+    });
+    const request = structuredClone({
+      ...baseRequest,
+      provider: "openai" as const,
+    });
+    const adapter = new OpenAiResponsesAdapter(
+      { send },
+      () => "secret",
+      preflight,
+    );
+    const prepared = adapter.prepare(request);
+    (request.outputSchema as { properties: object }).properties = {};
+    await expect(prepared.dispatch()).resolves.toMatchObject({
+      kind: "completed",
+    });
+    expect(
+      JSON.parse(String(send.mock.calls[0]?.[0].body)) as unknown,
+    ).toMatchObject({
+      text: { format: { schema: { required: ["plan"] } } },
+    });
+    expect(JSON.parse(String(prepared.redactedRequestBytes))).toMatchObject({
+      timeoutMs: 30_000,
+      preflight: { inputTokens: 100 },
+    });
+    expect(() => prepared.dispatch()).toThrow("already been dispatched");
+  });
+
+  it("classifies only semantic model errors as unavailable", async () => {
+    for (const provider of ["openai", "anthropic"] as const) {
+      const unavailableBody =
+        provider === "openai"
+          ? { error: { code: "model_not_found", message: "missing" } }
+          : {
+              type: "error",
+              error: {
+                type: "not_found_error",
+                message: "frontier-pinned was not found",
+              },
+            };
+      for (const [body, kind] of [
+        [Buffer.from(JSON.stringify(unavailableBody)), "model_unavailable"],
+        [Buffer.from("gateway route missing"), "transport_failure"],
+      ] as const) {
+        const transport: HttpTransport = {
+          send: vi.fn().mockResolvedValue({ status: 404, headers: {}, body }),
+        };
+        const adapter =
+          provider === "openai"
+            ? new OpenAiResponsesAdapter(transport, () => "secret", preflight)
+            : new AnthropicMessagesAdapter(
+                transport,
+                () => "secret",
+                preflight,
+              );
+        await expect(
+          adapter.prepare({ ...baseRequest, provider }).dispatch(),
+        ).resolves.toMatchObject({ kind });
+      }
     }
   });
 });

@@ -27,6 +27,13 @@ export type ProviderEvidence = {
   providerResponseId?: string;
   correlationId: string;
   completionStatus?: string;
+  preflight: {
+    canonicalModelId: string;
+    structuredOutput: true;
+    contextWindowTokens: number;
+    maxOutputTokens: number;
+    inputTokens: number;
+  };
 };
 
 export type ProviderResult =
