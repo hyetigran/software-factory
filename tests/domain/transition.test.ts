@@ -28,6 +28,7 @@ const sectionMapContentHash = "5".repeat(64);
 const reviewerPromptContentHash = "6".repeat(64);
 const reviewSchemaContentHash = "7".repeat(64);
 const componentRegistryContentHash = "8".repeat(64);
+const taxonomyContentHash = "1".repeat(64);
 const configuredReviewerAssignment = {
   provider: "anthropic" as const,
   modelId: "claude-frontier-pinned-20260801",
@@ -41,6 +42,37 @@ const pinnedPolicy = {
   plannerAssignment: configuredPlannerAssignment,
   reviewerAssignment: configuredReviewerAssignment,
 };
+function reviewContextFixture() {
+  return {
+    prompt: {
+      artifactId: "artifact_reviewer_prompt_01JTEST",
+      contentHash: reviewerPromptContentHash,
+    },
+    schema: {
+      artifactId: "artifact_review_schema_01JTEST",
+      contentHash: reviewSchemaContentHash,
+    },
+    taxonomy: {
+      artifactId: "artifact_review_taxonomy_01JTEST",
+      contentHash: taxonomyContentHash,
+    },
+    componentRegistry: {
+      artifactId: "artifact_component_registry_01JTEST",
+      contentHash: componentRegistryContentHash,
+    },
+    policy: {
+      artifactId: "artifact_review_policy_01JTEST",
+      contentHash: policyHash,
+    },
+    evidence: [
+      {
+        kind: "artifact" as const,
+        artifactId: "artifact_plan_01JTEST",
+        contentHash: planContentHash,
+      },
+    ],
+  };
+}
 function policyWithHash(nextPolicyHash: string) {
   return {
     policyHash: nextPolicyHash,
@@ -293,6 +325,11 @@ function planGeneratedInput(): PlanGenerated {
       contentHash: reviewSchemaContentHash,
       verified: true,
     },
+    taxonomyArtifact: {
+      artifactId: "artifact_review_taxonomy_01JTEST",
+      contentHash: taxonomyContentHash,
+      verified: true,
+    },
     componentRegistryArtifact: {
       artifactId: "artifact_component_registry_01JTEST",
       contentHash: componentRegistryContentHash,
@@ -343,6 +380,7 @@ function planSubmittedInput(): PlanSubmitted {
     reviewPolicyArtifact: generated.reviewPolicyArtifact,
     reviewerPromptArtifact: generated.reviewerPromptArtifact,
     reviewSchemaArtifact: generated.reviewSchemaArtifact,
+    taxonomyArtifact: generated.taxonomyArtifact,
     componentRegistryArtifact: generated.componentRegistryArtifact,
     reviewBudgetMaximum: generated.reviewBudgetMaximum,
     availableBudget: generated.availableBudget,
@@ -388,11 +426,24 @@ function reviewAcceptedInput(blockingFindingIds: string[]): ReviewAccepted {
       contentHash: reviewContentHash,
       verified: true,
     },
+    renderedPlanArtifact: {
+      artifactId: "artifact_rendered_plan_01JTEST",
+      contentHash: "2".repeat(64),
+      verified: true,
+    },
     reviewedPlanVersionId: "plan_version_01JTEST",
     reviewedPlanContentHash: planContentHash,
     reviewedPolicyHash: policyHash,
     reviewCycle: 1,
     outputValid: true,
+    outputValidation: {
+      validator: "deterministic-review-output-v1",
+      validatedReviewContentHash: reviewContentHash,
+      schemaValid: true,
+      taxonomyValid: true,
+      controlledIdsValid: true,
+      evidenceReferencesSupplied: true,
+    },
     findings: [
       {
         findingId: "finding_architecture_01JTEST",
@@ -513,6 +564,7 @@ function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
           "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
         independence: { reduced: false },
       },
+      reviewContext: reviewContextFixture(),
     };
   }
   if (state === "remediation" || state === "closure") {
@@ -525,6 +577,10 @@ function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
       state,
       stateVersion: 7,
       activeFindings: [],
+      renderedPlan: {
+        artifactId: "artifact_rendered_plan_01JTEST",
+        contentHash: "2".repeat(64),
+      },
     };
     return state === "remediation"
       ? {
@@ -2163,31 +2219,40 @@ describe("transition", () => {
 
     const result = transition(planning, planGeneratedInput(), pinnedPolicy);
 
-    expect(result.nextState).toEqual({
-      ...planning,
-      state: "baseline_review",
-      stateVersion: 6,
-      currentPlan: {
-        versionId: "plan_version_01JTEST",
-        artifactId: "artifact_plan_01JTEST",
-        contentHash: planContentHash,
-        sectionTransitionMap: {
-          artifactId: "artifact_section_map_01JTEST",
-          contentHash: sectionMapContentHash,
+    expect(result.nextState).toEqual(
+      expect.objectContaining({
+        ...planning,
+        state: "baseline_review",
+        stateVersion: 6,
+        currentPlan: {
+          versionId: "plan_version_01JTEST",
+          artifactId: "artifact_plan_01JTEST",
+          contentHash: planContentHash,
+          sectionTransitionMap: {
+            artifactId: "artifact_section_map_01JTEST",
+            contentHash: sectionMapContentHash,
+          },
+          provenance: {
+            artifactId: "artifact_plan_provenance_01JTEST",
+            contentHash: reviewContentHash,
+          },
         },
-        provenance: {
-          artifactId: "artifact_plan_provenance_01JTEST",
-          contentHash: reviewContentHash,
+        activeReview: {
+          cycle: 1,
+          commandId: "command_baseline_review_01JTEST",
+          reviewerAssignment: planGeneratedInput().reviewerAssignment,
+          reviewPurposeId:
+            "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
+          independence: { reduced: false },
         },
-      },
-      activeReview: {
-        cycle: 1,
-        commandId: "command_baseline_review_01JTEST",
-        reviewerAssignment: planGeneratedInput().reviewerAssignment,
-        reviewPurposeId:
-          "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
-        independence: { reduced: false },
-      },
+      }),
+    );
+    if (result.nextState.state !== "baseline_review") {
+      throw new Error("Expected baseline review state");
+    }
+    expect(result.nextState.reviewContext.taxonomy).toEqual({
+      artifactId: "artifact_review_taxonomy_01JTEST",
+      contentHash: taxonomyContentHash,
     });
     expect(result.commands).toEqual([
       expect.objectContaining({
@@ -2222,11 +2287,13 @@ describe("transition", () => {
           renderPlanCommandId: "command_render_plan_01JTEST",
           reviewerPromptArtifactId: "artifact_reviewer_prompt_01JTEST",
           reviewSchemaArtifactId: "artifact_review_schema_01JTEST",
+          taxonomyArtifactId: "artifact_review_taxonomy_01JTEST",
           componentRegistryArtifactId: "artifact_component_registry_01JTEST",
           reviewPolicyArtifactId: "artifact_review_policy_01JTEST",
           evidenceArtifactIds: [
             "artifact_section_map_01JTEST",
             "artifact_plan_provenance_01JTEST",
+            "artifact_review_taxonomy_01JTEST",
             "artifact_coverage_01JTEST",
           ],
           independence: { reduced: false },
@@ -2689,9 +2756,21 @@ describe("transition", () => {
     );
 
     expect(result.nextState.state).toBe("closure");
-    expect(result.commands).toEqual([
-      expect.objectContaining({ commandType: "closure_review" }),
-    ]);
+    const command = result.commands[0];
+    expect(command?.commandType).toBe("closure_review");
+    if (command?.commandType !== "closure_review") {
+      throw new Error("Expected closure review command");
+    }
+    expect(command.payload).toEqual(
+      expect.objectContaining({
+        renderedPlanArtifactId: "artifact_rendered_plan_01JTEST",
+        reviewerPromptArtifactId: "artifact_reviewer_prompt_01JTEST",
+        reviewSchemaArtifactId: "artifact_review_schema_01JTEST",
+        taxonomyArtifactId: "artifact_review_taxonomy_01JTEST",
+        componentRegistryArtifactId: "artifact_component_registry_01JTEST",
+        reviewPolicyArtifactId: "artifact_review_policy_01JTEST",
+      }),
+    );
   });
 
   it.each([
@@ -2702,6 +2781,32 @@ describe("transition", () => {
     [
       "the wrong originating command",
       { originatingCommandId: "command_wrong" },
+    ],
+    [
+      "an unknown taxonomy rule",
+      {
+        outputValidation: {
+          ...reviewAcceptedInput([]).outputValidation,
+          taxonomyValid: false,
+        },
+      },
+    ],
+    [
+      "an unsupplied evidence reference",
+      {
+        findings: [
+          {
+            ...reviewAcceptedInput([]).findings[0]!,
+            evidence: [
+              {
+                kind: "artifact" as const,
+                artifactId: "artifact_not_supplied_01JTEST",
+                contentHash: "9".repeat(64),
+              },
+            ],
+          },
+        ],
+      },
     ],
     [
       "an unknown blocking finding",

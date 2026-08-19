@@ -113,6 +113,28 @@ export type ActiveFinding = {
   ruleId: string;
   title: string;
   evidence: ArtifactEvidenceReference[];
+  latestObservationContext: {
+    reviewId: string;
+    ledgerVersionId: string;
+    ledgerContentHash: string;
+    planVersionId: string;
+    planContentHash: string;
+    policyHash: string;
+    reviewerAssignment: ProviderModelAssignment;
+    prompt: Omit<ArtifactEvidenceReference, "kind">;
+    schema: Omit<ArtifactEvidenceReference, "kind">;
+    cycle: number;
+    originatingCommandId: string;
+  };
+};
+
+export type ReviewContext = {
+  prompt: Omit<ArtifactEvidenceReference, "kind">;
+  schema: Omit<ArtifactEvidenceReference, "kind">;
+  taxonomy: Omit<ArtifactEvidenceReference, "kind">;
+  componentRegistry: Omit<ArtifactEvidenceReference, "kind">;
+  policy: Omit<ArtifactEvidenceReference, "kind">;
+  evidence: ArtifactEvidenceReference[];
 };
 
 export type ReviewIndependenceOverride = {
@@ -132,6 +154,7 @@ export type AdvancedRunState = AdvancedStateBase &
         policyLocked: true;
         currentPlan: CurrentPlan;
         activeReview: ActiveReview;
+        reviewContext: ReviewContext;
       }
     | {
         state: "remediation";
@@ -139,6 +162,8 @@ export type AdvancedRunState = AdvancedStateBase &
         currentPlan: CurrentPlan;
         activeFindings: ActiveFinding[];
         activeReview: ActiveReview;
+        reviewContext: ReviewContext;
+        renderedPlan: Omit<ArtifactEvidenceReference, "kind">;
         activePlanning: ActivePlanning;
       }
     | {
@@ -147,6 +172,8 @@ export type AdvancedRunState = AdvancedStateBase &
         currentPlan: CurrentPlan;
         activeFindings: ActiveFinding[];
         activeReview: ActiveReview;
+        reviewContext: ReviewContext;
+        renderedPlan: Omit<ArtifactEvidenceReference, "kind">;
       }
     | {
         state: "qualified" | "qualified_with_waivers";
@@ -300,6 +327,7 @@ export type PlanGenerated = {
   reviewPolicyArtifact: VerifiedArtifactInput;
   reviewerPromptArtifact: VerifiedArtifactInput;
   reviewSchemaArtifact: VerifiedArtifactInput;
+  taxonomyArtifact: VerifiedArtifactInput;
   componentRegistryArtifact: VerifiedArtifactInput;
   reviewBudgetMaximum: BudgetReservation;
   availableBudget: BudgetReservation;
@@ -329,6 +357,7 @@ export type PlanSubmitted = {
   reviewPolicyArtifact: VerifiedArtifactInput;
   reviewerPromptArtifact: VerifiedArtifactInput;
   reviewSchemaArtifact: VerifiedArtifactInput;
+  taxonomyArtifact: VerifiedArtifactInput;
   componentRegistryArtifact: VerifiedArtifactInput;
   reviewBudgetMaximum: BudgetReservation;
   availableBudget: BudgetReservation;
@@ -378,6 +407,15 @@ export type FindingReconciliationValidation = {
   blockingFindingIds: string[];
 };
 
+export type ReviewOutputValidation = {
+  validator: "deterministic-review-output-v1";
+  validatedReviewContentHash: string;
+  schemaValid: boolean;
+  taxonomyValid: boolean;
+  controlledIdsValid: boolean;
+  evidenceReferencesSupplied: boolean;
+};
+
 export type ReviewAccepted = {
   type: "ReviewAccepted";
   runId: string;
@@ -386,11 +424,13 @@ export type ReviewAccepted = {
   reviewPurposeId: string;
   originatingCommandId: string;
   reviewArtifact: VerifiedArtifactInput;
+  renderedPlanArtifact: VerifiedArtifactInput;
   reviewedPlanVersionId: string;
   reviewedPlanContentHash: string;
   reviewedPolicyHash: string;
   reviewCycle: number;
   outputValid: boolean;
+  outputValidation: ReviewOutputValidation;
   findings: ReviewFindingInput[];
   reconciliation: FindingReconciliationValidation;
   nextCommandId: string;
@@ -551,6 +591,7 @@ export type BaselineReview = {
     renderPlanCommandId: string;
     reviewerPromptArtifactId: string;
     reviewSchemaArtifactId: string;
+    taxonomyArtifactId: string;
     componentRegistryArtifactId: string;
     reviewPolicyArtifactId: string;
     evidenceArtifactIds: string[];
@@ -600,6 +641,13 @@ export type ClosureReview = {
     planVersionId: string;
     planArtifactId: string;
     baselineReviewArtifactId: string;
+    renderedPlanArtifactId: string;
+    reviewerPromptArtifactId: string;
+    reviewSchemaArtifactId: string;
+    taxonomyArtifactId: string;
+    componentRegistryArtifactId: string;
+    reviewPolicyArtifactId: string;
+    evidenceArtifactIds: string[];
     findingIds: string[];
     independence: ActiveReview["independence"];
     providerStorage: "minimize";
@@ -743,9 +791,18 @@ export type ReviewAcceptedFact = {
     reviewId: string;
     reviewArtifactId: string;
     reviewContentHash: string;
+    ledgerVersionId: string;
+    ledgerContentHash: string;
+    planVersionId: string;
+    planContentHash: string;
     cycle: number;
     policyHash: string;
     reviewerAssignment: ProviderModelAssignment;
+    promptArtifactId: string;
+    promptContentHash: string;
+    schemaArtifactId: string;
+    schemaContentHash: string;
+    originatingCommandId: string;
     observationIds: string[];
   };
 };
@@ -1757,6 +1814,7 @@ function acceptPlanForBaseline(
     input.provenanceArtifact,
     input.reviewerPromptArtifact,
     input.reviewSchemaArtifact,
+    input.taxonomyArtifact,
     input.componentRegistryArtifact,
     input.reviewPolicyArtifact,
   ].every(verifiedArtifactInputIsValid);
@@ -1885,6 +1943,7 @@ function acceptPlanForBaseline(
       input.provenanceArtifact.contentHash,
       input.reviewerPromptArtifact.contentHash,
       input.reviewSchemaArtifact.contentHash,
+      input.taxonomyArtifact.contentHash,
       input.componentRegistryArtifact.contentHash,
       input.reviewPolicyArtifact.contentHash,
       ...previousState.downstreamQualification.artifacts.map(
@@ -1903,11 +1962,13 @@ function acceptPlanForBaseline(
       renderPlanCommandId: input.renderCommandId,
       reviewerPromptArtifactId: input.reviewerPromptArtifact.artifactId,
       reviewSchemaArtifactId: input.reviewSchemaArtifact.artifactId,
+      taxonomyArtifactId: input.taxonomyArtifact.artifactId,
       componentRegistryArtifactId: input.componentRegistryArtifact.artifactId,
       reviewPolicyArtifactId: input.reviewPolicyArtifact.artifactId,
       evidenceArtifactIds: [
         input.sectionTransitionMapArtifact.artifactId,
         input.provenanceArtifact.artifactId,
+        input.taxonomyArtifact.artifactId,
         ...previousState.downstreamQualification.artifacts.map(
           ({ artifactId }) => artifactId,
         ),
@@ -1943,6 +2004,10 @@ function acceptPlanForBaseline(
     artifactEvidence(
       input.reviewSchemaArtifact.artifactId,
       input.reviewSchemaArtifact.contentHash,
+    ),
+    artifactEvidence(
+      input.taxonomyArtifact.artifactId,
+      input.taxonomyArtifact.contentHash,
     ),
     artifactEvidence(
       input.componentRegistryArtifact.artifactId,
@@ -1989,6 +2054,29 @@ function acceptPlanForBaseline(
         reviewPurposeId,
         independence,
       },
+      reviewContext: {
+        prompt: {
+          artifactId: input.reviewerPromptArtifact.artifactId,
+          contentHash: input.reviewerPromptArtifact.contentHash,
+        },
+        schema: {
+          artifactId: input.reviewSchemaArtifact.artifactId,
+          contentHash: input.reviewSchemaArtifact.contentHash,
+        },
+        taxonomy: {
+          artifactId: input.taxonomyArtifact.artifactId,
+          contentHash: input.taxonomyArtifact.contentHash,
+        },
+        componentRegistry: {
+          artifactId: input.componentRegistryArtifact.artifactId,
+          contentHash: input.componentRegistryArtifact.contentHash,
+        },
+        policy: {
+          artifactId: input.reviewPolicyArtifact.artifactId,
+          contentHash: input.reviewPolicyArtifact.contentHash,
+        },
+        evidence: reviewEvidence,
+      },
     },
     commands: [renderCommand, reviewCommand],
     auditFacts: [
@@ -2024,6 +2112,83 @@ function acceptPlanForBaseline(
   };
 }
 
+type BaselineReviewState = Extract<
+  AdvancedRunState,
+  { state: "baseline_review" }
+>;
+
+type ReconciledBaselineFindings = {
+  findingIds: string[];
+  observationIds: string[];
+  blockingIds: Set<string>;
+};
+
+function reconcileBaselineFindings(
+  state: BaselineReviewState,
+  input: ReviewAccepted,
+): ReconciledBaselineFindings | null {
+  const reconciliation = input.reconciliation;
+  const findingIds = input.findings.map(({ findingId }) => findingId);
+  const observationIds = input.findings.map(
+    ({ observationId }) => observationId,
+  );
+  const uniqueFindingIds = new Set(findingIds);
+  const uniqueObservationIds = new Set(observationIds);
+  const blockingIds = new Set(reconciliation.blockingFindingIds);
+  const suppliedEvidenceKeys = new Set(
+    [
+      ...state.reviewContext.evidence,
+      artifactEvidence(
+        input.renderedPlanArtifact.artifactId,
+        input.renderedPlanArtifact.contentHash,
+      ),
+    ].map(({ artifactId, contentHash }) => `${artifactId}:${contentHash}`),
+  );
+  const findingsValid = input.findings.every(
+    ({ findingId, observationId, ruleId, severity, title, evidence }) =>
+      findingId.length > 0 &&
+      observationId.length > 0 &&
+      ruleId.length > 0 &&
+      ["critical", "high", "medium", "low"].includes(severity) &&
+      title.trim().length > 0 &&
+      evidence.length > 0 &&
+      evidence.every(
+        ({ kind, artifactId, contentHash }) =>
+          kind === "artifact" &&
+          artifactId.length > 0 &&
+          /^[a-f0-9]{64}$/.test(contentHash) &&
+          suppliedEvidenceKeys.has(`${artifactId}:${contentHash}`),
+      ),
+  );
+  const outputValidation = input.outputValidation;
+  const outputValidationValid =
+    outputValidation.validator === "deterministic-review-output-v1" &&
+    outputValidation.validatedReviewContentHash ===
+      input.reviewArtifact.contentHash &&
+    outputValidation.schemaValid &&
+    outputValidation.taxonomyValid &&
+    outputValidation.controlledIdsValid &&
+    outputValidation.evidenceReferencesSupplied;
+  const reconciliationValid =
+    reconciliation.validator === "deterministic-finding-reconciliation-v1" &&
+    reconciliation.validatedReviewContentHash ===
+      input.reviewArtifact.contentHash &&
+    reconciliation.priorFindingsAccountedFor &&
+    reconciliation.ambiguousCandidatesResolved &&
+    reconciliation.findingIdsAssignedByOrchestrator &&
+    reconciliation.observationIdsUnique &&
+    uniqueFindingIds.size === findingIds.length &&
+    uniqueObservationIds.size === observationIds.length &&
+    blockingIds.size === reconciliation.blockingFindingIds.length &&
+    reconciliation.blockingFindingIds.every((findingId) =>
+      uniqueFindingIds.has(findingId),
+    );
+
+  return findingsValid && outputValidationValid && reconciliationValid
+    ? { findingIds, observationIds, blockingIds }
+    : null;
+}
+
 function acceptBaselineReview(
   previousState: NonterminalRunState | null,
   input: ReviewAccepted,
@@ -2040,43 +2205,7 @@ function acceptBaselineReview(
     );
   }
 
-  const reconciliation = input.reconciliation;
-  const findingIds = input.findings.map(({ findingId }) => findingId);
-  const observationIds = input.findings.map(
-    ({ observationId }) => observationId,
-  );
-  const uniqueFindingIds = new Set(findingIds);
-  const uniqueObservationIds = new Set(observationIds);
-  const blockingIds = new Set(reconciliation.blockingFindingIds);
-  const findingsValid = input.findings.every(
-    ({ findingId, observationId, ruleId, severity, title, evidence }) =>
-      findingId.length > 0 &&
-      observationId.length > 0 &&
-      ruleId.length > 0 &&
-      ["critical", "high", "medium", "low"].includes(severity) &&
-      title.trim().length > 0 &&
-      evidence.length > 0 &&
-      evidence.every(
-        ({ kind, artifactId, contentHash }) =>
-          kind === "artifact" &&
-          artifactId.length > 0 &&
-          /^[a-f0-9]{64}$/.test(contentHash),
-      ),
-  );
-  const reconciliationValid =
-    reconciliation.validator === "deterministic-finding-reconciliation-v1" &&
-    reconciliation.validatedReviewContentHash ===
-      input.reviewArtifact.contentHash &&
-    reconciliation.priorFindingsAccountedFor &&
-    reconciliation.ambiguousCandidatesResolved &&
-    reconciliation.findingIdsAssignedByOrchestrator &&
-    reconciliation.observationIdsUnique &&
-    uniqueFindingIds.size === findingIds.length &&
-    uniqueObservationIds.size === observationIds.length &&
-    blockingIds.size === reconciliation.blockingFindingIds.length &&
-    reconciliation.blockingFindingIds.every((findingId) =>
-      uniqueFindingIds.has(findingId),
-    );
+  const reconciled = reconcileBaselineFindings(previousState, input);
   const reviewerAuthorized =
     input.actor.provider ===
       previousState.activeReview.reviewerAssignment.provider &&
@@ -2089,14 +2218,14 @@ function acceptBaselineReview(
     input.reviewPurposeId !== previousState.activeReview.reviewPurposeId ||
     input.originatingCommandId !== previousState.activeReview.commandId ||
     !verifiedArtifactInputIsValid(input.reviewArtifact) ||
+    !verifiedArtifactInputIsValid(input.renderedPlanArtifact) ||
     input.reviewedPlanVersionId !== previousState.currentPlan.versionId ||
     input.reviewedPlanContentHash !== previousState.currentPlan.contentHash ||
     input.reviewedPolicyHash !== previousState.policyHash ||
     policy.policyHash !== previousState.policyHash ||
     input.reviewCycle !== previousState.activeReview.cycle ||
     !input.outputValid ||
-    !findingsValid ||
-    !reconciliationValid ||
+    reconciled === null ||
     !reviewerAuthorized ||
     !providerBudgetIsEligible(
       input.nextCommandBudgetMaximum,
@@ -2114,6 +2243,9 @@ function acceptBaselineReview(
     );
   }
 
+  const { findingIds, observationIds, blockingIds } = reconciled;
+  const reconciliation = input.reconciliation;
+
   const nextStateVersion = previousState.stateVersion + 1;
   const activeFindings: ActiveFinding[] = input.findings.map((finding) => ({
     findingId: finding.findingId,
@@ -2123,6 +2255,19 @@ function acceptBaselineReview(
     title: finding.title,
     evidence: finding.evidence,
     status: "open",
+    latestObservationContext: {
+      reviewId: input.reviewId,
+      ledgerVersionId: previousState.currentLedger.versionId,
+      ledgerContentHash: previousState.currentLedger.contentHash,
+      planVersionId: previousState.currentPlan.versionId,
+      planContentHash: previousState.currentPlan.contentHash,
+      policyHash: policy.policyHash,
+      reviewerAssignment: previousState.activeReview.reviewerAssignment,
+      prompt: previousState.reviewContext.prompt,
+      schema: previousState.reviewContext.schema,
+      cycle: input.reviewCycle,
+      originatingCommandId: input.originatingCommandId,
+    },
   }));
   const reviewEvidence = artifactEvidence(
     input.reviewArtifact.artifactId,
@@ -2136,6 +2281,15 @@ function acceptBaselineReview(
       previousState.currentLedger.contentHash,
       previousState.currentPlan.contentHash,
       input.reviewArtifact.contentHash,
+      input.renderedPlanArtifact.contentHash,
+      previousState.reviewContext.prompt.contentHash,
+      previousState.reviewContext.schema.contentHash,
+      previousState.reviewContext.taxonomy.contentHash,
+      previousState.reviewContext.componentRegistry.contentHash,
+      previousState.reviewContext.policy.contentHash,
+      ...previousState.reviewContext.evidence.map(
+        ({ contentHash }) => contentHash,
+      ),
     ],
     policyHash: policy.policyHash,
     budgetReservation: input.nextCommandBudgetMaximum,
@@ -2168,6 +2322,19 @@ function acceptBaselineReview(
             planVersionId: previousState.currentPlan.versionId,
             planArtifactId: previousState.currentPlan.artifactId,
             baselineReviewArtifactId: input.reviewArtifact.artifactId,
+            renderedPlanArtifactId: input.renderedPlanArtifact.artifactId,
+            reviewerPromptArtifactId:
+              previousState.reviewContext.prompt.artifactId,
+            reviewSchemaArtifactId:
+              previousState.reviewContext.schema.artifactId,
+            taxonomyArtifactId: previousState.reviewContext.taxonomy.artifactId,
+            componentRegistryArtifactId:
+              previousState.reviewContext.componentRegistry.artifactId,
+            reviewPolicyArtifactId:
+              previousState.reviewContext.policy.artifactId,
+            evidenceArtifactIds: previousState.reviewContext.evidence.map(
+              ({ artifactId }) => artifactId,
+            ),
             findingIds,
             independence: previousState.activeReview.independence,
             providerStorage: "minimize",
@@ -2206,6 +2373,11 @@ function acceptBaselineReview(
             currentPlan: previousState.currentPlan,
             activeFindings,
             activeReview: nextReview,
+            reviewContext: previousState.reviewContext,
+            renderedPlan: {
+              artifactId: input.renderedPlanArtifact.artifactId,
+              contentHash: input.renderedPlanArtifact.contentHash,
+            },
             activePlanning: {
               purposeId: command.purposeId,
               commandId: command.commandId,
@@ -2219,6 +2391,11 @@ function acceptBaselineReview(
             currentPlan: previousState.currentPlan,
             activeFindings,
             activeReview: nextReview,
+            reviewContext: previousState.reviewContext,
+            renderedPlan: {
+              artifactId: input.renderedPlanArtifact.artifactId,
+              contentHash: input.renderedPlanArtifact.contentHash,
+            },
           },
     commands: [command],
     auditFacts: [
@@ -2237,9 +2414,18 @@ function acceptBaselineReview(
           reviewId: input.reviewId,
           reviewArtifactId: input.reviewArtifact.artifactId,
           reviewContentHash: input.reviewArtifact.contentHash,
+          ledgerVersionId: previousState.currentLedger.versionId,
+          ledgerContentHash: previousState.currentLedger.contentHash,
+          planVersionId: previousState.currentPlan.versionId,
+          planContentHash: previousState.currentPlan.contentHash,
           cycle: input.reviewCycle,
           policyHash: policy.policyHash,
           reviewerAssignment: previousState.activeReview.reviewerAssignment,
+          promptArtifactId: previousState.reviewContext.prompt.artifactId,
+          promptContentHash: previousState.reviewContext.prompt.contentHash,
+          schemaArtifactId: previousState.reviewContext.schema.artifactId,
+          schemaContentHash: previousState.reviewContext.schema.contentHash,
+          originatingCommandId: input.originatingCommandId,
           observationIds,
         },
       },
