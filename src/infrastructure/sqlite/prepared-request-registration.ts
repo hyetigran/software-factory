@@ -6,6 +6,10 @@ import type { PersistableCommand } from "../../application/authority-port.js";
 import { commandIsValid } from "../../application/command-validation.js";
 import type { StartedCommandAttempt } from "../../application/execution-port.js";
 import type { ProviderRequest } from "../../application/provider-port.js";
+import {
+  resolvedConfigurationIsValid,
+  type ResolvedConfigurationSnapshot,
+} from "../../application/stage-configuration.js";
 import { canonicalJson } from "../../domain/canonical-json.js";
 import type { ContentAddressedArtifactStore } from "../artifacts/object-store.js";
 import { AuthorityIntegrityError } from "./errors.js";
@@ -32,6 +36,58 @@ function parseCommand(value: string): PersistableCommand {
     throw new AuthorityIntegrityError("Logical command JSON must be an object");
   }
   return parsed as PersistableCommand;
+}
+
+function parseConfiguration(bytes: Uint8Array): ResolvedConfigurationSnapshot {
+  const parsed: unknown = JSON.parse(Buffer.from(bytes).toString("utf8"));
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    !resolvedConfigurationIsValid(parsed as ResolvedConfigurationSnapshot)
+  ) {
+    throw new AuthorityIntegrityError(
+      "Resolved configuration artifact is invalid",
+    );
+  }
+  return parsed as ResolvedConfigurationSnapshot;
+}
+
+function configuredRequestPolicy(
+  configuration: ResolvedConfigurationSnapshot,
+  commandType: string,
+): {
+  promptHash: string;
+  schemaHash: string;
+  timeoutMs: number;
+  reasoning: string | null;
+} | null {
+  if (commandType === "generate_plan") {
+    return {
+      promptHash: configuration.artifactHashes.plannerPrompt,
+      schemaHash: configuration.artifactHashes.planSchema,
+      ...configuration.providerRequestSettings.planner,
+    };
+  }
+  if (commandType === "generate_remediation") {
+    return {
+      promptHash: configuration.artifactHashes.remediationPrompt,
+      schemaHash: configuration.artifactHashes.remediationSchema,
+      ...configuration.providerRequestSettings.remediation,
+    };
+  }
+  if (
+    commandType === "baseline_review" ||
+    commandType === "closure_review" ||
+    commandType === "verify_remediation"
+  ) {
+    return {
+      promptHash: configuration.artifactHashes.reviewerPrompt,
+      schemaHash: configuration.artifactHashes.reviewSchema,
+      ...configuration.providerRequestSettings.reviewer,
+    };
+  }
+  return null;
 }
 
 export class SqlitePreparedRequestRegistration {
@@ -91,11 +147,24 @@ export class SqlitePreparedRequestRegistration {
         | undefined;
       const command = row && parseCommand(row.specification_json);
       const requestPolicy = command?.providerRequestPolicy;
+      const configuration =
+        row === undefined
+          ? undefined
+          : parseConfiguration(
+              await this.dependencies.artifactStore.readVerified(
+                row.configuration_content_hash,
+              ),
+            );
+      const configuredPolicy =
+        command === undefined || configuration === undefined
+          ? null
+          : configuredRequestPolicy(configuration, command.commandType);
       if (
         row === undefined ||
         command === undefined ||
         !commandIsValid(command) ||
         requestPolicy === undefined ||
+        configuration === undefined ||
         row.run_id !== input.attempt.runId ||
         row.command_key !== input.providerRequest.logicalCommandKey ||
         row.attempt_status !== "started" ||
@@ -111,6 +180,13 @@ export class SqlitePreparedRequestRegistration {
         requestPolicy.configurationContentHash !==
           row.configuration_content_hash ||
         requestPolicy.policyHash !== command.policyHash ||
+        configuration.policyHash !== command.policyHash ||
+        configuredPolicy === null ||
+        requestPolicy.promptContentHash !== configuredPolicy.promptHash ||
+        requestPolicy.outputSchemaContentHash !== configuredPolicy.schemaHash ||
+        requestPolicy.timeoutMs !== configuredPolicy.timeoutMs ||
+        requestPolicy.reasoning !== configuredPolicy.reasoning ||
+        requestPolicy.providerStorage !== configuration.providerStorage ||
         row.attempt_kind === "schema_repair" ||
         requestPolicy.role !== input.providerRequest.role ||
         requestPolicy.maxOutputTokens !==

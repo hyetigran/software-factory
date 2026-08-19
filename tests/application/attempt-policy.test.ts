@@ -21,8 +21,18 @@ const configuration: ResolvedConfigurationSnapshot = {
     componentRegistry: "6".repeat(64),
     plannerPrompt: "7".repeat(64),
     reviewerPrompt: "8".repeat(64),
+    remediationPrompt: "a".repeat(64),
+    remediationSchema: "b".repeat(64),
+    schemaRepairPrompt: "c".repeat(64),
     reviewPolicy: "9".repeat(64),
   },
+  providerRequestSettings: {
+    planner: { timeoutMs: 30_000, reasoning: null },
+    reviewer: { timeoutMs: 30_000, reasoning: null },
+    remediation: { timeoutMs: 30_000, reasoning: null },
+    schemaRepair: { timeoutMs: 30_000, reasoning: null },
+  },
+  providerStorage: "minimize",
   hardCeilings: {
     calls: 4,
     physicalAttempts: 5,

@@ -178,8 +178,18 @@ describe("workspace and content-addressed artifact store", () => {
         componentRegistry: "1".repeat(64),
         plannerPrompt: "2".repeat(64),
         reviewerPrompt: "3".repeat(64),
+        remediationPrompt: "5".repeat(64),
+        remediationSchema: "6".repeat(64),
+        schemaRepairPrompt: "7".repeat(64),
         reviewPolicy: "4".repeat(64),
       },
+      providerRequestSettings: {
+        planner: { timeoutMs: 30_000, reasoning: null },
+        reviewer: { timeoutMs: 30_000, reasoning: null },
+        remediation: { timeoutMs: 30_000, reasoning: null },
+        schemaRepair: { timeoutMs: 30_000, reasoning: null },
+      },
+      providerStorage: "minimize" as const,
       hardCeilings: {
         calls: 4,
         physicalAttempts: 6,

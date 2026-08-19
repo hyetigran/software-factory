@@ -19,7 +19,22 @@ export type ResolvedArtifactPins = {
   componentRegistry: string;
   plannerPrompt: string;
   reviewerPrompt: string;
+  remediationPrompt: string;
+  remediationSchema: string;
+  schemaRepairPrompt: string;
   reviewPolicy: string;
+};
+
+export type ProviderRequestSettings = {
+  timeoutMs: number;
+  reasoning: string | null;
+};
+
+export type ResolvedProviderRequestSettings = {
+  planner: ProviderRequestSettings;
+  reviewer: ProviderRequestSettings;
+  remediation: ProviderRequestSettings;
+  schemaRepair: ProviderRequestSettings;
 };
 
 export type HardCeilings = {
@@ -40,6 +55,8 @@ export type ResolvedConfigurationSnapshot = {
   plannerAssignment: ProviderModelAssignment;
   reviewerAssignment: ProviderModelAssignment;
   artifactHashes: ResolvedArtifactPins;
+  providerRequestSettings: ResolvedProviderRequestSettings;
+  providerStorage: "minimize" | "required_feature_opt_in";
   hardCeilings: HardCeilings;
   credentialReferences: Record<string, CredentialReference>;
 };
@@ -50,6 +67,8 @@ const allowedKeys = new Set([
   "plannerAssignment",
   "reviewerAssignment",
   "artifactHashes",
+  "providerRequestSettings",
+  "providerStorage",
   "hardCeilings",
   "credentialReferences",
 ]);
@@ -121,11 +140,31 @@ export function resolvedConfigurationIsValid(
       "componentRegistry",
       "plannerPrompt",
       "reviewerPrompt",
+      "remediationPrompt",
+      "remediationSchema",
+      "schemaRepairPrompt",
       "reviewPolicy",
     ]) &&
     Object.values(value.artifactHashes).every((hash) =>
       /^[a-f0-9]{64}$/u.test(hash),
     ) &&
+    hasExactKeys(value.providerRequestSettings, [
+      "planner",
+      "reviewer",
+      "remediation",
+      "schemaRepair",
+    ]) &&
+    Object.values(value.providerRequestSettings).every(
+      (settings) =>
+        hasExactKeys(settings, ["timeoutMs", "reasoning"]) &&
+        Number.isInteger(settings.timeoutMs) &&
+        settings.timeoutMs > 0 &&
+        (settings.reasoning === null ||
+          (typeof settings.reasoning === "string" &&
+            settings.reasoning.trim().length > 0)),
+    ) &&
+    (value.providerStorage === "minimize" ||
+      value.providerStorage === "required_feature_opt_in") &&
     hasExactKeys(value.hardCeilings, [
       "calls",
       "physicalAttempts",
