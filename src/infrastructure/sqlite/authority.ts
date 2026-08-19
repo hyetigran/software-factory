@@ -22,9 +22,9 @@ import type {
   ValidatedProjectionData,
 } from "../../application/authority-port.js";
 import { commandIsValid } from "../../application/command-validation.js";
+import { artifactRegistrationIsValid } from "../../application/artifact-port.js";
 import type { StagedArtifactDescriptor } from "../artifacts/object-store.js";
 import type { ContentAddressedArtifactStore } from "../artifacts/object-store.js";
-import { artifactRegistrationIsValid } from "../artifacts/object-store.js";
 import {
   persistValidatedProjection,
   projectAuthoritativeState,

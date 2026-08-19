@@ -7,11 +7,8 @@ import {
   type PinnedRunPolicy,
   type SystemActor,
 } from "../domain/index.js";
-import type {
-  ArtifactStagingPort,
-  AuthorityPort,
-  PersistableTransition,
-} from "./authority-port.js";
+import type { ArtifactStagingPort } from "./artifact-port.js";
+import type { AuthorityPort, PersistableTransition } from "./authority-port.js";
 import { commitTransition } from "./commit-transition.js";
 import {
   renderLedger,

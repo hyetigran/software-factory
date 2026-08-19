@@ -4,6 +4,13 @@ import { link, open, readFile, unlink } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 
 import {
+  artifactRegistrationIsValid,
+  type ArtifactKind,
+  type ArtifactProvenance,
+  type ArtifactRegistration,
+  type StagedArtifactRegistration,
+} from "../../application/artifact-port.js";
+import {
   initializeWorkspace,
   type WorkspacePaths,
 } from "../platform/workspace.js";
@@ -23,79 +30,9 @@ export type CopiedSource = StagedObject & {
   provenancePath: string;
 };
 
-export type ArtifactKind =
-  | "raw_requirements"
-  | "requirements_ledger"
-  | "coverage_report"
-  | "structured_plan"
-  | "rendered_plan"
-  | "external_edit"
-  | "review"
-  | "provider_request"
-  | "provider_response"
-  | "native_usage"
-  | "terminal_manifest"
-  | "terminal_report"
-  | "backup_manifest"
-  | "other";
+export type { ArtifactKind, ArtifactProvenance, ArtifactRegistration };
 
-const artifactKinds = new Set<ArtifactKind>([
-  "raw_requirements",
-  "requirements_ledger",
-  "coverage_report",
-  "structured_plan",
-  "rendered_plan",
-  "external_edit",
-  "review",
-  "provider_request",
-  "provider_response",
-  "native_usage",
-  "terminal_manifest",
-  "terminal_report",
-  "backup_manifest",
-  "other",
-]);
-
-export type ArtifactProvenance =
-  | { method: "copied"; sourcePath: string }
-  | { method: "human_submitted"; sourceArtifactIds?: string[] }
-  | {
-      method: "provider_generated";
-      sourceArtifactIds: string[];
-      commandId: string;
-      attemptId: string;
-    }
-  | {
-      method: "deterministic_render";
-      sourceArtifactIds: string[];
-      commandId: string;
-    }
-  | {
-      method: "external_edit";
-      sourceArtifactIds: string[];
-      expectedContentHash: string;
-    }
-  | { method: "exported"; sourceArtifactIds: string[] };
-
-export type ArtifactRegistration = {
-  artifactId: string;
-  kind: ArtifactKind;
-  mediaType: string;
-  schemaId?: string;
-  createdBy: string;
-  provenance: ArtifactProvenance;
-};
-
-export type StagedArtifactDescriptor = {
-  schemaVersion: 1;
-  artifactId: string;
-  kind: ArtifactKind;
-  contentHash: string;
-  byteLength: number;
-  mediaType: string;
-  schemaId?: string;
-  createdBy: string;
-  provenance: ArtifactProvenance;
+export type StagedArtifactDescriptor = StagedArtifactRegistration & {
   objectPath: string;
 };
 
@@ -115,101 +52,6 @@ export class ArtifactIntegrityError extends Error {
     super(message, options);
     this.name = "ArtifactIntegrityError";
   }
-}
-
-function identifiersAreValid(values: unknown): values is string[] {
-  return (
-    Array.isArray(values) &&
-    values.length > 0 &&
-    new Set(values).size === values.length &&
-    values.every(
-      (value) => typeof value === "string" && value.trim().length > 0,
-    )
-  );
-}
-
-function hasExactKeys(value: object, keys: string[]): boolean {
-  const actual = Object.keys(value).sort();
-  const expected = [...keys].sort();
-  return (
-    actual.length === expected.length &&
-    actual.every((key, index) => key === expected[index])
-  );
-}
-
-function provenanceIsValid(provenance: ArtifactProvenance): boolean {
-  switch (provenance.method) {
-    case "copied":
-      return (
-        hasExactKeys(provenance, ["method", "sourcePath"]) &&
-        typeof provenance.sourcePath === "string" &&
-        provenance.sourcePath.trim().length > 0
-      );
-    case "human_submitted":
-      return (
-        hasExactKeys(
-          provenance,
-          provenance.sourceArtifactIds === undefined
-            ? ["method"]
-            : ["method", "sourceArtifactIds"],
-        ) &&
-        (provenance.sourceArtifactIds === undefined ||
-          identifiersAreValid(provenance.sourceArtifactIds))
-      );
-    case "provider_generated":
-      return (
-        hasExactKeys(provenance, [
-          "method",
-          "sourceArtifactIds",
-          "commandId",
-          "attemptId",
-        ]) &&
-        identifiersAreValid(provenance.sourceArtifactIds) &&
-        typeof provenance.commandId === "string" &&
-        provenance.commandId.trim().length > 0 &&
-        typeof provenance.attemptId === "string" &&
-        provenance.attemptId.trim().length > 0
-      );
-    case "deterministic_render":
-      return (
-        hasExactKeys(provenance, [
-          "method",
-          "sourceArtifactIds",
-          "commandId",
-        ]) &&
-        identifiersAreValid(provenance.sourceArtifactIds) &&
-        typeof provenance.commandId === "string" &&
-        provenance.commandId.trim().length > 0
-      );
-    case "external_edit":
-      return (
-        hasExactKeys(provenance, [
-          "method",
-          "sourceArtifactIds",
-          "expectedContentHash",
-        ]) &&
-        identifiersAreValid(provenance.sourceArtifactIds) &&
-        typeof provenance.expectedContentHash === "string" &&
-        /^[a-f0-9]{64}$/u.test(provenance.expectedContentHash)
-      );
-    case "exported":
-      return (
-        hasExactKeys(provenance, ["method", "sourceArtifactIds"]) &&
-        identifiersAreValid(provenance.sourceArtifactIds)
-      );
-  }
-}
-
-export function artifactRegistrationIsValid(
-  registration: ArtifactRegistration,
-): boolean {
-  return (
-    /^[A-Za-z][A-Za-z0-9_-]{2,127}$/u.test(registration.artifactId) &&
-    artifactKinds.has(registration.kind) &&
-    registration.mediaType.trim().length > 0 &&
-    registration.createdBy.trim().length > 0 &&
-    provenanceIsValid(registration.provenance)
-  );
 }
 
 function sha256(bytes: Uint8Array): string {
