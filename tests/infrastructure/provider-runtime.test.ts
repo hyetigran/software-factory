@@ -86,7 +86,7 @@ describe("provider runtime", () => {
         { kind: "os_credential_store", reference: "factory/provider" },
         { readOsCredential },
       ),
-    ).resolves.toBe("secret-from-store");
+    ).resolves.toBe("secret-from-store\n");
     expect(readOsCredential).toHaveBeenCalledWith("factory/provider");
   });
 
@@ -133,5 +133,33 @@ describe("provider runtime", () => {
       name: "ProviderCredentialError",
       reference: "factory/provider",
     });
+  });
+
+  it("discards secret-bearing credential reader errors", async () => {
+    const secret = "retrieved-secret-must-not-survive";
+    let caught: unknown;
+    try {
+      await resolveProviderCredential(
+        { kind: "os_credential_store", reference: "factory/provider" },
+        {
+          readOsCredential: () =>
+            Promise.reject(
+              Object.assign(new Error(`reader failed: ${secret}`), {
+                stdout: secret,
+                stderr: `diagnostic ${secret}`,
+              }),
+            ),
+        },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({
+      name: "ProviderCredentialError",
+      reference: "factory/provider",
+    });
+    expect(JSON.stringify(caught)).not.toContain(secret);
+    expect(String(caught)).not.toContain(secret);
+    expect((caught as Error & { cause?: unknown }).cause).toBeUndefined();
   });
 });

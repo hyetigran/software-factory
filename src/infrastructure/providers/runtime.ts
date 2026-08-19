@@ -170,17 +170,13 @@ export async function resolveProviderCredential(
     value =
       reference.kind === "environment"
         ? (dependencies.environment ?? process.env)[reference.reference]
-        : (
-            await (
-              dependencies.readOsCredential ??
-              defaultOsCredentialReader(
-                dependencies.platform ?? process.platform,
-              )
-            )(reference.reference)
-          ).replace(/\r?\n$/u, "");
+        : await (
+            dependencies.readOsCredential ??
+            defaultOsCredentialReader(dependencies.platform ?? process.platform)
+          )(reference.reference);
   } catch (error) {
     if (error instanceof ProviderCredentialError) throw error;
-    throw new ProviderCredentialError(reference.reference, { cause: error });
+    throw new ProviderCredentialError(reference.reference);
   }
   if (typeof value !== "string" || value.trim().length === 0)
     throw new ProviderCredentialError(reference.reference);
