@@ -65,12 +65,29 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
       normalizedRequestHash: createHash("sha256")
         .update(redactedRequestBytes)
         .digest("hex"),
+      identity: {
+        endpoint,
+        apiVersion,
+        behaviorHeaders: { "anthropic-version": apiVersion },
+        preflight: {
+          canonicalModelId: preflight.capability.canonicalModelId,
+          structuredOutput: true,
+          contextWindowTokens: preflight.capability.contextWindowTokens,
+          maxOutputTokens: preflight.capability.maxOutputTokens,
+          inputTokens: preflight.inputTokens,
+        },
+      },
       dispatch: () => {
         if (dispatched) {
           throw new Error("Prepared provider call has already been dispatched");
         }
         dispatched = true;
-        return this.dispatch(request, wireBodyBytes, visibleHeaders, preflight);
+        return this.dispatch(
+          preparedRequest,
+          wireBodyBytes,
+          visibleHeaders,
+          preflight,
+        );
       },
     };
   }

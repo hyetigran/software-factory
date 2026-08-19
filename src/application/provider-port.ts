@@ -71,6 +71,12 @@ export type ProviderExecution = ProviderResult & {
 export type PreparedProviderCall = {
   redactedRequestBytes: Uint8Array;
   normalizedRequestHash: string;
+  identity: {
+    endpoint: string;
+    apiVersion?: string;
+    behaviorHeaders: Record<string, string>;
+    preflight: ProviderEvidence["preflight"];
+  };
   dispatch(): Promise<ProviderExecution>;
 };
 

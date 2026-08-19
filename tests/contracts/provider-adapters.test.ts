@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { describe, expect, it, vi } from "vitest";
+import { canonicalJson } from "../../src/domain/canonical-json.js";
 
 import type { ProviderRequest } from "../../src/application/provider-port.js";
 import { OpenAiResponsesAdapter } from "../../src/infrastructure/providers/openai.js";
@@ -323,17 +324,52 @@ describe("provider adapter contract", () => {
       },
       recording: {},
     };
+    const resultIdentity = structuredClone(completed) as unknown as Record<
+      string,
+      unknown
+    >;
+    delete resultIdentity.recording;
+    const resultHash = createHash("sha256")
+      .update(canonicalJson(resultIdentity))
+      .digest("hex");
     const replay = new StrictReplayAdapter(formatter, {
       lookup: vi
         .fn()
         .mockImplementation(
-          (identity: Parameters<ProviderCassetteStore["lookup"]>[0]) =>
-            Promise.resolve({ ...identity, execution: completed }),
+          (identity: Parameters<ProviderCassetteStore["lookup"]>[0]) => {
+            const manifestBytes = Buffer.from(
+              canonicalJson({
+                schemaVersion: 1,
+                ...identity,
+                endpoint: "https://api.openai.com/v1/responses",
+                apiVersion: null,
+                behaviorHeaders: {},
+                preflight: completed.evidence.preflight,
+                resultHash,
+                rawResponseHash: null,
+                nativeUsageHash: null,
+              }),
+            );
+            return Promise.resolve({
+              manifestBytes,
+              manifestContentHash: createHash("sha256")
+                .update(manifestBytes)
+                .digest("hex"),
+              execution: completed,
+            });
+          },
         ),
     });
-    await expect(
-      replay.prepare({ ...baseRequest, provider: "openai" }).dispatch(),
-    ).resolves.toMatchObject({ structured: { plan: "recorded" } });
+    const replayRequest = structuredClone({
+      ...baseRequest,
+      provider: "openai" as const,
+    });
+    const replayCall = replay.prepare(replayRequest);
+    replayRequest.modelId = "mutated-after-prepare";
+    replayRequest.correlationId = "mutated-correlation";
+    await expect(replayCall.dispatch()).resolves.toMatchObject({
+      structured: { plan: "recorded" },
+    });
     expect(send).not.toHaveBeenCalled();
 
     const miss = new StrictReplayAdapter(formatter, {
@@ -435,6 +471,40 @@ describe("provider adapter contract", () => {
     expect(() => prepared.dispatch()).toThrow("already been dispatched");
   });
 
+  it("isolates Anthropic dispatch and evidence from post-prepare mutation", async () => {
+    const send = vi.fn<HttpTransport["send"]>().mockResolvedValue({
+      status: 200,
+      headers: {},
+      body: Buffer.from(
+        JSON.stringify({
+          id: "message_immutable",
+          model: "frontier-pinned",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: '{"plan":"ok"}' }],
+          usage: {},
+        }),
+      ),
+    });
+    const request = structuredClone({
+      ...baseRequest,
+      provider: "anthropic" as const,
+    });
+    const adapter = new AnthropicMessagesAdapter(
+      { send },
+      () => "secret",
+      preflight,
+    );
+    const prepared = adapter.prepare(request);
+    request.modelId = "mutated-after-prepare";
+    request.timeoutMs = 1;
+    (request.outputSchema as { properties: object }).properties = {};
+    await expect(prepared.dispatch()).resolves.toMatchObject({
+      kind: "completed",
+      evidence: { requestedModel: "frontier-pinned" },
+    });
+    expect(send.mock.calls[0]?.[0].timeoutMs).toBe(30_000);
+  });
+
   it("classifies only semantic model errors as unavailable", async () => {
     for (const provider of ["openai", "anthropic"] as const) {
       const unavailableBody =
@@ -467,5 +537,36 @@ describe("provider adapter contract", () => {
         ).resolves.toMatchObject({ kind });
       }
     }
+  });
+
+  it("preserves a late response as stageable evidence for cancellation handling", async () => {
+    const raw = Buffer.from(
+      JSON.stringify({
+        id: "response_after_cancel",
+        model: "frontier-pinned",
+        status: "completed",
+        output: [
+          {
+            type: "message",
+            content: [{ type: "output_text", text: '{"plan":"late"}' }],
+          },
+        ],
+        usage: { input_tokens: 2, output_tokens: 1 },
+      }),
+    );
+    const adapter = new OpenAiResponsesAdapter(
+      {
+        send: vi
+          .fn()
+          .mockResolvedValue({ status: 200, headers: {}, body: raw }),
+      },
+      () => "secret",
+      preflight,
+    );
+    const result = await adapter
+      .prepare({ ...baseRequest, provider: "openai" })
+      .dispatch();
+    expect(result.recording.rawResponseBytes).toEqual(raw);
+    expect(result.recording.nativeUsageBytes).toBeDefined();
   });
 });
