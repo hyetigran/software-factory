@@ -451,12 +451,40 @@ describe("transition", () => {
     );
   });
 
-  it("rejects a ledger submission for another run", () => {
-    const draft = transition(null, runStartedInput(), { policyHash }).nextState;
-    const input = { ...ledgerSubmittedInput(), runId: "run_other" };
-
-    expect(() => transition(draft, input, { policyHash })).toThrowError(
-      expect.objectContaining({ code: "INVALID_TRANSITION" }),
+  it.each<
+    [string, () => unknown, "INVALID_TRANSITION" | "PRECONDITION_FAILED"]
+  >([
+    [
+      "without an active draft run",
+      () => transition(null, ledgerSubmittedInput(), { policyHash }),
+      "INVALID_TRANSITION",
+    ],
+    [
+      "for another run",
+      () => {
+        const draft = transition(null, runStartedInput(), {
+          policyHash,
+        }).nextState;
+        const input = { ...ledgerSubmittedInput(), runId: "run_other" };
+        return transition(draft, input, { policyHash });
+      },
+      "INVALID_TRANSITION",
+    ],
+    [
+      "for the current ledger version",
+      () => {
+        const draft = transition(null, runStartedInput(), {
+          policyHash,
+        }).nextState;
+        const first = transition(draft, ledgerSubmittedInput(), { policyHash });
+        const replay = { ...ledgerSubmittedInput(), expectedStateVersion: 2 };
+        return transition(first.nextState, replay, { policyHash });
+      },
+      "PRECONDITION_FAILED",
+    ],
+  ])("rejects a ledger submission %s", (_caseName, submit, expectedCode) => {
+    expect(submit).toThrowError(
+      expect.objectContaining({ code: expectedCode }),
     );
   });
 
@@ -479,15 +507,5 @@ describe("transition", () => {
       expect.objectContaining({ triggeringStateVersion: 3 }),
       expect.objectContaining({ triggeringStateVersion: 3 }),
     ]);
-  });
-
-  it("rejects resubmitting the current ledger version", () => {
-    const draft = transition(null, runStartedInput(), { policyHash }).nextState;
-    const first = transition(draft, ledgerSubmittedInput(), { policyHash });
-    const replay = { ...ledgerSubmittedInput(), expectedStateVersion: 2 };
-
-    expect(() =>
-      transition(first.nextState, replay, { policyHash }),
-    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 });
