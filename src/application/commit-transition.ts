@@ -1,8 +1,8 @@
 import type {
+  AuthorityPort,
   PersistableTransition,
   PersistTransitionRequest,
-  SqliteAuthority,
-} from "../infrastructure/sqlite/authority.js";
+} from "./authority-port.js";
 
 export type CommitTransitionRequest<TState extends object> =
   PersistTransitionRequest & {
@@ -10,18 +10,13 @@ export type CommitTransitionRequest<TState extends object> =
   };
 
 export async function commitTransition<TState extends object>(
-  authority: SqliteAuthority,
+  authority: AuthorityPort,
   request: CommitTransitionRequest<TState>,
 ): Promise<PersistableTransition<TState>> {
-  await authority.beginMutation();
-  try {
-    const previousState = authority.loadRun<TState>(request.runId);
+  return authority.transaction((transaction) => {
+    const previousState = transaction.loadRun<TState>(request.runId);
     const result = request.transition(previousState);
-    authority.persistAcceptedTransition(request, result);
-    authority.commitMutation();
+    transaction.persist(request, result);
     return result;
-  } catch (error) {
-    authority.rollbackMutation(error);
-    throw error;
-  }
+  });
 }

@@ -5,56 +5,23 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 import { canonicalJson } from "../../domain/canonical-json.js";
+import type {
+  AuthorityPort,
+  AuthorityTransaction,
+  PersistableCommand,
+  PersistableTransition,
+  PersistTransitionRequest,
+} from "../../application/authority-port.js";
 import type { StagedArtifactDescriptor } from "../artifacts/object-store.js";
 import type { ContentAddressedArtifactStore } from "../artifacts/object-store.js";
-import { projectAuthoritativeState } from "./projections.js";
+import {
+  persistValidatedProjection,
+  projectAuthoritativeState,
+} from "./projections.js";
 
 const ZERO_HASH = "0".repeat(64);
 
 type JsonObject = Record<string, unknown>;
-
-export type PersistableCommand = {
-  commandId: string;
-  commandKey: string;
-  commandType: string;
-  schemaVersion: number;
-  runId: string;
-  triggeringStateVersion: number;
-  purposeId: string;
-  prerequisiteCommandIds?: string[];
-  inputArtifactHashes: string[];
-  policyHash: string;
-  provider?: "openai" | "anthropic" | "manual" | "local";
-  modelId?: string;
-  budgetReservation: {
-    calls: number;
-    inputTokens: number;
-    outputTokens: number;
-    costUsdMicros: number;
-  };
-  payload: object;
-};
-
-export type PersistableAuditFact = {
-  type: string;
-  actor: object;
-  reason?: string;
-  evidence: unknown[];
-  payload: object;
-};
-
-export type PersistableTransition<TState extends object> = {
-  nextState: TState;
-  commands: PersistableCommand[];
-  auditFacts: PersistableAuditFact[];
-};
-
-export type PersistTransitionRequest = {
-  runId: string;
-  expectedStateVersion: number;
-  causationId?: string;
-  correlationId?: string;
-};
 
 export type AuditEntry = {
   auditEntryId: string;
@@ -118,6 +85,56 @@ function commandIsValid(command: PersistableCommand): boolean {
       ([key]) => key !== "commandId" && key !== "commandKey",
     ),
   );
+  const localTypes = new Set([
+    "render_source_registration_report",
+    "validate_ledger",
+    "render_ledger",
+    "render_ledger_approval",
+    "render_plan",
+    "export_terminal",
+    "backup_workspace",
+    "verify_integrity",
+  ]);
+  const providerTypes = new Set([
+    "generate_plan",
+    "baseline_review",
+    "generate_remediation",
+    "verify_remediation",
+    "closure_review",
+    "repair_schema",
+  ]);
+  const providerShapeValid = localTypes.has(command.commandType)
+    ? command.provider === "local" &&
+      command.modelId === undefined &&
+      Object.values(command.budgetReservation).every((value) => value === 0)
+    : providerTypes.has(command.commandType)
+      ? (command.provider === "openai" || command.provider === "anthropic") &&
+        typeof command.modelId === "string" &&
+        command.modelId.length > 0 &&
+        command.budgetReservation.calls === 1
+      : command.commandType === "attempt_provider_cancel" &&
+        (command.provider === "openai" || command.provider === "anthropic");
+  const prerequisiteShapeValid =
+    command.commandType === "baseline_review"
+      ? command.prerequisiteCommandIds?.length === 1
+      : command.prerequisiteCommandIds === undefined;
+  const requiredPayloadKeys: Partial<Record<string, string[]>> = {
+    render_source_registration_report: ["sourceArtifactId"],
+    validate_ledger: ["ledgerVersionId", "ledgerArtifactId"],
+    render_ledger: ["ledgerVersionId", "ledgerArtifactId"],
+    render_ledger_approval: ["ledgerVersionId"],
+    generate_plan: ["ledgerVersionId", "ledgerArtifactId", "promptArtifactId"],
+    render_plan: ["planVersionId", "planArtifactId"],
+    baseline_review: ["ledgerVersionId", "planVersionId", "planArtifactId"],
+    generate_remediation: ["ledgerVersionId", "planVersionId"],
+    verify_remediation: ["ledgerVersionId", "planVersionId"],
+    closure_review: ["ledgerVersionId", "planVersionId"],
+    export_terminal: ["outcome", "policyHash"],
+  };
+  const payload = command.payload as Record<string, unknown>;
+  const payloadShapeValid = (
+    requiredPayloadKeys[command.commandType] ?? []
+  ).every((key) => key in payload);
   return (
     command.schemaVersion === 1 &&
     command.commandId.length > 0 &&
@@ -130,9 +147,9 @@ function commandIsValid(command: PersistableCommand): boolean {
         new Set(command.prerequisiteCommandIds).size ===
           command.prerequisiteCommandIds.length &&
         command.prerequisiteCommandIds.every((id) => id.length > 0))) &&
-    (command.provider === "openai" || command.provider === "anthropic"
-      ? typeof command.modelId === "string" && command.modelId.length > 0
-      : command.modelId === undefined) &&
+    providerShapeValid &&
+    prerequisiteShapeValid &&
+    payloadShapeValid &&
     Object.values(command.budgetReservation).every(
       (value) => Number.isInteger(value) && value >= 0,
     ) &&
@@ -181,7 +198,7 @@ function auditEntryFromRow(row: AuditRow): AuditEntry {
   };
 }
 
-export class SqliteAuthority {
+export class SqliteAuthority implements AuthorityPort {
   private constructor(
     private readonly database: DatabaseSync,
     private readonly now: () => string,
@@ -541,25 +558,46 @@ export class SqliteAuthority {
     ).map(auditEntryFromRow);
   }
 
-  async beginMutation(): Promise<void> {
+  async transaction<T>(
+    work: (transaction: AuthorityTransaction) => T,
+  ): Promise<T> {
     this.assertWritable();
     await this.verifyIntegrity();
     this.database.exec("BEGIN IMMEDIATE");
-    this.verifyAuditChain();
-  }
-
-  commitMutation(): void {
-    this.database.exec("COMMIT");
-  }
-
-  rollbackMutation(error: unknown): void {
-    this.database.exec("ROLLBACK");
-    if (error instanceof AuthorityIntegrityError) {
-      this.quarantine(error.message);
+    let active = true;
+    const assertActive = (): void => {
+      if (!active) throw new Error("Authority transaction is no longer active");
+    };
+    const transaction: AuthorityTransaction = {
+      loadRun: <TState extends object>(runId: string): TState | null => {
+        assertActive();
+        return this.loadRun<TState>(runId);
+      },
+      persist: <TState extends object>(
+        request: PersistTransitionRequest,
+        result: PersistableTransition<TState>,
+      ): void => {
+        assertActive();
+        this.persistAcceptedTransition(request, result);
+      },
+    };
+    try {
+      this.verifyAuditChain();
+      const result = work(transaction);
+      this.database.exec("COMMIT");
+      active = false;
+      return result;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      active = false;
+      if (error instanceof AuthorityIntegrityError) {
+        this.quarantine(error.message);
+      }
+      throw error;
     }
   }
 
-  persistAcceptedTransition<TState extends object>(
+  private persistAcceptedTransition<TState extends object>(
     request: PersistTransitionRequest,
     result: PersistableTransition<TState>,
   ): void {
@@ -590,6 +628,24 @@ export class SqliteAuthority {
       )
     ) {
       throw new TypeError("Transition output violates authority invariants");
+    }
+    const factTypes = new Set(result.auditFacts.map(({ type }) => type));
+    const projection = request.validatedProjection;
+    if (
+      (factTypes.has("ledger_submitted") &&
+        (projection?.ledgerVersionId === undefined ||
+          projection.requirements === undefined)) ||
+      (factTypes.has("plan_version_accepted") &&
+        (projection?.planVersionId === undefined ||
+          projection.planSections === undefined ||
+          projection.sectionTransitions === undefined)) ||
+      (factTypes.has("review_accepted") &&
+        (projection?.findingFingerprints === undefined ||
+          projection.observationAssociations === undefined))
+    ) {
+      throw new TypeError(
+        "Accepted transition requires a bound deterministic projection",
+      );
     }
 
     this.database
@@ -653,6 +709,15 @@ export class SqliteAuthority {
         canonicalJson(command),
         this.now(),
       );
+      if (request.validatedProjection !== undefined) {
+        persistValidatedProjection(
+          this.database,
+          request.runId,
+          nextState,
+          request.validatedProjection,
+          this.now(),
+        );
+      }
     }
 
     const metadata = this.database

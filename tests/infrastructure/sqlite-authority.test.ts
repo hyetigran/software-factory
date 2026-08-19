@@ -6,6 +6,10 @@ import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type {
+  AuthorityTransaction,
+  PersistableTransition,
+} from "../../src/application/authority-port.js";
 import { commitTransition } from "../../src/application/commit-transition.js";
 import { canonicalJson } from "../../src/domain/canonical-json.js";
 import {
@@ -18,7 +22,6 @@ import {
   AuthorityIntegrityError,
   SqliteAuthority,
   StaleStateError,
-  type PersistableTransition,
 } from "../../src/infrastructure/sqlite/authority.js";
 
 type TestState = Record<string, unknown> & {
@@ -81,7 +84,7 @@ function transitionResult(
   forcedCommandKey?: string,
 ): PersistableTransition<TestState> {
   const commandWithoutIdentity = {
-    commandType: "render_plan",
+    commandType: "verify_integrity",
     schemaVersion: 1,
     runId,
     triggeringStateVersion: stateVersion,
@@ -189,6 +192,19 @@ describe("SQLite authority", () => {
     expect(authority.loadRun<TestState>("run_one")?.stateVersion).toBe(1);
     expect(authority.listCommands("run_one")).toHaveLength(1);
     await expect(authority.verifyIntegrity()).resolves.toBeUndefined();
+    authority.close();
+  });
+
+  it("invalidates the transaction capability after the atomic callback", async () => {
+    const path = await databasePath();
+    const authority = await openAuthority(path);
+    let retained: AuthorityTransaction | undefined;
+    await authority.transaction((transaction) => {
+      retained = transaction;
+    });
+    expect(() => retained?.loadRun("run_one")).toThrow(
+      "transaction is no longer active",
+    );
     authority.close();
   });
 

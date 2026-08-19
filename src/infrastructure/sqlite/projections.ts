@@ -1,7 +1,10 @@
 import type { DatabaseSync } from "node:sqlite";
 
 import { canonicalJson } from "../../domain/canonical-json.js";
-import type { PersistableAuditFact } from "./authority.js";
+import type {
+  PersistableAuditFact,
+  ValidatedProjection,
+} from "../../application/authority-port.js";
 
 type State = Record<string, unknown>;
 
@@ -36,6 +39,22 @@ export function projectAuthoritativeState(
              ?, 'pending')`,
         )
         .run(ledgerVersionId, runId, runId, artifactId);
+      const storedLedger = database
+        .prepare(
+          `SELECT run_id, artifact_id FROM ledger_versions
+           WHERE ledger_version_id = ?`,
+        )
+        .get(ledgerVersionId) as
+        { run_id: string; artifact_id: string } | undefined;
+      if (
+        storedLedger === undefined ||
+        storedLedger.run_id !== runId ||
+        storedLedger.artifact_id !== artifactId
+      ) {
+        throw new TypeError(
+          "Ledger projection conflicts with authoritative state",
+        );
+      }
       const approval = facts.find(({ type }) => type === "ledger_approved");
       if (approval !== undefined) {
         const payload = approval.payload as State;
@@ -95,6 +114,29 @@ export function projectAuthoritativeState(
             `${String(actor.displayName)}:${String(actor.osAccount)}`,
             recordedAt,
           );
+        const storedExclusion = database
+          .prepare(
+            `SELECT ledger_version_id, source_range_json, reason
+             FROM source_exclusions WHERE exclusion_id = ?`,
+          )
+          .get(string(exclusion.exclusionId)) as
+          | {
+              ledger_version_id: string;
+              source_range_json: string;
+              reason: string;
+            }
+          | undefined;
+        if (
+          storedExclusion === undefined ||
+          storedExclusion.ledger_version_id !== ledgerVersionId ||
+          storedExclusion.source_range_json !==
+            canonicalJson(exclusion.sourceRange) ||
+          storedExclusion.reason !== exclusion.reason
+        ) {
+          throw new TypeError(
+            "Source-exclusion projection conflicts with authoritative state",
+          );
+        }
       }
     }
   }
@@ -114,12 +156,24 @@ export function projectAuthoritativeState(
       const rendered = object(state.renderedPlan);
       database
         .prepare(
-          `INSERT OR IGNORE INTO plan_versions
+          `INSERT INTO plan_versions
             (plan_version_id, run_id, version, structured_artifact_id,
              rendered_artifact_id, ledger_version_id, provenance, created_at)
            VALUES (?, ?,
              (SELECT COALESCE(MAX(version), 0) + 1 FROM plan_versions WHERE run_id = ?),
-             ?, ?, ?, ?, ?)`,
+             ?, ?, ?, ?, ?)
+           ON CONFLICT(plan_version_id) DO UPDATE SET
+             rendered_artifact_id = COALESCE(
+               plan_versions.rendered_artifact_id,
+               excluded.rendered_artifact_id
+             )
+           WHERE plan_versions.run_id = excluded.run_id
+             AND plan_versions.structured_artifact_id = excluded.structured_artifact_id
+             AND plan_versions.ledger_version_id = excluded.ledger_version_id
+             AND plan_versions.provenance = excluded.provenance
+             AND (plan_versions.rendered_artifact_id IS NULL
+                  OR excluded.rendered_artifact_id IS NULL
+                  OR plan_versions.rendered_artifact_id = excluded.rendered_artifact_id)`,
         )
         .run(
           planVersionId,
@@ -131,6 +185,37 @@ export function projectAuthoritativeState(
           origin.kind === "human" ? "human" : "planner",
           recordedAt,
         );
+      const storedPlan = database
+        .prepare(
+          `SELECT run_id, structured_artifact_id, rendered_artifact_id,
+                  ledger_version_id, provenance
+           FROM plan_versions WHERE plan_version_id = ?`,
+        )
+        .get(planVersionId) as
+        | {
+            run_id: string;
+            structured_artifact_id: string;
+            rendered_artifact_id: string | null;
+            ledger_version_id: string;
+            provenance: string;
+          }
+        | undefined;
+      const expectedRendered =
+        rendered === null ? null : string(rendered.artifactId);
+      if (
+        storedPlan === undefined ||
+        storedPlan.run_id !== runId ||
+        storedPlan.structured_artifact_id !== planArtifactId ||
+        storedPlan.ledger_version_id !== ledgerVersionId ||
+        storedPlan.provenance !==
+          (origin.kind === "human" ? "human" : "planner") ||
+        (expectedRendered !== null &&
+          storedPlan.rendered_artifact_id !== expectedRendered)
+      ) {
+        throw new TypeError(
+          "Plan projection conflicts with authoritative state",
+        );
+      }
     }
   }
 
@@ -199,4 +284,113 @@ export function projectAuthoritativeState(
         recordedAt,
       );
   });
+}
+
+export function persistValidatedProjection(
+  database: DatabaseSync,
+  runId: string,
+  state: State,
+  projection: ValidatedProjection,
+  recordedAt: string,
+): void {
+  if (
+    projection.validator !== "deterministic-authority-projection-v1" ||
+    projection.stateVersion !== state.stateVersion ||
+    (projection.ledgerVersionId !== undefined &&
+      projection.ledgerVersionId !== object(state.currentLedger)?.versionId) ||
+    (projection.planVersionId !== undefined &&
+      projection.planVersionId !== object(state.currentPlan)?.versionId)
+  ) {
+    throw new TypeError("Validated projection is not bound to accepted state");
+  }
+  if (projection.ledgerVersionId !== undefined) {
+    for (const requirement of projection.requirements ?? []) {
+      database
+        .prepare(
+          `INSERT INTO requirements
+            (ledger_version_id, requirement_id, display_id, status, statement,
+             source_ranges_json, lineage_roots_json, predecessor_ids_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          projection.ledgerVersionId,
+          requirement.requirementId,
+          requirement.displayId,
+          requirement.status,
+          requirement.statement,
+          canonicalJson(requirement.sourceRanges),
+          canonicalJson(requirement.lineageRoots),
+          canonicalJson(requirement.predecessorIds),
+        );
+    }
+  }
+  if (projection.planVersionId !== undefined) {
+    for (const section of projection.planSections ?? []) {
+      database
+        .prepare(
+          `INSERT INTO plan_sections
+            (plan_version_id, section_id, kind, title, normalized_hash,
+             component_ids_json, requirement_ids_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          projection.planVersionId,
+          section.sectionId,
+          section.kind,
+          section.title,
+          section.normalizedHash,
+          canonicalJson(section.componentIds),
+          canonicalJson(section.requirementIds),
+        );
+    }
+    for (const transition of projection.sectionTransitions ?? []) {
+      database
+        .prepare(
+          `INSERT INTO section_transitions
+            (section_transition_id, plan_version_id, kind, from_ids_json,
+             to_ids_json, reason)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          transition.transitionId,
+          projection.planVersionId,
+          transition.kind,
+          canonicalJson(transition.fromIds),
+          canonicalJson(transition.toIds),
+          transition.reason,
+        );
+    }
+  }
+  for (const fingerprint of projection.findingFingerprints ?? []) {
+    database
+      .prepare(
+        `INSERT INTO finding_fingerprints
+          (finding_id, fingerprint, policy_hash, created_at)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(
+        fingerprint.findingId,
+        fingerprint.fingerprint,
+        fingerprint.policyHash,
+        recordedAt,
+      );
+  }
+  for (const association of projection.observationAssociations ?? []) {
+    const updated = database
+      .prepare(
+        `UPDATE observations
+         SET component_ids_json = ?, requirement_ids_json = ?
+         WHERE observation_id = ?`,
+      )
+      .run(
+        canonicalJson(association.componentIds),
+        canonicalJson(association.requirementIds),
+        association.observationId,
+      );
+    if (updated.changes !== 1) {
+      throw new TypeError(
+        "Observation association targets an unknown observation",
+      );
+    }
+  }
 }
