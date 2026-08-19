@@ -22,6 +22,19 @@ export class ProviderTransportError extends Error {
   }
 }
 
+export class ProviderCredentialError extends Error {
+  constructor(
+    readonly reference: string,
+    options?: ErrorOptions,
+  ) {
+    super(
+      `Provider credential reference is unavailable: ${reference}`,
+      options,
+    );
+    this.name = "ProviderCredentialError";
+  }
+}
+
 type FetchLike = (
   input: string | URL | Request,
   init?: RequestInit,
@@ -46,13 +59,28 @@ export class FetchHttpTransport implements HttpTransport {
     }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), request.timeoutMs);
+    let preparedRequest: Request;
     try {
-      const response = await this.fetchImplementation(request.url, {
+      const url = new URL(request.url);
+      if (url.protocol !== "https:")
+        throw new TypeError("Provider URL must use HTTPS");
+      preparedRequest = new Request(url, {
         method: "POST",
         headers: request.headers,
         body: Buffer.from(request.body),
         signal: controller.signal,
       });
+    } catch (error) {
+      clearTimeout(timeout);
+      throw new ProviderTransportError(
+        "Provider request could not be constructed",
+        false,
+        false,
+        { cause: error },
+      );
+    }
+    try {
+      const response = await this.fetchImplementation(preparedRequest);
       return {
         status: response.status,
         headers: Object.fromEntries(response.headers.entries()),
@@ -60,11 +88,13 @@ export class FetchHttpTransport implements HttpTransport {
       };
     } catch (error) {
       if (error instanceof ProviderTransportError) throw error;
+      const dispatched =
+        controller.signal.aborted || !preDispatchFailure(error);
       throw new ProviderTransportError(
-        controller.signal.aborted
-          ? "Provider request timed out after dispatch"
-          : "Provider request failed after dispatch",
-        true,
+        dispatched
+          ? "Provider request outcome is unknown after dispatch"
+          : "Provider connection failed before dispatch",
+        dispatched,
         true,
         { cause: error },
       );
@@ -77,7 +107,34 @@ export class FetchHttpTransport implements HttpTransport {
 export type CredentialResolutionDependencies = {
   environment?: NodeJS.ProcessEnv;
   readOsCredential?: (reference: string) => Promise<string>;
+  platform?: NodeJS.Platform;
 };
+
+const preDispatchCodes = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "CERT_HAS_EXPIRED",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+]);
+
+function preDispatchFailure(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (current === null || typeof current !== "object") return false;
+    const candidate = current as { code?: unknown; cause?: unknown };
+    if (
+      typeof candidate.code === "string" &&
+      preDispatchCodes.has(candidate.code)
+    )
+      return true;
+    current = candidate.cause;
+  }
+  return false;
+}
 
 async function readMacOsCredential(reference: string): Promise<string> {
   const { stdout } = await execFileAsync(
@@ -85,23 +142,47 @@ async function readMacOsCredential(reference: string): Promise<string> {
     ["find-generic-password", "-s", reference, "-w"],
     { encoding: "utf8", maxBuffer: 64 * 1024 },
   );
-  return stdout.trim();
+  return stdout.replace(/\r?\n$/u, "");
+}
+
+async function readLinuxCredential(reference: string): Promise<string> {
+  const { stdout } = await execFileAsync(
+    "secret-tool",
+    ["lookup", "service", reference],
+    { encoding: "utf8", maxBuffer: 64 * 1024 },
+  );
+  return stdout.replace(/\r?\n$/u, "");
+}
+
+function defaultOsCredentialReader(platform: NodeJS.Platform) {
+  if (platform === "darwin") return readMacOsCredential;
+  if (platform === "linux") return readLinuxCredential;
+  return (reference: string): Promise<string> =>
+    Promise.reject(new ProviderCredentialError(reference));
 }
 
 export async function resolveProviderCredential(
   reference: CredentialReference,
   dependencies: CredentialResolutionDependencies = {},
 ): Promise<string> {
-  const value =
-    reference.kind === "environment"
-      ? (dependencies.environment ?? process.env)[reference.reference]
-      : await (dependencies.readOsCredential ?? readMacOsCredential)(
-          reference.reference,
-        );
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(
-      `Provider credential reference is unavailable: ${reference.reference}`,
-    );
+  let value: string | undefined;
+  try {
+    value =
+      reference.kind === "environment"
+        ? (dependencies.environment ?? process.env)[reference.reference]
+        : (
+            await (
+              dependencies.readOsCredential ??
+              defaultOsCredentialReader(
+                dependencies.platform ?? process.platform,
+              )
+            )(reference.reference)
+          ).replace(/\r?\n$/u, "");
+  } catch (error) {
+    if (error instanceof ProviderCredentialError) throw error;
+    throw new ProviderCredentialError(reference.reference, { cause: error });
   }
-  return value.trim();
+  if (typeof value !== "string" || value.trim().length === 0)
+    throw new ProviderCredentialError(reference.reference);
+  return value;
 }

@@ -7,17 +7,14 @@ import {
 
 describe("provider runtime", () => {
   it("sends exact request bytes and preserves response bytes and headers", async () => {
-    const fetchImplementation = vi.fn((_url, init?: RequestInit) => {
-      expect(init?.method).toBe("POST");
-      expect(Buffer.from(init?.body as Uint8Array).toString("utf8")).toBe(
-        '{"request":true}',
-      );
-      return Promise.resolve(
-        new Response('{"response":true}', {
-          status: 201,
-          headers: { "x-request-id": "provider-request-1" },
-        }),
-      );
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL) => {
+      const request = input as Request;
+      expect(request.method).toBe("POST");
+      expect(await request.text()).toBe('{"request":true}');
+      return new Response('{"response":true}', {
+        status: 201,
+        headers: { "x-request-id": "provider-request-1" },
+      });
     });
     const transport = new FetchHttpTransport(fetchImplementation);
     const response = await transport.send({
@@ -36,9 +33,9 @@ describe("provider runtime", () => {
   it("classifies a timeout after fetch starts as an ambiguous dispatched failure", async () => {
     const transport = new FetchHttpTransport(
       vi.fn(
-        (_url, init?: RequestInit) =>
+        (input: RequestInfo | URL) =>
           new Promise<Response>((_resolve, reject) => {
-            init?.signal?.addEventListener("abort", () =>
+            (input as Request).signal.addEventListener("abort", () =>
               reject(new DOMException("aborted", "AbortError")),
             );
           }),
@@ -80,7 +77,7 @@ describe("provider runtime", () => {
         { kind: "environment", reference: "PROVIDER_TOKEN" },
         { environment: { PROVIDER_TOKEN: "  secret-from-env  " } },
       ),
-    ).resolves.toBe("secret-from-env");
+    ).resolves.toBe("  secret-from-env  ");
     const readOsCredential = vi.fn(() =>
       Promise.resolve("secret-from-store\n"),
     );
@@ -106,5 +103,35 @@ describe("provider runtime", () => {
         { environment: { OTHER_SECRET: "must-not-leak" } },
       ),
     ).rejects.not.toThrow("must-not-leak");
+  });
+
+  it.each(["ENOTFOUND", "ECONNREFUSED", "CERT_HAS_EXPIRED"])(
+    "classifies %s as a retryable pre-dispatch connection failure",
+    async (code) => {
+      const cause = Object.assign(new Error("connect failed"), { code });
+      const transport = new FetchHttpTransport(
+        vi.fn(() => Promise.reject(new TypeError("fetch failed", { cause }))),
+      );
+      await expect(
+        transport.send({
+          url: "https://provider.example/v1/generate",
+          headers: {},
+          body: new Uint8Array(),
+          timeoutMs: 100,
+        }),
+      ).rejects.toMatchObject({ dispatched: false, retryable: true });
+    },
+  );
+
+  it("rejects unsupported credential-store platforms with a stable secret-safe error", async () => {
+    await expect(
+      resolveProviderCredential(
+        { kind: "os_credential_store", reference: "factory/provider" },
+        { platform: "win32" },
+      ),
+    ).rejects.toMatchObject({
+      name: "ProviderCredentialError",
+      reference: "factory/provider",
+    });
   });
 });
