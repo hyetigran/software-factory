@@ -510,6 +510,24 @@ function providerOutcomeFailedInput(): ProviderOutcomeFailed {
     failedCommandId: "command_generate_plan_01JTEST",
     failedPurposeId: "purpose_plan_01JTEST",
     retryRepairExhausted: true,
+    failureClassification: "invalid_output",
+    terminalPolicyDecision: "halt",
+    terminalPolicyDecisionArtifact: {
+      artifactId: "artifact_terminal_policy_decision_01JTEST",
+      contentHash: "4".repeat(64),
+      verified: true,
+    },
+    budgetReportArtifact: {
+      artifactId: "artifact_budget_report_01JTEST",
+      contentHash: "3".repeat(64),
+      verified: true,
+    },
+    recoveryBounds: {
+      retryLimit: 2,
+      repairLimit: 1,
+      retriesUsed: 2,
+      repairsUsed: 1,
+    },
     outcomeArtifact: {
       artifactId: "artifact_provider_failure_01JTEST",
       contentHash: "9".repeat(64),
@@ -2897,12 +2915,29 @@ describe("transition", () => {
 
     expect(result.nextState.state).toBe("halted");
     expect(result.commands).toEqual([
-      expect.objectContaining({ commandType: "export_terminal_report" }),
+      expect.objectContaining({ commandType: "export_terminal" }),
     ]);
     expect(result.auditFacts.map(({ type }) => type)).toEqual([
       "run_halted",
       "command_planned",
     ]);
+    const command = result.commands[0];
+    expect(command.payload).toEqual(
+      expect.objectContaining({
+        policyHash,
+        plannerAssignment: configuredPlannerAssignment,
+        reviewerAssignment: configuredReviewerAssignment,
+        budgetReportArtifactId: "artifact_budget_report_01JTEST",
+        recoveryBounds: providerOutcomeFailedInput().recoveryBounds,
+        outcome: "halted",
+      }),
+    );
+    expect(result.auditFacts[0].payload).toEqual(
+      expect.objectContaining({
+        bounds: providerOutcomeFailedInput().recoveryBounds,
+        manifest: { producedByCommandId: "command_terminal_report_01JTEST" },
+      }),
+    );
   });
 
   it("halts baseline review against its exact active review command", () => {
@@ -2926,11 +2961,38 @@ describe("transition", () => {
     );
   });
 
-  it("rejects provider failure before retry and repair bounds are exhausted", () => {
+  it("halts a policy-terminal planning refusal without schema repair", () => {
+    const result = transition(
+      planningState(),
+      {
+        ...providerOutcomeFailedInput(),
+        retryRepairExhausted: false,
+        failureClassification: "refusal",
+        recoveryBounds: {
+          retryLimit: 2,
+          repairLimit: 1,
+          retriesUsed: 0,
+          repairsUsed: 0,
+        },
+      },
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.state).toBe("halted");
+  });
+
+  it("rejects baseline failure before retry and repair bounds are exhausted", () => {
     expect(() =>
       transition(
-        planningState(),
-        { ...providerOutcomeFailedInput(), retryRepairExhausted: false },
+        baselineReviewState(),
+        {
+          ...providerOutcomeFailedInput(),
+          expectedStateVersion: 6,
+          failedCommandId: "command_baseline_review_01JTEST",
+          failedPurposeId:
+            "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
+          retryRepairExhausted: false,
+        },
         pinnedPolicy,
       ),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));

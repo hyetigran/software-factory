@@ -470,6 +470,17 @@ export type ProviderOutcomeFailed = {
   failedCommandId: string;
   failedPurposeId: string;
   retryRepairExhausted: boolean;
+  failureClassification:
+    "refusal" | "invalid_output" | "transport" | "provider_error" | "budget";
+  terminalPolicyDecision: "halt";
+  terminalPolicyDecisionArtifact: VerifiedArtifactInput;
+  budgetReportArtifact: VerifiedArtifactInput;
+  recoveryBounds: {
+    retryLimit: number;
+    repairLimit: number;
+    retriesUsed: number;
+    repairsUsed: number;
+  };
   outcomeArtifact: VerifiedArtifactInput;
   diagnosticArtifact: VerifiedArtifactInput;
   attemptIds: string[];
@@ -693,10 +704,10 @@ export type ClosureReview = {
   };
 };
 
-export type ExportTerminalReport = {
+export type ExportTerminal = {
   commandId: string;
   commandKey: string;
-  commandType: "export_terminal_report";
+  commandType: "export_terminal";
   schemaVersion: 1;
   runId: string;
   triggeringStateVersion: number;
@@ -709,9 +720,23 @@ export type ExportTerminalReport = {
     haltedFrom: NonterminalRunState["state"];
     reason: string;
     failedCommandId: string;
+    failureClassification: ProviderOutcomeFailed["failureClassification"];
     attemptIds: string[];
     evidenceArtifactIds: string[];
     unresolvedFindingIds: string[];
+    sourceArtifactId: string;
+    configurationArtifactId: string;
+    ledgerArtifactId: string | null;
+    planArtifactId: string | null;
+    policyHash: string;
+    plannerAssignment: ProviderModelAssignment;
+    reviewerAssignment: ProviderModelAssignment;
+    budgetReportArtifactId: string;
+    recoveryBounds: ProviderOutcomeFailed["recoveryBounds"];
+    independence: ActiveReview["independence"] | null;
+    lineageArtifactIds: string[];
+    waiverIds: string[];
+    outcome: "halted";
   };
 };
 
@@ -758,7 +783,7 @@ export type CommandPlannedFact = {
       | "baseline_review"
       | "generate_remediation"
       | "closure_review"
-      | "export_terminal_report";
+      | "export_terminal";
     reservation: BudgetReservation;
   };
 };
@@ -891,8 +916,11 @@ export type RunHaltedFact = {
     haltedFrom: NonterminalRunState["state"];
     failedCommandId: string;
     failedPurposeId: string;
+    failureClassification: ProviderOutcomeFailed["failureClassification"];
     attemptIds: string[];
     unresolvedFindingIds: string[];
+    bounds: ProviderOutcomeFailed["recoveryBounds"];
+    manifest: { producedByCommandId: string };
   };
 };
 
@@ -940,7 +968,7 @@ export type TransitionResult = {
 
 export type TerminalTransitionResult = {
   nextState: HaltedRunState;
-  commands: [ExportTerminalReport];
+  commands: [ExportTerminal];
   auditFacts: [RunHaltedFact, CommandPlannedFact];
 };
 
@@ -950,7 +978,7 @@ type LocalCommand =
   | RenderLedger
   | RenderLedgerApproval
   | RenderPlan
-  | ExportTerminalReport;
+  | ExportTerminal;
 
 type PlannedCommand =
   | LocalCommand
@@ -2641,11 +2669,35 @@ function haltAfterProviderFailure(
         };
   const attemptsUnique =
     new Set(input.attemptIds).size === input.attemptIds.length;
+  const bounds = input.recoveryBounds;
+  const boundsValid =
+    [
+      bounds.retryLimit,
+      bounds.repairLimit,
+      bounds.retriesUsed,
+      bounds.repairsUsed,
+    ].every((value) => Number.isInteger(value) && value >= 0) &&
+    (previousState.state === "planning" ||
+      (bounds.retriesUsed >= bounds.retryLimit &&
+        bounds.repairsUsed >= bounds.repairLimit));
+  const classificationValid = [
+    "refusal",
+    "invalid_output",
+    "transport",
+    "provider_error",
+    "budget",
+  ].includes(input.failureClassification);
   if (
     input.expectedStateVersion !== previousState.stateVersion ||
     input.failedCommandId !== activeCommand.commandId ||
     input.failedPurposeId !== activeCommand.purposeId ||
-    !input.retryRepairExhausted ||
+    (previousState.state === "baseline_review" &&
+      !input.retryRepairExhausted) ||
+    input.terminalPolicyDecision !== "halt" ||
+    !classificationValid ||
+    !boundsValid ||
+    !verifiedArtifactInputIsValid(input.terminalPolicyDecisionArtifact) ||
+    !verifiedArtifactInputIsValid(input.budgetReportArtifact) ||
     !verifiedArtifactInputIsValid(input.outcomeArtifact) ||
     !verifiedArtifactInputIsValid(input.diagnosticArtifact) ||
     input.outcomeArtifact.artifactId === input.diagnosticArtifact.artifactId ||
@@ -2668,7 +2720,19 @@ function haltAfterProviderFailure(
   }
 
   const nextStateVersion = previousState.stateVersion + 1;
-  const failureEvidence = [
+  const coreEvidence = [
+    artifactEvidence(
+      previousState.sourceArtifactId,
+      previousState.sourceContentHash,
+    ),
+    artifactEvidence(
+      previousState.configurationArtifactId,
+      previousState.configurationContentHash,
+    ),
+    artifactEvidence(
+      previousState.currentLedger.artifactId,
+      previousState.currentLedger.contentHash,
+    ),
     artifactEvidence(
       input.outcomeArtifact.artifactId,
       input.outcomeArtifact.contentHash,
@@ -2677,34 +2741,86 @@ function haltAfterProviderFailure(
       input.diagnosticArtifact.artifactId,
       input.diagnosticArtifact.contentHash,
     ),
+    artifactEvidence(
+      input.terminalPolicyDecisionArtifact.artifactId,
+      input.terminalPolicyDecisionArtifact.contentHash,
+    ),
+    artifactEvidence(
+      input.budgetReportArtifact.artifactId,
+      input.budgetReportArtifact.contentHash,
+    ),
   ];
+  const planEvidence =
+    previousState.state === "baseline_review"
+      ? [
+          artifactEvidence(
+            previousState.currentPlan.artifactId,
+            previousState.currentPlan.contentHash,
+          ),
+          artifactEvidence(
+            previousState.currentPlan.sectionTransitionMap.artifactId,
+            previousState.currentPlan.sectionTransitionMap.contentHash,
+          ),
+          artifactEvidence(
+            previousState.currentPlan.provenance.artifactId,
+            previousState.currentPlan.provenance.contentHash,
+          ),
+          ...previousState.reviewContext.evidence,
+        ]
+      : [];
+  const failureEvidence = [
+    ...coreEvidence,
+    ...previousState.downstreamQualification.artifacts,
+    ...planEvidence,
+  ];
+  const independence: ActiveReview["independence"] =
+    previousState.state === "baseline_review"
+      ? previousState.activeReview.independence
+      : previousState.reviewIndependenceOverride === undefined
+        ? { reduced: false }
+        : {
+            reduced: true,
+            overrideEvidence: previousState.reviewIndependenceOverride.evidence,
+          };
   const unresolvedFindingIds: string[] = [];
-  const command = planCommand<ExportTerminalReport>(
-    input.terminalReportCommandId,
-    {
-      commandType: "export_terminal_report",
-      schemaVersion: 1,
-      runId: input.runId,
-      triggeringStateVersion: nextStateVersion,
-      purposeId: `${input.runId}:terminal-report:${nextStateVersion}`,
-      inputArtifactHashes: failureEvidence.map(
-        ({ contentHash }) => contentHash,
-      ),
+  const command = planCommand<ExportTerminal>(input.terminalReportCommandId, {
+    commandType: "export_terminal",
+    schemaVersion: 1,
+    runId: input.runId,
+    triggeringStateVersion: nextStateVersion,
+    purposeId: `${input.runId}:terminal-report:${nextStateVersion}`,
+    inputArtifactHashes: failureEvidence.map(({ contentHash }) => contentHash),
+    policyHash: policy.policyHash,
+    provider: "local",
+    budgetReservation: zeroBudgetReservation(),
+    payload: {
+      haltedFrom: previousState.state,
+      reason: input.reason,
+      failedCommandId: input.failedCommandId,
+      failureClassification: input.failureClassification,
+      attemptIds: input.attemptIds,
+      evidenceArtifactIds: failureEvidence.map(({ artifactId }) => artifactId),
+      unresolvedFindingIds,
+      sourceArtifactId: previousState.sourceArtifactId,
+      configurationArtifactId: previousState.configurationArtifactId,
+      ledgerArtifactId: previousState.currentLedger.artifactId,
+      planArtifactId:
+        previousState.state === "baseline_review"
+          ? previousState.currentPlan.artifactId
+          : null,
       policyHash: policy.policyHash,
-      provider: "local",
-      budgetReservation: zeroBudgetReservation(),
-      payload: {
-        haltedFrom: previousState.state,
-        reason: input.reason,
-        failedCommandId: input.failedCommandId,
-        attemptIds: input.attemptIds,
-        evidenceArtifactIds: failureEvidence.map(
-          ({ artifactId }) => artifactId,
-        ),
-        unresolvedFindingIds,
-      },
+      plannerAssignment: policy.plannerAssignment,
+      reviewerAssignment: policy.reviewerAssignment,
+      budgetReportArtifactId: input.budgetReportArtifact.artifactId,
+      recoveryBounds: bounds,
+      independence,
+      lineageArtifactIds: previousState.downstreamQualification.artifacts.map(
+        ({ artifactId }) => artifactId,
+      ),
+      waiverIds: [],
+      outcome: "halted",
     },
-  );
+  });
 
   return {
     nextState: {
@@ -2728,8 +2844,11 @@ function haltAfterProviderFailure(
           haltedFrom: previousState.state,
           failedCommandId: input.failedCommandId,
           failedPurposeId: input.failedPurposeId,
+          failureClassification: input.failureClassification,
           attemptIds: input.attemptIds,
           unresolvedFindingIds,
+          bounds,
+          manifest: { producedByCommandId: command.commandId },
         },
       },
       commandPlannedFact(
