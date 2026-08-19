@@ -13,10 +13,12 @@ const configuration: ResolvedConfigurationSnapshot = {
   plannerAssignment: { provider: "openai", modelId: "planner" },
   reviewerAssignment: { provider: "anthropic", modelId: "reviewer" },
   artifactHashes: {
+    runConfigurationSchema: "0".repeat(64),
     requirementsSchema: "1".repeat(64),
     artifactSchema: "2".repeat(64),
     planSchema: "3".repeat(64),
     reviewSchema: "4".repeat(64),
+    terminalManifestSchema: "0".repeat(64),
     taxonomy: "5".repeat(64),
     componentRegistry: "6".repeat(64),
     plannerPrompt: "7".repeat(64),
@@ -25,6 +27,9 @@ const configuration: ResolvedConfigurationSnapshot = {
     remediationSchema: "b".repeat(64),
     schemaRepairPrompt: "c".repeat(64),
     reviewPolicy: "9".repeat(64),
+    frontierAllowlist: "0".repeat(64),
+    budgetDefaults: "0".repeat(64),
+    productDefaults: "0".repeat(64),
   },
   providerRequestSettings: {
     planner: { timeoutMs: 30_000, reasoning: null },
@@ -32,6 +37,8 @@ const configuration: ResolvedConfigurationSnapshot = {
     remediation: { timeoutMs: 30_000, reasoning: null },
     schemaRepair: { timeoutMs: 30_000, reasoning: null },
   },
+  recordingMode: "record",
+  humanActorDisplayName: "Test User",
   providerStorage: "minimize",
   hardCeilings: {
     calls: 4,

@@ -19,7 +19,9 @@ export type ArtifactKind = (typeof artifactKinds)[number];
 
 export type ArtifactProvenance =
   | { method: "copied"; sourcePath: string }
+  | { method: "packaged"; packagePath: string; packageVersion: string }
   | { method: "human_submitted"; sourceArtifactIds?: string[] }
+  | { method: "resolved_configuration"; sourceArtifactIds: string[] }
   | {
       method: "provider_generated";
       sourceArtifactIds: string[];
@@ -105,6 +107,17 @@ export function artifactRegistrationIsValid(
         return (
           exactKeys(provenance, ["method", "sourcePath"]) &&
           provenance.sourcePath.trim().length > 0
+        );
+      case "packaged":
+        return (
+          exactKeys(provenance, ["method", "packagePath", "packageVersion"]) &&
+          provenance.packagePath.trim().length > 0 &&
+          provenance.packageVersion.trim().length > 0
+        );
+      case "resolved_configuration":
+        return (
+          exactKeys(provenance, ["method", "sourceArtifactIds"]) &&
+          identifiers(provenance.sourceArtifactIds)
         );
       case "human_submitted":
         return (

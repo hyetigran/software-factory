@@ -53,7 +53,9 @@ function validateNode(value: unknown, schema: Schema, root: Schema): boolean {
     }
     return Object.entries(record).every(([key, nested]) => {
       const child = object(properties[key]);
-      return child === null || validateNode(nested, child, root);
+      if (child !== null) return validateNode(nested, child, root);
+      const additional = object(schema.additionalProperties);
+      return additional === null || validateNode(nested, additional, root);
     });
   }
   if (schema.type === "array") {
@@ -88,6 +90,18 @@ function validateNode(value: unknown, schema: Schema, root: Schema): boolean {
       Number.isInteger(value) &&
       (typeof schema.minimum !== "number" ||
         (value as number) >= schema.minimum)
+    );
+  }
+  if (schema.type === "number") {
+    return (
+      typeof value === "number" &&
+      Number.isFinite(value) &&
+      (typeof schema.minimum !== "number" || value >= schema.minimum) &&
+      (typeof schema.exclusiveMinimum !== "number" ||
+        value > schema.exclusiveMinimum) &&
+      (typeof schema.maximum !== "number" || value <= schema.maximum) &&
+      (typeof schema.exclusiveMaximum !== "number" ||
+        value < schema.exclusiveMaximum)
     );
   }
   return true;

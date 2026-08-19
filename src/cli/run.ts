@@ -18,10 +18,25 @@ type Writer = (line: string) => void;
 type ParsedCommand =
   | { kind: "init"; publicName: "init"; json: boolean; projectRoot: string }
   | {
+      kind: "configure";
+      publicName: "configure";
+      json: boolean;
+      projectRoot: string;
+      configurationPath: string;
+    }
+  | {
       kind: "run_list";
       publicName: "run list";
       json: boolean;
       projectRoot: string;
+    }
+  | {
+      kind: "run_start";
+      publicName: "run start";
+      json: boolean;
+      projectRoot: string;
+      sourcePath: string;
+      configurationArtifactId: string;
     }
   | {
       kind: "run_state";
@@ -53,7 +68,7 @@ type ParsedCommand =
     };
 
 const usage =
-  "Usage: factory init | run list | run status <run-id> | inspect <state|findings|usage|gates> <run-id> | inspect <audit|artifacts> [run-id] [--json] [--project <path>]";
+  "Usage: factory init | configure <run-config.json> | run start <source.md> <configuration-artifact-id> | run list | run status <run-id> | inspect <state|findings|usage|gates> <run-id> | inspect <audit|artifacts> [run-id] [--json] [--project <path>]";
 
 export function runCli(args: string[], write: Writer): number {
   if (args.includes("--version")) {
@@ -109,6 +124,29 @@ function parseArgs(args: string[], cwd: string): ParsedCommand {
   const projectRoot = resolve(project ?? cwd);
   if (positional.length === 1 && positional[0] === "init") {
     return { kind: "init", publicName: "init", json, projectRoot };
+  }
+  if (positional.length === 2 && positional[0] === "configure") {
+    return {
+      kind: "configure",
+      publicName: "configure",
+      json,
+      projectRoot,
+      configurationPath: positional[1] ?? "",
+    };
+  }
+  if (
+    positional.length === 4 &&
+    positional[0] === "run" &&
+    positional[1] === "start"
+  ) {
+    return {
+      kind: "run_start",
+      publicName: "run start",
+      json,
+      projectRoot,
+      sourcePath: positional[2] ?? "",
+      configurationArtifactId: positional[3] ?? "",
+    };
   }
   if (
     positional.length === 2 &&
@@ -259,6 +297,19 @@ export async function runCliAsync(
         );
         return CliExit.success;
       }
+      case "configure": {
+        const configured = await operations.configure(
+          command.projectRoot,
+          command.configurationPath,
+        );
+        writeSuccess(
+          write,
+          command,
+          configured,
+          `Configuration artifact: ${configured.configurationArtifactId}\nPolicy hash: ${configured.policyHash}`,
+        );
+        return CliExit.success;
+      }
       case "run_list": {
         const runs = await operations.listRuns(command.projectRoot);
         writeSuccess(
@@ -273,6 +324,15 @@ export async function runCliAsync(
                 )
                 .join("\n"),
         );
+        return CliExit.success;
+      }
+      case "run_start": {
+        const started = await operations.startRun(
+          command.projectRoot,
+          command.sourcePath,
+          command.configurationArtifactId,
+        );
+        writeSuccess(write, command, started, `Started run ${started.runId}`);
         return CliExit.success;
       }
       case "run_state": {

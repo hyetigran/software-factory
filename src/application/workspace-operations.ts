@@ -122,6 +122,19 @@ export class WorkspaceOperationError extends Error {
 
 export interface WorkspaceOperations {
   initialize(projectRoot: string): Promise<{ workspaceRoot: string }>;
+  configure(
+    projectRoot: string,
+    configurationPath: string,
+  ): Promise<{
+    configurationArtifactId: string;
+    configurationContentHash: string;
+    policyHash: string;
+  }>;
+  startRun(
+    projectRoot: string,
+    sourcePath: string,
+    configurationArtifactId: string,
+  ): Promise<{ runId: string; state: object }>;
   listRuns(projectRoot: string): Promise<RunSummary[]>;
   loadRun(projectRoot: string, runId: string): Promise<object | null>;
   listAudit(projectRoot: string, runId?: string): Promise<AuditSummary[]>;

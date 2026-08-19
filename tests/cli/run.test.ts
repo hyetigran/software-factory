@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtemp, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
+import { createHash } from "node:crypto";
 
 import { CliExit, runCli, runCliAsync } from "../../src/cli/run.js";
 import { createWorkspaceOperations } from "../../src/infrastructure/platform/workspace-operations.js";
@@ -38,6 +39,118 @@ describe("factory executable", () => {
         workspaceRoot: join(projectRoot, ".factory"),
       },
     });
+  });
+
+  it("resolves and registers a pinned run configuration", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "factory-cli-"));
+    const digest = async (path: string) =>
+      createHash("sha256")
+        .update(await readFile(resolve(path)))
+        .digest("hex");
+    const policy = {
+      taxonomy_hash: await digest("config/review-taxonomy.v1.json"),
+      component_registry_hash: await digest(
+        "config/component-registry.v1.json",
+      ),
+      prompt_hashes: {
+        planner: await digest("config/prompts/planner.v1.md"),
+        reviewer: await digest("config/prompts/reviewer.v1.md"),
+        remediation: await digest("config/prompts/remediation.v1.md"),
+        schema_repair: await digest("config/prompts/schema-repair.v1.md"),
+      },
+      schema_hashes: {
+        requirements: await digest(
+          "schemas/requirements-ledger.v1.schema.json",
+        ),
+        artifact: await digest("schemas/artifact.v1.schema.json"),
+        plan: await digest("schemas/plan.v1.schema.json"),
+        review: await digest("schemas/review.v1.schema.json"),
+        remediation: await digest("schemas/plan.v1.schema.json"),
+      },
+      rubric_hash: await digest("config/review-rubric.v1.md"),
+      frontier_allowlist_hash: await digest("config/frontier-models.v1.json"),
+    };
+    const configurationPath = join(projectRoot, "run-config.json");
+    await writeFile(
+      configurationPath,
+      JSON.stringify({
+        schema_version: 1,
+        planner: { provider: "openai", model_id: "gpt-5.6-terra" },
+        reviewer: { provider: "anthropic", model_id: "claude-sonnet-5" },
+        policy,
+        budgets: {
+          max_live_calls: 12,
+          max_physical_attempts: 18,
+          max_schema_repairs_per_command: 2,
+          max_transport_retries_per_command: 2,
+          max_remediation_cycles: 3,
+          max_closure_cycles: 2,
+          max_input_tokens: 1_000_000,
+          max_output_tokens: 150_000,
+          max_cost_usd: 25,
+        },
+        recording_mode: "record",
+        provider_storage: "minimize",
+        human_actor: { display_name: "Test User" },
+      }),
+    );
+    const operations = createWorkspaceOperations();
+    await runCliAsync(["init"], vi.fn(), operations, projectRoot);
+    const lines: string[] = [];
+
+    await expect(
+      runCliAsync(
+        ["configure", "run-config.json", "--json"],
+        (line) => lines.push(line),
+        operations,
+        projectRoot,
+      ),
+    ).resolves.toBe(CliExit.success);
+
+    const configured = JSON.parse(lines[0] ?? "null") as {
+      ok: boolean;
+      command: string;
+      data: {
+        configurationArtifactId: string;
+        configurationContentHash: string;
+        policyHash: string;
+      };
+    };
+    expect(configured.ok).toBe(true);
+    expect(configured.command).toBe("configure");
+    expect(configured.data.configurationArtifactId).toMatch(/^configuration_/u);
+    expect(configured.data.configurationContentHash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(configured.data.policyHash).toMatch(/^[a-f0-9]{64}$/u);
+    await writeFile(
+      join(projectRoot, "requirements.md"),
+      "# Requirements\n\nBuild it safely.\n",
+    );
+    const startLines: string[] = [];
+
+    await expect(
+      runCliAsync(
+        [
+          "run",
+          "start",
+          "requirements.md",
+          configured.data.configurationArtifactId,
+          "--json",
+        ],
+        (line) => startLines.push(line),
+        operations,
+        projectRoot,
+      ),
+    ).resolves.toBe(CliExit.success);
+
+    const started = JSON.parse(startLines[0] ?? "null") as {
+      ok: boolean;
+      command: string;
+      data: { runId: string; state: { state: string } };
+    };
+    expect(started.ok).toBe(true);
+    expect(started.command).toBe("run start");
+    expect(started.data.runId).toMatch(/^run_/u);
+    expect(started.data.state.state).toBe("draft");
   });
 
   it("supports stable JSON run-list and not-found responses", async () => {
@@ -100,6 +213,8 @@ describe("factory executable", () => {
     const listRuns = vi.fn();
     const operations: WorkspaceOperations = {
       initialize: vi.fn(),
+      configure: vi.fn(),
+      startRun: vi.fn(),
       listRuns,
       loadRun: vi.fn(),
       listAudit: vi.fn(),
@@ -151,6 +266,8 @@ describe("factory executable", () => {
     const lines: string[] = [];
     const operations: WorkspaceOperations = {
       initialize: vi.fn(),
+      configure: vi.fn(),
+      startRun: vi.fn(),
       listRuns: vi.fn(),
       loadRun: vi.fn().mockResolvedValue({ runId: "run_1" }),
       listAudit: vi.fn(),
@@ -220,6 +337,8 @@ describe("factory executable", () => {
   ] as const)("supports JSON inspection of %s", async (kind, method, value) => {
     const operations = {
       initialize: vi.fn(),
+      configure: vi.fn(),
+      startRun: vi.fn(),
       listRuns: vi.fn(),
       loadRun: vi.fn(),
       listAudit: vi.fn(),

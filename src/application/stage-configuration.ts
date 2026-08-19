@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { canonicalJson } from "../domain/canonical-json.js";
 import type { ProviderModelAssignment } from "../domain/index.js";
 import type {
@@ -11,10 +13,12 @@ export type CredentialReference =
   | { kind: "os_credential_store"; reference: string };
 
 export type ResolvedArtifactPins = {
+  runConfigurationSchema: string;
   requirementsSchema: string;
   artifactSchema: string;
   planSchema: string;
   reviewSchema: string;
+  terminalManifestSchema: string;
   taxonomy: string;
   componentRegistry: string;
   plannerPrompt: string;
@@ -23,6 +27,9 @@ export type ResolvedArtifactPins = {
   remediationSchema: string;
   schemaRepairPrompt: string;
   reviewPolicy: string;
+  frontierAllowlist: string;
+  budgetDefaults: string;
+  productDefaults: string;
 };
 
 export type ProviderRequestSettings = {
@@ -56,10 +63,20 @@ export type ResolvedConfigurationSnapshot = {
   reviewerAssignment: ProviderModelAssignment;
   artifactHashes: ResolvedArtifactPins;
   providerRequestSettings: ResolvedProviderRequestSettings;
+  recordingMode: "record" | "strict_replay";
+  humanActorDisplayName: string;
   providerStorage: "minimize";
   hardCeilings: HardCeilings;
   credentialReferences: Record<string, CredentialReference>;
 };
+
+export function resolvedConfigurationPolicyHash(
+  value: ResolvedConfigurationSnapshot,
+): string {
+  const identity = structuredClone(value);
+  identity.policyHash = "0".repeat(64);
+  return createHash("sha256").update(canonicalJson(identity)).digest("hex");
+}
 
 const allowedKeys = new Set([
   "schemaVersion",
@@ -68,6 +85,8 @@ const allowedKeys = new Set([
   "reviewerAssignment",
   "artifactHashes",
   "providerRequestSettings",
+  "recordingMode",
+  "humanActorDisplayName",
   "providerStorage",
   "hardCeilings",
   "credentialReferences",
@@ -132,10 +151,12 @@ export function resolvedConfigurationIsValid(
     hasExactKeys(value.reviewerAssignment, ["provider", "modelId"]) &&
     assignmentIsValid(value.reviewerAssignment) &&
     hasExactKeys(value.artifactHashes, [
+      "runConfigurationSchema",
       "requirementsSchema",
       "artifactSchema",
       "planSchema",
       "reviewSchema",
+      "terminalManifestSchema",
       "taxonomy",
       "componentRegistry",
       "plannerPrompt",
@@ -144,6 +165,9 @@ export function resolvedConfigurationIsValid(
       "remediationSchema",
       "schemaRepairPrompt",
       "reviewPolicy",
+      "frontierAllowlist",
+      "budgetDefaults",
+      "productDefaults",
     ]) &&
     Object.values(value.artifactHashes).every((hash) =>
       /^[a-f0-9]{64}$/u.test(hash),
@@ -163,6 +187,9 @@ export function resolvedConfigurationIsValid(
           (typeof settings.reasoning === "string" &&
             settings.reasoning.trim().length > 0)),
     ) &&
+    (value.recordingMode === "record" ||
+      value.recordingMode === "strict_replay") &&
+    value.humanActorDisplayName.trim().length > 0 &&
     value.providerStorage === "minimize" &&
     hasExactKeys(value.hardCeilings, [
       "calls",

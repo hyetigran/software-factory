@@ -170,10 +170,12 @@ describe("workspace and content-addressed artifact store", () => {
         modelId: "claude-pinned",
       },
       artifactHashes: {
+        runConfigurationSchema: "0".repeat(64),
         requirementsSchema: "b".repeat(64),
         artifactSchema: "c".repeat(64),
         planSchema: "d".repeat(64),
         reviewSchema: "e".repeat(64),
+        terminalManifestSchema: "0".repeat(64),
         taxonomy: "f".repeat(64),
         componentRegistry: "1".repeat(64),
         plannerPrompt: "2".repeat(64),
@@ -182,6 +184,9 @@ describe("workspace and content-addressed artifact store", () => {
         remediationSchema: "6".repeat(64),
         schemaRepairPrompt: "7".repeat(64),
         reviewPolicy: "4".repeat(64),
+        frontierAllowlist: "0".repeat(64),
+        budgetDefaults: "0".repeat(64),
+        productDefaults: "0".repeat(64),
       },
       providerRequestSettings: {
         planner: { timeoutMs: 30_000, reasoning: null },
@@ -189,6 +194,8 @@ describe("workspace and content-addressed artifact store", () => {
         remediation: { timeoutMs: 30_000, reasoning: null },
         schemaRepair: { timeoutMs: 30_000, reasoning: null },
       },
+      recordingMode: "record" as const,
+      humanActorDisplayName: "Test User",
       providerStorage: "minimize" as const,
       hardCeilings: {
         calls: 4,
