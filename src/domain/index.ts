@@ -142,6 +142,9 @@ export type LedgerApprovalRequested = {
   type: "LedgerApprovalRequested";
   runId: string;
   expectedStateVersion: number;
+  validatedStateVersion: number;
+  validatedLedgerVersionId: string;
+  validatedLedgerContentHash: string;
   ledgerSchemaValid: boolean;
   lineageValid: boolean;
   identityValid: boolean;
@@ -236,6 +239,7 @@ export type RenderLedgerApproval = {
     ledgerVersionId: string;
     ledgerArtifactId: string;
     coverageReportArtifactId: string;
+    coverageValidatedStateVersion: number;
     approvalGateId: string;
     sourceExclusions: SourceExclusion[];
     approvedBy: HumanActor;
@@ -329,6 +333,7 @@ export type LedgerApprovedFact = {
     ledgerVersionId: string;
     coverageReportArtifactId: string;
     coverageReportContentHash: string;
+    coverageValidatedStateVersion: number;
     approvalGateId: string;
     approvedBy: HumanActor;
   };
@@ -352,6 +357,64 @@ export type TransitionResult = {
     | CommandPlannedFact
   >;
 };
+
+type LocalCommand =
+  | RenderSourceRegistrationReport
+  | ValidateLedger
+  | RenderLedger
+  | RenderLedgerApproval;
+
+function zeroBudgetReservation(): BudgetReservation {
+  return {
+    calls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    costUsdMicros: 0,
+  };
+}
+
+function planLocalCommand<T extends LocalCommand>(
+  commandId: string,
+  commandWithoutIdentity: Omit<T, "commandId" | "commandKey">,
+): T {
+  return {
+    commandId,
+    commandKey: createHash("sha256")
+      .update(canonicalJson(commandWithoutIdentity))
+      .digest("hex"),
+    ...commandWithoutIdentity,
+  } as T;
+}
+
+function artifactEvidence(
+  artifactId: string,
+  contentHash: string,
+): ArtifactEvidenceReference {
+  return { kind: "artifact", artifactId, contentHash };
+}
+
+function commandPlannedFact(
+  command: LocalCommand,
+  reason: string,
+  evidence: ArtifactEvidenceReference[],
+): CommandPlannedFact {
+  return {
+    type: "command_planned",
+    actor: {
+      kind: "system",
+      component: "domain-transition",
+      version: "0.0.0",
+    },
+    reason,
+    evidence,
+    payload: {
+      commandId: command.commandId,
+      commandKey: command.commandKey,
+      commandType: command.commandType,
+      reservation: command.budgetReservation,
+    },
+  };
+}
 
 type DomainTransitionErrorCode = "INVALID_TRANSITION" | "PRECONDITION_FAILED";
 
@@ -420,12 +483,7 @@ function startRun(
     );
   }
 
-  const budgetReservation: BudgetReservation = {
-    calls: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    costUsdMicros: 0,
-  };
+  const budgetReservation = zeroBudgetReservation();
   const commandWithoutIdentity = {
     commandType: "render_source_registration_report" as const,
     schemaVersion: 1 as const,
@@ -443,23 +501,18 @@ function startRun(
       sourceArtifactId: input.sourceArtifactId,
     },
   };
-  const command: RenderSourceRegistrationReport = {
-    commandId: input.renderCommandId,
-    commandKey: createHash("sha256")
-      .update(canonicalJson(commandWithoutIdentity))
-      .digest("hex"),
-    ...commandWithoutIdentity,
-  };
-  const sourceEvidence: ArtifactEvidenceReference = {
-    kind: "artifact",
-    artifactId: input.sourceArtifactId,
-    contentHash: input.sourceContentHash,
-  };
-  const configurationEvidence: ArtifactEvidenceReference = {
-    kind: "artifact",
-    artifactId: input.configurationArtifactId,
-    contentHash: input.configurationContentHash,
-  };
+  const command = planLocalCommand<RenderSourceRegistrationReport>(
+    input.renderCommandId,
+    commandWithoutIdentity,
+  );
+  const sourceEvidence = artifactEvidence(
+    input.sourceArtifactId,
+    input.sourceContentHash,
+  );
+  const configurationEvidence = artifactEvidence(
+    input.configurationArtifactId,
+    input.configurationContentHash,
+  );
 
   return {
     nextState: {
@@ -499,22 +552,11 @@ function startRun(
           sourceArtifactId: input.sourceArtifactId,
         },
       },
-      {
-        type: "command_planned",
-        actor: {
-          kind: "system",
-          component: "domain-transition",
-          version: "0.0.0",
-        },
-        reason: "Plan the deterministic source registration report",
-        evidence: [sourceEvidence],
-        payload: {
-          commandId: command.commandId,
-          commandKey: command.commandKey,
-          commandType: command.commandType,
-          reservation: command.budgetReservation,
-        },
-      },
+      commandPlannedFact(
+        command,
+        "Plan the deterministic source registration report",
+        [sourceEvidence],
+      ),
     ],
   };
 }
@@ -559,12 +601,7 @@ function submitLedger(
     );
   }
 
-  const reservation: BudgetReservation = {
-    calls: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    costUsdMicros: 0,
-  };
+  const reservation = zeroBudgetReservation();
   const nextStateVersion = previousState.stateVersion + 1;
   const validateWithoutIdentity = {
     commandType: "validate_ledger" as const,
@@ -603,30 +640,22 @@ function submitLedger(
       ledgerArtifactId: input.ledgerArtifactId,
     },
   };
-  const validateCommand: ValidateLedger = {
-    commandId: input.validateCommandId,
-    commandKey: createHash("sha256")
-      .update(canonicalJson(validateWithoutIdentity))
-      .digest("hex"),
-    ...validateWithoutIdentity,
-  };
-  const renderCommand: RenderLedger = {
-    commandId: input.renderCommandId,
-    commandKey: createHash("sha256")
-      .update(canonicalJson(renderWithoutIdentity))
-      .digest("hex"),
-    ...renderWithoutIdentity,
-  };
-  const ledgerEvidence: ArtifactEvidenceReference = {
-    kind: "artifact",
-    artifactId: input.ledgerArtifactId,
-    contentHash: input.ledgerContentHash,
-  };
-  const sourceEvidence: ArtifactEvidenceReference = {
-    kind: "artifact",
-    artifactId: previousState.sourceArtifactId,
-    contentHash: previousState.sourceContentHash,
-  };
+  const validateCommand = planLocalCommand<ValidateLedger>(
+    input.validateCommandId,
+    validateWithoutIdentity,
+  );
+  const renderCommand = planLocalCommand<RenderLedger>(
+    input.renderCommandId,
+    renderWithoutIdentity,
+  );
+  const ledgerEvidence = artifactEvidence(
+    input.ledgerArtifactId,
+    input.ledgerContentHash,
+  );
+  const sourceEvidence = artifactEvidence(
+    previousState.sourceArtifactId,
+    previousState.sourceContentHash,
+  );
   const downstreamInvalidatedFact: DownstreamInvalidatedFact | null =
     previousState.state === "draft"
       ? null
@@ -659,24 +688,6 @@ function submitLedger(
             affectedGateIds: previousState.downstreamQualification.gateIds,
           },
         };
-  const commandFact = (
-    command: ValidateLedger | RenderLedger,
-  ): CommandPlannedFact => ({
-    type: "command_planned",
-    actor: {
-      kind: "system",
-      component: "domain-transition",
-      version: "0.0.0",
-    },
-    reason: `Plan ${command.commandType}`,
-    evidence: [ledgerEvidence],
-    payload: {
-      commandId: command.commandId,
-      commandKey: command.commandKey,
-      commandType: command.commandType,
-      reservation: command.budgetReservation,
-    },
-  });
 
   return {
     nextState: {
@@ -716,8 +727,10 @@ function submitLedger(
           contentHash: input.ledgerContentHash,
         },
       },
-      commandFact(validateCommand),
-      commandFact(renderCommand),
+      commandPlannedFact(validateCommand, "Plan validate_ledger", [
+        ledgerEvidence,
+      ]),
+      commandPlannedFact(renderCommand, "Plan render_ledger", [ledgerEvidence]),
     ],
   };
 }
@@ -778,12 +791,7 @@ function approveSourceExclusion(
     sourceExclusion,
   ];
   const nextStateVersion = previousState.stateVersion + 1;
-  const reservation: BudgetReservation = {
-    calls: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    costUsdMicros: 0,
-  };
+  const reservation = zeroBudgetReservation();
   const commandWithoutIdentity = {
     commandType: "validate_ledger" as const,
     schemaVersion: 1 as const,
@@ -804,23 +812,18 @@ function approveSourceExclusion(
       sourceExclusions,
     },
   };
-  const command: ValidateLedger = {
-    commandId: input.validateCommandId,
-    commandKey: createHash("sha256")
-      .update(canonicalJson(commandWithoutIdentity))
-      .digest("hex"),
-    ...commandWithoutIdentity,
-  };
-  const sourceEvidence: ArtifactEvidenceReference = {
-    kind: "artifact",
-    artifactId: previousState.sourceArtifactId,
-    contentHash: previousState.sourceContentHash,
-  };
-  const ledgerEvidence: ArtifactEvidenceReference = {
-    kind: "artifact",
-    artifactId: previousState.currentLedger.artifactId,
-    contentHash: previousState.currentLedger.contentHash,
-  };
+  const command = planLocalCommand<ValidateLedger>(
+    input.validateCommandId,
+    commandWithoutIdentity,
+  );
+  const sourceEvidence = artifactEvidence(
+    previousState.sourceArtifactId,
+    previousState.sourceContentHash,
+  );
+  const ledgerEvidence = artifactEvidence(
+    previousState.currentLedger.artifactId,
+    previousState.currentLedger.contentHash,
+  );
 
   return {
     nextState: {
@@ -842,22 +845,11 @@ function approveSourceExclusion(
         evidence: [sourceEvidence, ledgerEvidence],
         payload: sourceExclusion,
       },
-      {
-        type: "command_planned",
-        actor: {
-          kind: "system",
-          component: "domain-transition",
-          version: "0.0.0",
-        },
-        reason: "Recompute ledger coverage after source exclusion approval",
-        evidence: [sourceEvidence, ledgerEvidence],
-        payload: {
-          commandId: command.commandId,
-          commandKey: command.commandKey,
-          commandType: command.commandType,
-          reservation: command.budgetReservation,
-        },
-      },
+      commandPlannedFact(
+        command,
+        "Recompute ledger coverage after source exclusion approval",
+        [sourceEvidence, ledgerEvidence],
+      ),
     ],
   };
 }
@@ -881,6 +873,10 @@ function approveLedger(
   if (
     previousState.stateVersion !== input.expectedStateVersion ||
     previousState.currentLedger === undefined ||
+    input.validatedStateVersion !== previousState.stateVersion ||
+    input.validatedLedgerVersionId !== previousState.currentLedger.versionId ||
+    input.validatedLedgerContentHash !==
+      previousState.currentLedger.contentHash ||
     (previousState.policyLocked &&
       previousState.policyHash !== policy.policyHash) ||
     !input.ledgerSchemaValid ||
@@ -888,7 +884,11 @@ function approveLedger(
     !input.identityValid ||
     !input.coverageComplete ||
     !input.coverageReportVerified ||
-    input.approvalGateId.length === 0 ||
+    typeof input.coverageReportArtifactId !== "string" ||
+    input.coverageReportArtifactId.trim().length === 0 ||
+    typeof input.coverageReportContentHash !== "string" ||
+    !/^[0-9a-f]{64}$/.test(input.coverageReportContentHash) ||
+    input.approvalGateId.trim().length === 0 ||
     !input.auditChainVerified ||
     !input.databaseIntegrityVerified ||
     !input.schemaCompatible ||
@@ -906,12 +906,7 @@ function approveLedger(
   }
 
   const nextStateVersion = previousState.stateVersion + 1;
-  const reservation: BudgetReservation = {
-    calls: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    costUsdMicros: 0,
-  };
+  const reservation = zeroBudgetReservation();
   const sourceExclusions = previousState.sourceExclusions ?? [];
   const commandWithoutIdentity = {
     commandType: "render_ledger_approval" as const,
@@ -931,33 +926,28 @@ function approveLedger(
       ledgerVersionId: previousState.currentLedger.versionId,
       ledgerArtifactId: previousState.currentLedger.artifactId,
       coverageReportArtifactId: input.coverageReportArtifactId,
+      coverageValidatedStateVersion: input.validatedStateVersion,
       approvalGateId: input.approvalGateId,
       sourceExclusions,
       approvedBy: input.actor,
     },
   };
-  const command: RenderLedgerApproval = {
-    commandId: input.renderCommandId,
-    commandKey: createHash("sha256")
-      .update(canonicalJson(commandWithoutIdentity))
-      .digest("hex"),
-    ...commandWithoutIdentity,
-  };
-  const ledgerEvidence: ArtifactEvidenceReference = {
-    kind: "artifact",
-    artifactId: previousState.currentLedger.artifactId,
-    contentHash: previousState.currentLedger.contentHash,
-  };
-  const coverageEvidence: ArtifactEvidenceReference = {
-    kind: "artifact",
-    artifactId: input.coverageReportArtifactId,
-    contentHash: input.coverageReportContentHash,
-  };
-  const sourceEvidence: ArtifactEvidenceReference = {
-    kind: "artifact",
-    artifactId: previousState.sourceArtifactId,
-    contentHash: previousState.sourceContentHash,
-  };
+  const command = planLocalCommand<RenderLedgerApproval>(
+    input.renderCommandId,
+    commandWithoutIdentity,
+  );
+  const ledgerEvidence = artifactEvidence(
+    previousState.currentLedger.artifactId,
+    previousState.currentLedger.contentHash,
+  );
+  const coverageEvidence = artifactEvidence(
+    input.coverageReportArtifactId,
+    input.coverageReportContentHash,
+  );
+  const sourceEvidence = artifactEvidence(
+    previousState.sourceArtifactId,
+    previousState.sourceContentHash,
+  );
 
   return {
     nextState: {
@@ -985,26 +975,16 @@ function approveLedger(
           ledgerVersionId: previousState.currentLedger.versionId,
           coverageReportArtifactId: input.coverageReportArtifactId,
           coverageReportContentHash: input.coverageReportContentHash,
+          coverageValidatedStateVersion: input.validatedStateVersion,
           approvalGateId: input.approvalGateId,
           approvedBy: input.actor,
         },
       },
-      {
-        type: "command_planned",
-        actor: {
-          kind: "system",
-          component: "domain-transition",
-          version: "0.0.0",
-        },
-        reason: "Render ledger approval evidence",
-        evidence: [ledgerEvidence, coverageEvidence, sourceEvidence],
-        payload: {
-          commandId: command.commandId,
-          commandKey: command.commandKey,
-          commandType: command.commandType,
-          reservation: command.budgetReservation,
-        },
-      },
+      commandPlannedFact(command, "Render ledger approval evidence", [
+        ledgerEvidence,
+        coverageEvidence,
+        sourceEvidence,
+      ]),
     ],
   };
 }

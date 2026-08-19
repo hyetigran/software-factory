@@ -95,6 +95,9 @@ function ledgerApprovalRequestedInput(): LedgerApprovalRequested {
     type: "LedgerApprovalRequested",
     runId: "run_01JTEST0000000000000000000",
     expectedStateVersion: 3,
+    validatedStateVersion: 3,
+    validatedLedgerVersionId: "ledger_01JTEST",
+    validatedLedgerContentHash: ledgerContentHash,
     ledgerSchemaValid: true,
     lineageValid: true,
     identityValid: true,
@@ -1159,7 +1162,7 @@ describe("transition", () => {
       {
         commandId: "command_render_approval_01JTEST",
         commandKey:
-          "035714a21b3a9498c6d7a3f97ce7071ac06fc0052f4bd575e68f4c4b1c04e9b3",
+          "07e06d18282d44fe0093ef47e13250afdecbec706aab6399bdaa72b7faf6f62d",
         commandType: "render_ledger_approval",
         schemaVersion: 1,
         runId: exclusionApproved.runId,
@@ -1182,6 +1185,7 @@ describe("transition", () => {
           ledgerVersionId: "ledger_01JTEST",
           ledgerArtifactId: "artifact_ledger_01JTEST",
           coverageReportArtifactId: "artifact_coverage_01JTEST",
+          coverageValidatedStateVersion: 3,
           approvalGateId: "gate_requirements_approval_01JTEST",
           sourceExclusions: exclusionApproved.sourceExclusions,
           approvedBy: ledgerApprovalRequestedInput().actor,
@@ -1208,6 +1212,7 @@ describe("transition", () => {
         ledgerVersionId: "ledger_01JTEST",
         coverageReportArtifactId: "artifact_coverage_01JTEST",
         coverageReportContentHash,
+        coverageValidatedStateVersion: 3,
         approvalGateId: "gate_requirements_approval_01JTEST",
         approvedBy: ledgerApprovalRequestedInput().actor,
       },
@@ -1240,7 +1245,7 @@ describe("transition", () => {
       payload: {
         commandId: "command_render_approval_01JTEST",
         commandKey:
-          "035714a21b3a9498c6d7a3f97ce7071ac06fc0052f4bd575e68f4c4b1c04e9b3",
+          "07e06d18282d44fe0093ef47e13250afdecbec706aab6399bdaa72b7faf6f62d",
         commandType: "render_ledger_approval",
         reservation: {
           calls: 0,
@@ -1269,6 +1274,14 @@ describe("transition", () => {
     [
       "an unverified coverage report",
       (input) => ({ ...input, coverageReportVerified: false }),
+    ],
+    [
+      "an empty coverage report artifact ID",
+      (input) => ({ ...input, coverageReportArtifactId: "" }),
+    ],
+    [
+      "an invalid coverage report content hash",
+      (input) => ({ ...input, coverageReportContentHash: "not-a-sha256" }),
     ],
     [
       "an empty approval gate ID",
@@ -1432,5 +1445,27 @@ describe("transition", () => {
     expect(result.commands).toEqual([
       expect.objectContaining({ policyHash: revisedPolicyHash }),
     ]);
+  });
+
+  it("rejects coverage evidence produced for an earlier ledger revision", () => {
+    const revision = {
+      ...ledgerSubmittedInput(),
+      expectedStateVersion: 3,
+      ledgerVersionId: "ledger_02JTEST",
+      ledgerArtifactId: "artifact_ledger_02JTEST",
+      validateCommandId: "command_validate_ledger_02JTEST",
+      renderCommandId: "command_render_ledger_02JTEST",
+    };
+    const revised = transition(approvalReadyDraft(), revision, {
+      policyHash,
+    });
+    const staleCoverageApproval = {
+      ...ledgerApprovalRequestedInput(),
+      expectedStateVersion: 4,
+    };
+
+    expect(() =>
+      transition(revised.nextState, staleCoverageApproval, { policyHash }),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 });
