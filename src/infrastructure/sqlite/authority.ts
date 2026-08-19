@@ -31,6 +31,7 @@ import type {
   CompletedCommandAttempt,
   StartedCommandAttempt,
 } from "../../application/execution-port.js";
+import { schemaRepairOverlayFromUnknown } from "../../application/execution-port.js";
 import { commandIsValid } from "../../application/command-validation.js";
 import { artifactRegistrationIsValid } from "../../application/artifact-port.js";
 import { decideAttemptPolicy } from "../../application/attempt-policy.js";
@@ -513,6 +514,10 @@ export class SqliteAuthority
     await this.verifyIntegrity();
     this.database.exec("BEGIN IMMEDIATE");
     try {
+      const schemaRepair =
+        request.schemaRepair === undefined
+          ? undefined
+          : schemaRepairOverlayFromUnknown(request.schemaRepair);
       this.assertWritable();
       this.verifyAuditChain();
       const row = this.database
@@ -740,7 +745,7 @@ export class SqliteAuthority
           acceptedAttemptId: decision.noOpAcceptedAttemptId,
         };
       }
-      const repair = request.schemaRepair;
+      const repair = schemaRepair;
       if (request.attemptKind === "schema_repair") {
         const originalPolicy = command.providerRequestPolicy;
         const registeredRepairPrompt =

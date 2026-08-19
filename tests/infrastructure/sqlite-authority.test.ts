@@ -19,7 +19,10 @@ import type {
 } from "../../src/application/authority-port.js";
 import { ValidatedProjection } from "../../src/application/authority-port.js";
 import { commitTransition } from "../../src/application/commit-transition.js";
-import { ExecutionPolicy } from "../../src/application/execution-port.js";
+import {
+  ExecutionPolicy,
+  type BeginAttemptRequest,
+} from "../../src/application/execution-port.js";
 import type { ResolvedConfigurationSnapshot } from "../../src/application/stage-configuration.js";
 import { canonicalJson } from "../../src/domain/canonical-json.js";
 import {
@@ -407,7 +410,7 @@ describe("SQLite authority", () => {
       .run(attempt.commandId);
     database.prepare("DELETE FROM mutation_lease WHERE singleton = 1").run();
 
-    const repairAttempt = await authority.beginAttempt({
+    const repairAttemptRequest = {
       runId: "run_provider_request",
       commandId: "command_provider",
       attemptId: "attempt_provider_2",
@@ -424,7 +427,17 @@ describe("SQLite authority", () => {
         invalidResponseArtifactId: invalidResponse.artifactId,
         invalidResponseContentHash: invalidResponse.contentHash,
       },
-    });
+    } as const;
+    await expect(
+      authority.beginAttempt({
+        ...repairAttemptRequest,
+        schemaRepair: {
+          ...repairAttemptRequest.schemaRepair,
+          unexpected: "metadata",
+        },
+      } as unknown as BeginAttemptRequest),
+    ).rejects.toThrow("Schema repair policy is invalid");
+    const repairAttempt = await authority.beginAttempt(repairAttemptRequest);
     expect(repairAttempt.status).toBe("started");
     if (repairAttempt.status !== "started") {
       throw new Error("repair attempt must start");
