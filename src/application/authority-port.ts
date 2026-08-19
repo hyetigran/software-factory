@@ -42,7 +42,7 @@ export type PersistTransitionRequest = {
   validatedProjection?: ValidatedProjection;
 };
 
-export type ValidatedProjection = {
+export type ValidatedProjectionData = {
   validator: "deterministic-authority-projection-v1";
   stateVersion: number;
   ledgerVersionId?: string;
@@ -90,6 +90,96 @@ export type ValidatedProjection = {
   }>;
 };
 
+const validatedProjectionBrand = Symbol("ValidatedProjection");
+
+export class ValidatedProjection {
+  readonly [validatedProjectionBrand] = true;
+
+  private constructor(private readonly value: ValidatedProjectionData) {}
+
+  static fromLedgerArtifact(input: {
+    bytes: Uint8Array;
+    contentHash: string;
+    stateVersion: number;
+    ledgerVersionId: string;
+  }): ValidatedProjection {
+    const observedHash = createHash("sha256").update(input.bytes).digest("hex");
+    if (observedHash !== input.contentHash) {
+      throw new TypeError(
+        "Ledger projection hash does not match artifact bytes",
+      );
+    }
+    const parsed: unknown = JSON.parse(
+      Buffer.from(input.bytes).toString("utf8"),
+    );
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed)
+    ) {
+      throw new TypeError("Ledger projection requires a valid ledger object");
+    }
+    const ledger = parsed as Record<string, unknown>;
+    if (
+      ledger.schema_version !== 1 ||
+      ledger.ledger_id !== input.ledgerVersionId ||
+      !Array.isArray(ledger.requirements) ||
+      ledger.requirements.length === 0
+    ) {
+      throw new TypeError("Ledger artifact does not satisfy projection schema");
+    }
+    const requirements = ledger.requirements.map((value) => {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        throw new TypeError("Ledger requirement is invalid");
+      }
+      const requirement = value as Record<string, unknown>;
+      if (
+        typeof requirement.requirement_id !== "string" ||
+        typeof requirement.display_id !== "string" ||
+        typeof requirement.statement !== "string" ||
+        !["active", "removed", "replaced"].includes(
+          String(requirement.status),
+        ) ||
+        !Array.isArray(requirement.source_ranges) ||
+        !Array.isArray(requirement.lineage_roots) ||
+        (requirement.predecessor_ids !== undefined &&
+          !Array.isArray(requirement.predecessor_ids))
+      ) {
+        throw new TypeError("Ledger requirement is invalid");
+      }
+      return {
+        requirementId: requirement.requirement_id,
+        displayId: requirement.display_id,
+        status: requirement.status as "active" | "removed" | "replaced",
+        statement: requirement.statement,
+        sourceRanges: requirement.source_ranges,
+        lineageRoots: requirement.lineage_roots as string[],
+        predecessorIds: (requirement.predecessor_ids ?? []) as string[],
+      };
+    });
+    return new ValidatedProjection({
+      validator: "deterministic-authority-projection-v1",
+      stateVersion: input.stateVersion,
+      ledgerVersionId: input.ledgerVersionId,
+      ledgerContentHash: input.contentHash,
+      schemaValid: true,
+      controlledIdsValid: true,
+      referencesComplete: true,
+      identitiesUnique:
+        new Set(requirements.map(({ requirementId }) => requirementId)).size ===
+        requirements.length,
+      requirements,
+    });
+  }
+
+  toPersistenceData(): ValidatedProjectionData {
+    if (this[validatedProjectionBrand] !== true) {
+      throw new TypeError("Projection validation capability is invalid");
+    }
+    return this.value;
+  }
+}
+
 export interface AuthorityTransaction {
   loadRun<TState extends object>(runId: string): TState | null;
   persist<TState extends object>(
@@ -101,3 +191,4 @@ export interface AuthorityTransaction {
 export interface AuthorityPort {
   transaction<T>(work: (transaction: AuthorityTransaction) => T): Promise<T>;
 }
+import { createHash } from "node:crypto";

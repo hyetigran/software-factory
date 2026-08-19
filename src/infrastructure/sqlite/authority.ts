@@ -11,7 +11,7 @@ import type {
   PersistableCommand,
   PersistableTransition,
   PersistTransitionRequest,
-  ValidatedProjection,
+  ValidatedProjectionData,
 } from "../../application/authority-port.js";
 import type { StagedArtifactDescriptor } from "../artifacts/object-store.js";
 import type { ContentAddressedArtifactStore } from "../artifacts/object-store.js";
@@ -166,7 +166,7 @@ function stateIsTerminal(state: JsonObject): boolean {
 
 function reviewProjectionIsComplete(
   state: JsonObject,
-  projection: ValidatedProjection,
+  projection: ValidatedProjectionData,
 ): boolean {
   const findings = Array.isArray(state.activeFindings)
     ? (state.activeFindings as Array<Record<string, unknown>>)
@@ -182,6 +182,8 @@ function reviewProjectionIsComplete(
       ({ observationId }) => observationId,
     ) ?? [];
   return (
+    projectedFindingIds.length === findingIds.length &&
+    projectedObservationIds.length === observationIds.length &&
     new Set(projectedFindingIds).size === findingIds.length &&
     new Set(projectedObservationIds).size === observationIds.length &&
     findingIds.every((id) => projectedFindingIds.includes(id)) &&
@@ -671,7 +673,7 @@ export class SqliteAuthority implements AuthorityPort {
       throw new TypeError("Transition output violates authority invariants");
     }
     const factTypes = new Set(result.auditFacts.map(({ type }) => type));
-    const projection = request.validatedProjection;
+    const projection = request.validatedProjection?.toPersistenceData();
     if (
       (factTypes.has("ledger_submitted") &&
         (projection?.ledgerVersionId === undefined ||
@@ -758,12 +760,12 @@ export class SqliteAuthority implements AuthorityPort {
         this.now(),
       );
     }
-    if (request.validatedProjection !== undefined) {
+    if (projection !== undefined) {
       persistValidatedProjection(
         this.database,
         request.runId,
         nextState,
-        request.validatedProjection,
+        projection,
         this.now(),
       );
     }

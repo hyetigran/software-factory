@@ -10,6 +10,7 @@ import type {
   AuthorityTransaction,
   PersistableTransition,
 } from "../../src/application/authority-port.js";
+import { ValidatedProjection } from "../../src/application/authority-port.js";
 import { commitTransition } from "../../src/application/commit-transition.js";
 import { canonicalJson } from "../../src/domain/canonical-json.js";
 import {
@@ -172,20 +173,37 @@ describe("SQLite authority", () => {
     const store = await ContentAddressedArtifactStore.open(
       resolve(path, "../.."),
     );
-    const ledger = await store.stageArtifact(
-      Buffer.from('{"requirements":[]}'),
-      {
-        artifactId: "artifact_ledger",
-        kind: "requirements_ledger",
-        mediaType: "application/json",
-        schemaId: "requirements-ledger.v1",
-        createdBy: "human:tig",
-        provenance: {
-          method: "human_submitted",
-          sourceArtifactIds: ["artifact_source"],
-        },
-      },
+    const ledgerBytes = Buffer.from(
+      canonicalJson({
+        schema_version: 1,
+        ledger_id: "ledger_v1",
+        version: 1,
+        source_artifact_id: "artifact_source",
+        requirements: [
+          {
+            requirement_id: "req_1",
+            display_id: "REQ-001",
+            statement: "The factory persists atomically.",
+            status: "active",
+            source_ranges: [{ start_byte: 0, end_byte: 10 }],
+            lineage_roots: ["req_1"],
+            predecessor_ids: [],
+          },
+        ],
+        source_exclusions: [],
+      }),
     );
+    const ledger = await store.stageArtifact(ledgerBytes, {
+      artifactId: "artifact_ledger",
+      kind: "requirements_ledger",
+      mediaType: "application/json",
+      schemaId: "requirements-ledger.v1",
+      createdBy: "human:tig",
+      provenance: {
+        method: "human_submitted",
+        sourceArtifactIds: ["artifact_source"],
+      },
+    });
     await authority.registerArtifact(ledger);
     const ledgerInput: LedgerSubmitted = {
       type: "LedgerSubmitted",
@@ -208,27 +226,12 @@ describe("SQLite authority", () => {
     await commitTransition<NonterminalRunState>(authority, {
       runId: input.runId,
       expectedStateVersion: 1,
-      validatedProjection: {
-        validator: "deterministic-authority-projection-v1",
+      validatedProjection: ValidatedProjection.fromLedgerArtifact({
+        bytes: ledgerBytes,
+        contentHash: ledger.contentHash,
         stateVersion: 2,
         ledgerVersionId: ledgerInput.ledgerVersionId,
-        ledgerContentHash: ledger.contentHash,
-        schemaValid: true,
-        controlledIdsValid: true,
-        referencesComplete: true,
-        identitiesUnique: true,
-        requirements: [
-          {
-            requirementId: "req_1",
-            displayId: "REQ-001",
-            status: "active",
-            statement: "The factory persists atomically.",
-            sourceRanges: [{ startOffset: 0, endOffset: 10 }],
-            lineageRoots: ["req_1"],
-            predecessorIds: [],
-          },
-        ],
-      },
+      }),
       transition: (previousState) =>
         transition(previousState, ledgerInput, policy),
     });

@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { canonicalJson } from "../../domain/canonical-json.js";
 import type {
   PersistableAuditFact,
-  ValidatedProjection,
+  ValidatedProjectionData,
 } from "../../application/authority-port.js";
 
 type State = Record<string, unknown>;
@@ -309,7 +309,7 @@ export function persistValidatedProjection(
   database: DatabaseSync,
   runId: string,
   state: State,
-  projection: ValidatedProjection,
+  projection: ValidatedProjectionData,
   recordedAt: string,
 ): void {
   const currentLedger = object(state.currentLedger);
@@ -335,14 +335,29 @@ export function persistValidatedProjection(
   ) {
     throw new TypeError("Validated projection is not bound to accepted state");
   }
-  const requirementIds = new Set(
-    (projection.requirements ?? []).map(({ requirementId }) => requirementId),
-  );
+  const requirementIds =
+    projection.requirements === undefined
+      ? new Set(
+          (
+            database
+              .prepare(
+                `SELECT requirement_id FROM requirements
+                 WHERE ledger_version_id = ?`,
+              )
+              .all(String(currentLedger?.versionId)) as Array<{
+              requirement_id: string;
+            }>
+          ).map(({ requirement_id }) => requirement_id),
+        )
+      : new Set(
+          projection.requirements.map(({ requirementId }) => requirementId),
+        );
   const sectionIds = new Set(
     (projection.planSections ?? []).map(({ sectionId }) => sectionId),
   );
   if (
-    requirementIds.size !== (projection.requirements?.length ?? 0) ||
+    (projection.requirements !== undefined &&
+      requirementIds.size !== projection.requirements.length) ||
     sectionIds.size !== (projection.planSections?.length ?? 0) ||
     (projection.planSections ?? []).some(({ requirementIds: references }) =>
       references.some((id) => !requirementIds.has(id)),
@@ -390,7 +405,35 @@ export function persistValidatedProjection(
           canonicalJson(section.requirementIds),
         );
     }
-    for (const transition of projection.sectionTransitions ?? []) {
+    const transitions = projection.sectionTransitions ?? [];
+    const transitionIds = transitions.map(({ transitionId }) => transitionId);
+    const targetIds = transitions.flatMap(({ toIds }) => toIds);
+    const currentSectionIds = new Set(
+      (projection.planSections ?? []).map(({ sectionId }) => sectionId),
+    );
+    const knownSectionIds = new Set(
+      (
+        database
+          .prepare(
+            `SELECT section_id FROM plan_sections
+             JOIN plan_versions USING (plan_version_id)
+             WHERE run_id = ?`,
+          )
+          .all(runId) as Array<{ section_id: string }>
+      ).map(({ section_id }) => section_id),
+    );
+    if (
+      new Set(transitionIds).size !== transitionIds.length ||
+      new Set(targetIds).size !== targetIds.length ||
+      targetIds.length !== currentSectionIds.size ||
+      targetIds.some((id) => !currentSectionIds.has(id)) ||
+      transitions.some(({ fromIds }) =>
+        fromIds.some((id) => !knownSectionIds.has(id)),
+      )
+    ) {
+      throw new TypeError("Section-transition projection is incomplete");
+    }
+    for (const transition of transitions) {
       database
         .prepare(
           `INSERT INTO section_transitions
