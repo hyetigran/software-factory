@@ -575,7 +575,7 @@ function submitLedger(
       sourceContentHash: previousState.sourceContentHash,
       configurationArtifactId: previousState.configurationArtifactId,
       configurationContentHash: previousState.configurationContentHash,
-      policyHash: previousState.policyHash,
+      policyHash: policy.policyHash,
       policyLocked: previousState.policyLocked,
       blockedReason: null,
       currentLedger: {

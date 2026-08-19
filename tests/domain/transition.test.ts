@@ -672,4 +672,33 @@ describe("transition", () => {
       transition(qualified, revision, { policyHash: "f".repeat(64) }),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
+
+  it("adopts a policy change when requirements approval is not yet locked", () => {
+    const requirementsApproved: AdvancedRunState = {
+      ...advancedRunState("requirements_approved"),
+      state: "requirements_approved",
+      policyLocked: false,
+    };
+    const revisedPolicyHash = "0".repeat(64);
+    const revision = {
+      ...ledgerSubmittedInput(),
+      expectedStateVersion: 7,
+      ledgerVersionId: "ledger_02JTEST",
+    };
+
+    const result = transition(requirementsApproved, revision, {
+      policyHash: revisedPolicyHash,
+    });
+
+    expect(result.nextState).toEqual(
+      expect.objectContaining({
+        policyHash: revisedPolicyHash,
+        policyLocked: false,
+      }),
+    );
+    expect(result.commands).toEqual([
+      expect.objectContaining({ policyHash: revisedPolicyHash }),
+      expect.objectContaining({ policyHash: revisedPolicyHash }),
+    ]);
+  });
 });
