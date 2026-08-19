@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -657,6 +663,20 @@ export class SqliteAuthority implements AuthorityPort {
       version = { schema_version: 2 };
     }
     if (version?.schema_version === 1) {
+      const migrationLeasePath = resolve(
+        dirname(this.databasePath),
+        "migration.lock",
+      );
+      writeFileSync(
+        migrationLeasePath,
+        canonicalJson({
+          ownerProcess: process.pid,
+          acquiredAt: this.now(),
+          fromSchemaVersion: 1,
+          toSchemaVersion: 2,
+        }),
+        { mode: 0o600, flag: "wx" },
+      );
       this.database.exec("BEGIN IMMEDIATE");
       try {
         this.verifyLegacyAuthority();
@@ -709,51 +729,12 @@ export class SqliteAuthority implements AuthorityPort {
             );
           }
         }
-        const migrationRun = this.database
-          .prepare(
-            "SELECT run_id, state_version FROM runs ORDER BY run_id LIMIT 1",
-          )
-          .get() as { run_id: string; state_version: number } | undefined;
-        if (migrationRun === undefined) {
-          throw new AuthorityIntegrityError(
-            "Legacy migration requires an authoritative run for lease ownership",
-          );
-        }
-        const migrationCommandId = `migration:${backupId}`;
-        this.database
-          .prepare(
-            `INSERT INTO logical_commands
-              (command_id, run_id, command_key, command_type, schema_version,
-               triggering_state_version, status, specification_json, planned_at)
-             VALUES (?, ?, ?, 'backup_workspace', 1, ?, 'running', ?, ?)`,
-          )
-          .run(
-            migrationCommandId,
-            migrationRun.run_id,
-            sha256(migrationCommandId),
-            migrationRun.state_version,
-            canonicalJson({ purpose: "schema_migration", backupId }),
-            this.now(),
-          );
-        this.database
-          .prepare(
-            `INSERT INTO mutation_lease
-              (singleton, command_id, owner_process, acquired_at, heartbeat_at)
-             VALUES (1, ?, 'sqlite_migration', ?, ?)`,
-          )
-          .run(migrationCommandId, this.now(), this.now());
         this.database.exec("COMMIT");
         this.database.exec(
           `VACUUM main INTO '${backupPath.replaceAll("'", "''")}'`,
         );
         this.database.exec("BEGIN IMMEDIATE");
-        const ownedLease = this.database
-          .prepare(
-            `SELECT 1 FROM mutation_lease
-             WHERE singleton = 1 AND command_id = ? AND owner_process = 'sqlite_migration'`,
-          )
-          .get(migrationCommandId);
-        if (ownedLease === undefined) {
+        if (!existsSync(migrationLeasePath)) {
           throw new AuthorityIntegrityError(
             "Migration mutation lease was lost",
           );
@@ -915,35 +896,15 @@ export class SqliteAuthority implements AuthorityPort {
             "Post-migration integrity verification failed",
           );
         }
-        this.database
-          .prepare("DELETE FROM mutation_lease WHERE singleton = 1")
-          .run();
-        this.database
-          .prepare("DELETE FROM logical_commands WHERE command_id = ?")
-          .run(migrationCommandId);
         this.database.exec("COMMIT");
+        unlinkSync(migrationLeasePath);
       } catch (error) {
         try {
           this.database.exec("ROLLBACK");
         } catch {
           // The preflight may fail before a transaction is active.
         }
-        const strandedLease = this.database
-          .prepare(
-            `SELECT command_id FROM mutation_lease
-             WHERE singleton = 1 AND owner_process = 'sqlite_migration'`,
-          )
-          .get() as { command_id: string } | undefined;
-        if (strandedLease !== undefined) {
-          this.database.exec("BEGIN IMMEDIATE");
-          this.database
-            .prepare("DELETE FROM mutation_lease WHERE singleton = 1")
-            .run();
-          this.database
-            .prepare("DELETE FROM logical_commands WHERE command_id = ?")
-            .run(strandedLease.command_id);
-          this.database.exec("COMMIT");
-        }
+        // Keep the durable lease on failure for diagnosis and explicit recovery.
         throw error;
       }
       version = this.database
@@ -1106,6 +1067,11 @@ export class SqliteAuthority implements AuthorityPort {
   }
 
   private assertWritable(): void {
+    if (existsSync(resolve(dirname(this.databasePath), "migration.lock"))) {
+      throw new AuthorityIntegrityError(
+        "Workspace is read-only while schema migration owns the lease",
+      );
+    }
     const reason = this.readOnlyReason();
     if (reason !== null) {
       throw new AuthorityIntegrityError(`Workspace is read-only: ${reason}`);
