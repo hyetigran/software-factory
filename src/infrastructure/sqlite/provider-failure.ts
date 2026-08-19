@@ -23,6 +23,10 @@ import { isAuthenticAnthropicExecution } from "../providers/anthropic.js";
 import { isAuthenticReplayExecution } from "../providers/replay.js";
 import { decideProviderFailure } from "../../application/provider-failure-policy.js";
 import { ProviderAttemptAccounting } from "./provider-attempt-accounting.js";
+import {
+  providerSettlementMode,
+  resultDiscardedFact,
+} from "./provider-attempt-settlement.js";
 
 type Dependencies = {
   database: DatabaseSync;
@@ -77,12 +81,6 @@ export class SqliteProviderFailure {
         };
       } {
     const row = this.loadAttempt(request);
-    if (["failed", "unknown", "discarded"].includes(row.attempt_status)) {
-      return {
-        status: "settled",
-        completion: this.reconcileSettled(request, policy, row),
-      };
-    }
     const explicitlyExpected =
       this.dependencies.database
         .prepare(
@@ -93,19 +91,27 @@ export class SqliteProviderFailure {
               AND json_extract(payload_json, '$.humanAuthorizationId') IS NOT NULL`,
         )
         .get(request.runId, request.attemptId) !== undefined;
-    if (
-      row.attempt_status === "started" &&
-      row.accepted_attempt_id === null &&
-      row.command_status === "running" &&
-      (row.state_version === row.triggering_state_version || explicitlyExpected)
-    ) {
+    const mode = providerSettlementMode({
+      state: {
+        commandStatus: row.command_status,
+        acceptedAttemptId: row.accepted_attempt_id,
+        triggeringStateVersion: row.triggering_state_version,
+        attemptStatus: row.attempt_status,
+        currentStateVersion: row.state_version,
+      },
+      settledStatuses: ["failed", "unknown", "discarded"],
+      explicitlyExpected,
+    });
+    if (mode === "exact_replay") {
+      return {
+        status: "settled",
+        completion: this.reconcileSettled(request, policy, row),
+      };
+    }
+    if (mode === "eligible") {
       return { status: "eligible" };
     }
-    if (
-      row.attempt_status === "started" &&
-      (row.accepted_attempt_id !== null ||
-        row.state_version !== row.triggering_state_version)
-    ) {
+    if (mode === "discard") {
       return {
         status: "settled",
         completion: this.complete(request, policy, false),
@@ -250,7 +256,7 @@ export class SqliteProviderFailure {
         reservation,
         normalizedActual,
         disposition,
-        row.accepted_attempt_id,
+        row,
       ),
     };
   }
@@ -593,7 +599,10 @@ export class SqliteProviderFailure {
     reservation: BudgetReservation,
     actual: BudgetReservation,
     disposition: ProviderFailureDisposition,
-    acceptedAttemptId: string | null,
+    settlement: Pick<
+      AttemptRow,
+      "accepted_attempt_id" | "triggering_state_version" | "state_version"
+    >,
   ): PersistableAuditFact[] {
     const evidence = [
       { kind: "artifact", artifactId: request.outcomeArtifact.artifactId },
@@ -644,22 +653,14 @@ export class SqliteProviderFailure {
       },
       ...(disposition.status === "discarded"
         ? [
-            {
-              type: "result_discarded",
-              actor: {
-                kind: "system",
-                component: "executor",
-                version: "0.0.0",
-              },
-              reason:
-                "The provider failure is stale or a result was already accepted",
+            resultDiscardedFact({
+              commandId: request.commandId,
+              attemptId: request.attemptId,
+              acceptedAttemptId: settlement.accepted_attempt_id,
+              triggeringStateVersion: settlement.triggering_state_version,
+              currentStateVersion: settlement.state_version,
               evidence,
-              payload: {
-                commandId: request.commandId,
-                attemptId: request.attemptId,
-                acceptedAttemptId,
-              },
-            },
+            }),
           ]
         : []),
     ];

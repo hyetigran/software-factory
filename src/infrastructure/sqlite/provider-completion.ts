@@ -15,6 +15,10 @@ import type { StagedArtifactRegistration } from "../../application/artifact-port
 import { structuredTextFromProviderResponse } from "../providers/recording-codec.js";
 import { AuthorityIntegrityError } from "./errors.js";
 import { ProviderAttemptAccounting } from "./provider-attempt-accounting.js";
+import {
+  providerSettlementMode,
+  resultDiscardedFact,
+} from "./provider-attempt-settlement.js";
 
 type Dependencies = {
   database: DatabaseSync;
@@ -186,7 +190,28 @@ export class SqliteProviderCompletion {
     ) {
       throw new TypeError("Provider attempt completion is not eligible");
     }
-    if (["completed", "discarded"].includes(row.attempt_status)) {
+    const explicitlyExpected =
+      this.dependencies.database
+        .prepare(
+          `SELECT 1 FROM audit_entries
+            WHERE run_id = ? AND fact_type = 'command_attempt_started'
+              AND json_extract(payload_json, '$.attemptId') = ?
+              AND json_extract(payload_json, '$.attemptKind') = 'human_rerun'
+              AND json_extract(payload_json, '$.humanAuthorizationId') IS NOT NULL`,
+        )
+        .get(request.runId, request.attemptId) !== undefined;
+    const mode = providerSettlementMode({
+      state: {
+        commandStatus: row.command_status,
+        acceptedAttemptId: row.accepted_attempt_id,
+        triggeringStateVersion: row.triggering_state_version,
+        attemptStatus: row.attempt_status,
+        currentStateVersion: row.state_version,
+      },
+      settledStatuses: ["completed", "discarded"],
+      explicitlyExpected,
+    });
+    if (mode === "exact_replay") {
       this.dependencies.readStagedArtifactBytes(request.outputArtifact);
       this.dependencies.readStagedArtifactBytes(request.rawResponseArtifact);
       this.dependencies.readStagedArtifactBytes(request.nativeUsageArtifact);
@@ -240,28 +265,10 @@ export class SqliteProviderCompletion {
         },
       };
     }
-    const explicitlyExpected =
-      this.dependencies.database
-        .prepare(
-          `SELECT 1 FROM audit_entries
-            WHERE run_id = ? AND fact_type = 'command_attempt_started'
-              AND json_extract(payload_json, '$.attemptId') = ?
-              AND json_extract(payload_json, '$.attemptKind') = 'human_rerun'
-              AND json_extract(payload_json, '$.humanAuthorizationId') IS NOT NULL`,
-        )
-        .get(request.runId, request.attemptId) !== undefined;
-    if (
-      row.attempt_status === "started" &&
-      row.accepted_attempt_id === null &&
-      (row.state_version === row.triggering_state_version || explicitlyExpected)
-    ) {
+    if (mode === "eligible") {
       return { status: "eligible" };
     }
-    if (
-      row.attempt_status === "started" &&
-      (row.accepted_attempt_id !== null ||
-        row.state_version !== row.triggering_state_version)
-    ) {
+    if (mode === "discard") {
       return {
         status: "settled",
         completion: this.complete(request, false),
@@ -491,24 +498,14 @@ export class SqliteProviderCompletion {
         ...(acceptLogicalResult
           ? []
           : [
-              {
-                type: "result_discarded",
-                actor: {
-                  kind: "system",
-                  component: "executor",
-                  version: "0.0.0",
-                },
-                reason:
-                  "The provider result is stale or a logical result was already accepted",
+              resultDiscardedFact({
+                commandId: request.commandId,
+                attemptId: request.attemptId,
+                acceptedAttemptId: row.accepted_attempt_id,
+                triggeringStateVersion: row.triggering_state_version,
+                currentStateVersion: row.state_version,
                 evidence,
-                payload: {
-                  commandId: request.commandId,
-                  attemptId: request.attemptId,
-                  acceptedAttemptId: row.accepted_attempt_id,
-                  triggeringStateVersion: row.triggering_state_version,
-                  currentStateVersion: row.state_version,
-                },
-              },
+              }),
             ]),
       ],
     };
