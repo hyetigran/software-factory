@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  closeSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readFileSync,
   unlinkSync,
   writeFileSync,
@@ -675,8 +678,14 @@ export class SqliteAuthority implements AuthorityPort {
           fromSchemaVersion: 1,
           toSchemaVersion: 2,
         }),
-        { mode: 0o600, flag: "wx" },
+        { mode: 0o600, flag: "wx", flush: true },
       );
+      const leaseDirectoryHandle = openSync(dirname(migrationLeasePath), "r");
+      try {
+        fsyncSync(leaseDirectoryHandle);
+      } finally {
+        closeSync(leaseDirectoryHandle);
+      }
       this.database.exec("BEGIN IMMEDIATE");
       try {
         this.verifyLegacyAuthority();
@@ -928,6 +937,7 @@ export class SqliteAuthority implements AuthorityPort {
   }
 
   async registerArtifact(descriptor: StagedArtifactDescriptor): Promise<void> {
+    this.assertWritable();
     if (this.artifactStore === undefined) {
       throw new TypeError(
         "Artifact registration requires a bound object store",
