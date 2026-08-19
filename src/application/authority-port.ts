@@ -51,6 +51,9 @@ export type ValidatedProjectionData = {
   planContentHash?: string;
   reviewContentHash?: string;
   reviewedPlanArtifactId?: string;
+  coveredRequirementIds?: string[];
+  reviewEvidenceArtifactIds?: string[];
+  reviewedPriorFindingIds?: string[];
   schemaValid: boolean;
   controlledIdsValid: boolean;
   referencesComplete: boolean;
@@ -313,6 +316,7 @@ export class ValidatedProjection {
           planSections.length,
         planSections,
         sectionTransitions,
+        coveredRequirementIds,
       }),
     );
   }
@@ -327,6 +331,7 @@ export class ValidatedProjection {
     allowedRequirementIds: string[];
     allowedSectionIds: string[];
     suppliedEvidenceArtifactIds: string[];
+    expectedPriorFindingIds: string[];
     findings: Array<{ findingId: string; observationId: string }>;
   }): ValidatedProjection {
     if (
@@ -343,6 +348,9 @@ export class ValidatedProjection {
     assertJsonSchema(parsed, schema("review.v1.schema.json"));
     const review = parsed as Record<string, unknown>;
     const concerns = review.new_concerns as Array<Record<string, unknown>>;
+    const reviewedPriorFindingIds = (
+      review.prior_findings as Array<Record<string, unknown>>
+    ).map(({ finding_id }) => String(finding_id));
     if (
       review.review_kind !== "baseline" ||
       review.policy_hash !== input.policyHash ||
@@ -375,6 +383,16 @@ export class ValidatedProjection {
     ) {
       throw new TypeError("Review controlled references are invalid");
     }
+    if (
+      reviewedPriorFindingIds.length !== input.expectedPriorFindingIds.length ||
+      new Set(reviewedPriorFindingIds).size !==
+        reviewedPriorFindingIds.length ||
+      input.expectedPriorFindingIds.some(
+        (id) => !reviewedPriorFindingIds.includes(id),
+      )
+    ) {
+      throw new TypeError("Review does not account for every prior finding");
+    }
     const findingFingerprints = concerns.map((concern, index) => ({
       findingId: input.findings[index]!.findingId,
       fingerprint: createHash("sha256")
@@ -404,6 +422,16 @@ export class ValidatedProjection {
         stateVersion: input.stateVersion,
         reviewContentHash: input.contentHash,
         reviewedPlanArtifactId: input.expectedPlanArtifactId,
+        reviewEvidenceArtifactIds: [
+          ...new Set(
+            concerns.flatMap((concern) =>
+              (concern.evidence as Array<Record<string, unknown>>).map(
+                ({ artifact_id }) => String(artifact_id),
+              ),
+            ),
+          ),
+        ],
+        reviewedPriorFindingIds,
         schemaValid: true,
         controlledIdsValid: true,
         referencesComplete: true,

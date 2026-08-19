@@ -82,6 +82,10 @@ function strings(value: unknown): value is string[] {
   );
 }
 
+function record(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function payloadIsValid(commandType: string, value: object): boolean {
   const payload = value as Record<string, unknown>;
   const stringFields = (keys: string[]): boolean =>
@@ -306,8 +310,13 @@ function commandIsValid(command: PersistableCommand): boolean {
     "render_plan",
     "baseline_review",
     "generate_remediation",
+    "verify_remediation",
     "closure_review",
+    "repair_schema",
     "export_terminal",
+    "attempt_provider_cancel",
+    "backup_workspace",
+    "verify_integrity",
   ]);
   const commandWithoutIdentity = Object.fromEntries(
     Object.entries(command).filter(
@@ -321,12 +330,16 @@ function commandIsValid(command: PersistableCommand): boolean {
     "render_ledger_approval",
     "render_plan",
     "export_terminal",
+    "backup_workspace",
+    "verify_integrity",
   ]);
   const providerTypes = new Set([
     "generate_plan",
     "baseline_review",
     "generate_remediation",
+    "verify_remediation",
     "closure_review",
+    "repair_schema",
   ]);
   const providerShapeValid = localTypes.has(command.commandType)
     ? command.provider === "local" &&
@@ -337,7 +350,8 @@ function commandIsValid(command: PersistableCommand): boolean {
         typeof command.modelId === "string" &&
         command.modelId.length > 0 &&
         command.budgetReservation.calls === 1
-      : false;
+      : command.commandType === "attempt_provider_cancel" &&
+        (command.provider === "openai" || command.provider === "anthropic");
   const prerequisiteShapeValid =
     command.commandType === "baseline_review"
       ? command.prerequisiteCommandIds?.length === 1
@@ -361,6 +375,12 @@ function commandIsValid(command: PersistableCommand): boolean {
       "modelId",
       "prerequisiteCommandIds",
     ]) &&
+    hasExactKeys(command.budgetReservation, [
+      "calls",
+      "inputTokens",
+      "outputTokens",
+      "costUsdMicros",
+    ]) &&
     command.schemaVersion === 1 &&
     command.commandId.length > 0 &&
     commandTypes.has(command.commandType) &&
@@ -374,7 +394,15 @@ function commandIsValid(command: PersistableCommand): boolean {
         command.prerequisiteCommandIds.every((id) => id.length > 0))) &&
     providerShapeValid &&
     prerequisiteShapeValid &&
-    payloadIsValid(command.commandType, command.payload) &&
+    (payloadIsValid(command.commandType, command.payload) ||
+      ([
+        "verify_remediation",
+        "repair_schema",
+        "attempt_provider_cancel",
+        "backup_workspace",
+        "verify_integrity",
+      ].includes(command.commandType) &&
+        record(command.payload))) &&
     Object.values(command.budgetReservation).every(
       (value) => Number.isInteger(value) && value >= 0,
     ) &&
@@ -502,6 +530,13 @@ export class SqliteAuthority implements AuthorityPort {
     let version = this.database
       .prepare("SELECT schema_version FROM schema_metadata WHERE singleton = 1")
       .get() as { schema_version: number } | undefined;
+    this.database
+      .prepare(
+        `INSERT OR IGNORE INTO workspaces
+          (workspace_id, created_at, audit_chain_head, next_audit_sequence)
+         VALUES (?, ?, ?, 1)`,
+      )
+      .run(this.workspaceId, this.now(), ZERO_HASH);
     if (version?.schema_version === 1) {
       const integrity = this.database
         .prepare("PRAGMA integrity_check")
@@ -535,6 +570,27 @@ export class SqliteAuthority implements AuthorityPort {
           .prepare("SELECT content_hash FROM artifacts ORDER BY content_hash")
           .all() as Array<{ content_hash: string }>
       ).map(({ content_hash }) => content_hash);
+      for (const contentHash of objectHashes) {
+        const objectPath = resolve(
+          dirname(this.databasePath),
+          "objects",
+          contentHash,
+        );
+        let bytes: Buffer;
+        try {
+          bytes = readFileSync(objectPath);
+        } catch (error) {
+          throw new AuthorityIntegrityError(
+            `Migration object is missing: ${contentHash}`,
+            { cause: error },
+          );
+        }
+        if (sha256(bytes.toString("binary")) !== contentHash) {
+          throw new AuthorityIntegrityError(
+            `Migration object is corrupt: ${contentHash}`,
+          );
+        }
+      }
       const chain = this.database
         .prepare(
           "SELECT audit_chain_head FROM workspaces WHERE workspace_id = ?",
@@ -547,6 +603,7 @@ export class SqliteAuthority implements AuthorityPort {
         fromSchemaVersion: 1,
         objectHashes,
         auditChainHead: chain?.audit_chain_head ?? ZERO_HASH,
+        cliVersion: "0.0.0",
         createdAt: this.now(),
       });
       writeFileSync(manifestPath, manifest, { mode: 0o600, flag: "wx" });
@@ -566,15 +623,108 @@ export class SqliteAuthority implements AuthorityPort {
         moduleDirectory,
         "../../../database/migrations/0002_run_state_snapshots.sql",
       );
-      this.database.exec(readFileSync(migrationPath, "utf8"));
-      this.database
-        .prepare(
-          `INSERT INTO migration_history
+      this.database.exec("BEGIN IMMEDIATE");
+      try {
+        this.database.exec(readFileSync(migrationPath, "utf8"));
+        this.database
+          .prepare(
+            `INSERT INTO migration_history
             (migration_id, from_schema_version, to_schema_version,
              backup_manifest_path, completed_at)
            VALUES (?, 1, 2, ?, ?)`,
-        )
-        .run("0002_run_state_snapshots", manifestPath, this.now());
+          )
+          .run("0002_run_state_snapshots", manifestPath, this.now());
+        const workspace = this.database
+          .prepare(
+            `SELECT next_audit_sequence, audit_chain_head FROM workspaces
+             WHERE workspace_id = ?`,
+          )
+          .get(this.workspaceId) as
+          | {
+              next_audit_sequence: number;
+              audit_chain_head: string;
+            }
+          | undefined;
+        if (workspace !== undefined) {
+          let sequence = workspace.next_audit_sequence;
+          let previousEntryHash = workspace.audit_chain_head;
+          const runs = this.database
+            .prepare("SELECT run_id, state_version FROM runs ORDER BY run_id")
+            .all() as Array<{ run_id: string; state_version: number }>;
+          for (const run of runs) {
+            const withoutHash = {
+              auditEntryId: `${run.run_id}:audit:${sequence}`,
+              sequence,
+              runId: run.run_id,
+              stateVersionBefore: run.state_version,
+              stateVersionAfter: run.state_version,
+              factType: "migration_completed",
+              schemaVersion: 1 as const,
+              actor: { kind: "system", component: "sqlite_migration" },
+              reason: "Migrated authoritative database schema",
+              evidence: [],
+              recordedAt: this.now(),
+              payload: {
+                fromSchemaVersion: 1,
+                toSchemaVersion: 2,
+                backupManifestPath: manifestPath,
+                migrationIds: ["0002_run_state_snapshots"],
+              },
+              previousEntryHash,
+            };
+            const entryHash = sha256(canonicalJson(withoutHash));
+            this.database
+              .prepare(
+                `INSERT INTO audit_entries
+                  (audit_entry_id, workspace_id, run_id, sequence,
+                   state_version_before, state_version_after, fact_type,
+                   schema_version, actor_json, reason, evidence_json,
+                   recorded_at, payload_json, previous_entry_hash, entry_hash)
+                 VALUES (?, ?, ?, ?, ?, ?, 'migration_completed', 1, ?, ?,
+                         '[]', ?, ?, ?, ?)`,
+              )
+              .run(
+                withoutHash.auditEntryId,
+                this.workspaceId,
+                run.run_id,
+                sequence,
+                run.state_version,
+                run.state_version,
+                canonicalJson(withoutHash.actor),
+                withoutHash.reason,
+                withoutHash.recordedAt,
+                canonicalJson(withoutHash.payload),
+                previousEntryHash,
+                entryHash,
+              );
+            previousEntryHash = entryHash;
+            sequence += 1;
+          }
+          this.database
+            .prepare(
+              `UPDATE workspaces SET next_audit_sequence = ?, audit_chain_head = ?
+               WHERE workspace_id = ?`,
+            )
+            .run(sequence, previousEntryHash, this.workspaceId);
+        }
+        this.verifyAuditChain();
+        const postIntegrity = this.database
+          .prepare("PRAGMA integrity_check")
+          .all() as Array<{ integrity_check: string }>;
+        if (
+          postIntegrity.length !== 1 ||
+          postIntegrity[0]?.integrity_check !== "ok" ||
+          this.database.prepare("PRAGMA foreign_key_check").all().length > 0
+        ) {
+          throw new AuthorityIntegrityError(
+            "Post-migration integrity verification failed",
+          );
+        }
+        this.database.exec("COMMIT");
+      } catch (error) {
+        this.database.exec("ROLLBACK");
+        throw error;
+      }
       version = this.database
         .prepare(
           "SELECT schema_version FROM schema_metadata WHERE singleton = 1",
@@ -1046,6 +1196,7 @@ export class SqliteAuthority implements AuthorityPort {
       persistValidatedProjection(
         this.database,
         request.runId,
+        previousState as Record<string, unknown> | null,
         nextState,
         projection,
         this.now(),

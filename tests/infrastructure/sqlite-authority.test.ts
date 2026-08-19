@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { mkdir, mkdtemp, readFile, rm, unlink } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -621,6 +628,7 @@ describe("SQLite authority", () => {
       allowedRequirementIds: ["req_1"],
       allowedSectionIds: ["section_api"],
       suppliedEvidenceArtifactIds: ["artifact_plan"],
+      expectedPriorFindingIds: [],
       findings: [{ findingId: "finding_1", observationId: "observation_1" }],
     };
     expect(() =>
@@ -656,6 +664,7 @@ describe("SQLite authority", () => {
       )
       .run("0".repeat(64));
     for (const artifactId of ["artifact_source", "artifact_configuration"]) {
+      const contentHash = createHash("sha256").update(artifactId).digest("hex");
       raw
         .prepare(
           `INSERT INTO artifacts
@@ -664,7 +673,10 @@ describe("SQLite authority", () => {
            VALUES (?, 'other', ?, 0, 'application/octet-stream', '{}',
                    '2026-01-01T00:00:00.000Z')`,
         )
-        .run(artifactId, createHash("sha256").update(artifactId).digest("hex"));
+        .run(artifactId, contentHash);
+      const objects = resolve(path, "../objects");
+      await mkdir(objects, { recursive: true });
+      await writeFile(resolve(objects, contentHash), artifactId);
     }
     raw
       .prepare(
@@ -676,6 +688,47 @@ describe("SQLite authority", () => {
                  '2026-01-01T00:00:00.000Z')`,
       )
       .run("a".repeat(64));
+    const auditWithoutHash = {
+      auditEntryId: "run_legacy:audit:1",
+      sequence: 1,
+      runId: "run_legacy",
+      stateVersionBefore: 0,
+      stateVersionAfter: 1,
+      factType: "run_started",
+      schemaVersion: 1,
+      actor: { kind: "human", actorId: "human:test", osAccount: "test" },
+      reason: "legacy run",
+      evidence: [],
+      recordedAt: "2026-01-01T00:00:00.000Z",
+      payload: {},
+      previousEntryHash: "0".repeat(64),
+    };
+    const auditHash = createHash("sha256")
+      .update(canonicalJson(auditWithoutHash))
+      .digest("hex");
+    raw
+      .prepare(
+        `INSERT INTO audit_entries
+          (audit_entry_id, workspace_id, run_id, sequence,
+           state_version_before, state_version_after, fact_type, schema_version,
+           actor_json, reason, evidence_json, recorded_at, payload_json,
+           previous_entry_hash, entry_hash)
+         VALUES (?, 'workspace_local', 'run_legacy', 1, 0, 1, 'run_started', 1,
+                 ?, 'legacy run', '[]', ?, '{}', ?, ?)`,
+      )
+      .run(
+        auditWithoutHash.auditEntryId,
+        canonicalJson(auditWithoutHash.actor),
+        auditWithoutHash.recordedAt,
+        auditWithoutHash.previousEntryHash,
+        auditHash,
+      );
+    raw
+      .prepare(
+        `UPDATE workspaces SET audit_chain_head = ?, next_audit_sequence = 2
+         WHERE workspace_id = 'workspace_local'`,
+      )
+      .run(auditHash);
     raw.close();
 
     const authority = SqliteAuthority.open(path, {

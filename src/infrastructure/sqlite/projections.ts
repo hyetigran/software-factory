@@ -308,6 +308,7 @@ export function projectAuthoritativeState(
 export function persistValidatedProjection(
   database: DatabaseSync,
   runId: string,
+  previousState: State | null,
   state: State,
   projection: ValidatedProjectionData,
   recordedAt: string,
@@ -338,6 +339,50 @@ export function persistValidatedProjection(
   ) {
     throw new TypeError("Validated projection is not bound to accepted state");
   }
+  if (projection.reviewContentHash !== undefined) {
+    const priorFindingIds = new Set(
+      (Array.isArray(previousState?.activeFindings)
+        ? (previousState.activeFindings as Array<Record<string, unknown>>)
+        : []
+      ).map(({ findingId }) => String(findingId)),
+    );
+    if (
+      projection.reviewedPriorFindingIds === undefined ||
+      projection.reviewedPriorFindingIds.length !== priorFindingIds.size ||
+      projection.reviewedPriorFindingIds.some((id) => !priorFindingIds.has(id))
+    ) {
+      throw new TypeError(
+        "Review prior findings do not match authoritative state",
+      );
+    }
+    const reviewContext = object(previousState?.reviewContext);
+    const suppliedEvidence = new Set<string>();
+    const addArtifact = (value: unknown): void => {
+      const artifact = object(value);
+      if (typeof artifact?.artifactId === "string")
+        suppliedEvidence.add(artifact.artifactId);
+    };
+    [
+      previousState?.currentLedger,
+      previousState?.currentPlan,
+      reviewContext?.prompt,
+      reviewContext?.schema,
+      reviewContext?.taxonomy,
+      reviewContext?.componentRegistry,
+      reviewContext?.policy,
+    ].forEach(addArtifact);
+    (Array.isArray(reviewContext?.evidence)
+      ? reviewContext.evidence
+      : []
+    ).forEach(addArtifact);
+    if (
+      projection.reviewEvidenceArtifactIds?.some(
+        (id) => !suppliedEvidence.has(id),
+      )
+    ) {
+      throw new TypeError("Review cites evidence not supplied to the reviewer");
+    }
+  }
   const requirementIds =
     projection.requirements === undefined
       ? new Set(
@@ -367,6 +412,17 @@ export function persistValidatedProjection(
     )
   ) {
     throw new TypeError("Validated projection identities are incomplete");
+  }
+  if (
+    projection.planVersionId !== undefined &&
+    (projection.coveredRequirementIds === undefined ||
+      projection.coveredRequirementIds.length !== requirementIds.size ||
+      new Set(projection.coveredRequirementIds).size !== requirementIds.size ||
+      projection.coveredRequirementIds.some((id) => !requirementIds.has(id)))
+  ) {
+    throw new TypeError(
+      "Plan coverage does not match the authoritative ledger",
+    );
   }
   if (projection.ledgerVersionId !== undefined) {
     for (const requirement of projection.requirements ?? []) {
