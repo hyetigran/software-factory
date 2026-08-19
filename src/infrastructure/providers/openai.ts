@@ -12,8 +12,8 @@ import {
   assertProviderRequest,
   bytes,
   evidence,
-  labeledInputs,
   objectFromBytes,
+  openAiWireBody,
   preparedProviderCall,
   semanticModelUnavailable,
   textFromOpenAi,
@@ -47,24 +47,7 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
       "openai",
       this.preflight,
     );
-    const body = {
-      model: preparedRequest.modelId,
-      instructions: preparedRequest.systemPrompt,
-      input: labeledInputs(preparedRequest),
-      max_output_tokens: preparedRequest.maxOutputTokens,
-      store: preparedRequest.providerStorage !== "minimize",
-      text: {
-        format: {
-          type: "json_schema",
-          name: `${preparedRequest.role}_result`,
-          strict: true,
-          schema: preparedRequest.outputSchema,
-        },
-      },
-      ...(preparedRequest.reasoning === undefined
-        ? {}
-        : { reasoning: { effort: preparedRequest.reasoning } }),
-    };
+    const body = openAiWireBody(preparedRequest);
     const wireBodyBytes = bytes(body);
     const redactedRequestBytes = bytes({
       method: "POST",

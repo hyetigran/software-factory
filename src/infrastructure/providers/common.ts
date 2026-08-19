@@ -82,6 +82,53 @@ export function bytes(value: unknown): Buffer {
   return Buffer.from(canonicalJson(value));
 }
 
+export function openAiWireBody(request: ProviderRequest): object {
+  return {
+    model: request.modelId,
+    instructions: request.systemPrompt,
+    input: labeledInputs(request),
+    max_output_tokens: request.maxOutputTokens,
+    store: request.providerStorage !== "minimize",
+    text: {
+      format: {
+        type: "json_schema",
+        name: `${request.role}_result`,
+        strict: true,
+        schema: request.outputSchema,
+      },
+    },
+    ...(request.reasoning === undefined
+      ? {}
+      : { reasoning: { effort: request.reasoning } }),
+  };
+}
+
+export function anthropicWireBody(request: ProviderRequest): object {
+  return {
+    model: request.modelId,
+    max_tokens: request.maxOutputTokens,
+    system: request.systemPrompt,
+    messages: [{ role: "user", content: labeledInputs(request) }],
+    output_config: {
+      format: {
+        type: "json_schema",
+        schema: request.outputSchema,
+      },
+      ...(request.reasoning === undefined ? {} : { effort: request.reasoning }),
+    },
+  };
+}
+
+export function providerWireInputByteUpperBound(
+  request: ProviderRequest,
+): number {
+  return bytes(
+    request.provider === "openai"
+      ? openAiWireBody(request)
+      : anthropicWireBody(request),
+  ).byteLength;
+}
+
 export function preparedProviderCall(input: {
   redactedRequestBytes: Uint8Array;
   normalizedRequestHash: string;

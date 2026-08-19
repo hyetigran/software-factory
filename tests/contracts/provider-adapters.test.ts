@@ -16,6 +16,12 @@ import type {
   ProviderPreflight,
 } from "../../src/infrastructure/providers/transport.js";
 import {
+  anthropicWireBody,
+  bytes,
+  openAiWireBody,
+  providerWireInputByteUpperBound,
+} from "../../src/infrastructure/providers/common.js";
+import {
   providerEvidenceMatchesRecording,
   structuredOutputMatchesRawResponse,
 } from "../../src/infrastructure/sqlite/provider-completion.js";
@@ -68,6 +74,18 @@ const preflight: ProviderPreflight = {
 };
 
 describe("provider adapter contract", () => {
+  it.each([
+    ["openai", openAiWireBody],
+    ["anthropic", anthropicWireBody],
+  ] as const)(
+    "counts the exact %s token-bearing wire body as a conservative byte bound",
+    (provider, wireBody) => {
+      const providerRequest = { ...baseRequest, provider };
+      expect(providerWireInputByteUpperBound(providerRequest)).toBe(
+        bytes(wireBody(providerRequest)).byteLength,
+      );
+    },
+  );
   it("maps an OpenAI structured response and preserves native evidence", async () => {
     const send = vi.fn<HttpTransport["send"]>().mockResolvedValue({
       status: 200,

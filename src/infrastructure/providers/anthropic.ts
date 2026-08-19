@@ -10,9 +10,9 @@ import type {
 import { defensiveProviderExecutionCopy } from "./execution-capability.js";
 import {
   assertProviderRequest,
+  anthropicWireBody,
   bytes,
   evidence,
-  labeledInputs,
   objectFromBytes,
   preparedProviderCall,
   semanticModelUnavailable,
@@ -48,18 +48,7 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
       "anthropic",
       this.preflight,
     );
-    const body = {
-      model: preparedRequest.modelId,
-      max_tokens: preparedRequest.maxOutputTokens,
-      system: preparedRequest.systemPrompt,
-      messages: [{ role: "user", content: labeledInputs(preparedRequest) }],
-      output_config: {
-        format: { type: "json_schema", schema: preparedRequest.outputSchema },
-        ...(preparedRequest.reasoning === undefined
-          ? {}
-          : { effort: preparedRequest.reasoning }),
-      },
-    };
+    const body = anthropicWireBody(preparedRequest);
     const visibleHeaders = {
       "content-type": "application/json",
       "anthropic-version": apiVersion,
