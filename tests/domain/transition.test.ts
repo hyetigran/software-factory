@@ -3468,6 +3468,9 @@ describe("transition", () => {
           work({
             loadRun: <TState extends object>() => state as unknown as TState,
             settleProviderCompletion: () => ({ status: "eligible" as const }),
+            persistProviderFailure: () => {
+              throw new Error("unexpected provider failure");
+            },
             persist: vi.fn(),
             persistProviderCompletion: <TState extends object>(
               completion: AcceptedProviderCompletion,
@@ -3578,6 +3581,9 @@ describe("transition", () => {
             }),
             persistProviderCompletion: () => {
               throw new Error("late evidence must not persist a transition");
+            },
+            persistProviderFailure: () => {
+              throw new Error("unexpected provider failure");
             },
             persist: vi.fn(),
           }),

@@ -7,11 +7,13 @@ import type {
   ProviderFailureDisposition,
 } from "../../application/execution-port.js";
 import { commandIsValid } from "../../application/command-validation.js";
-import type { PersistableCommand } from "../../application/authority-port.js";
+import type {
+  PersistableAuditFact,
+  PersistableCommand,
+} from "../../application/authority-port.js";
 import { canonicalJson } from "../../domain/canonical-json.js";
 import type { BudgetReservation } from "../../domain/index.js";
 import { createHash } from "node:crypto";
-import { appendAuditEntries } from "./audit-journal.js";
 import { AuthorityIntegrityError } from "./errors.js";
 import {
   providerEvidenceMatchesRecording,
@@ -23,7 +25,6 @@ import { isAuthenticReplayExecution } from "../providers/replay.js";
 
 type Dependencies = {
   database: DatabaseSync;
-  workspaceId: string;
   now: () => string;
   readStagedArtifactBytes(artifact: StagedArtifactRegistration): Uint8Array;
   readObjectBytes(contentHash: string): Uint8Array;
@@ -90,7 +91,10 @@ export class SqliteProviderFailure {
   complete(
     request: CompleteProviderFailureEvidence,
     policy: ExecutionPolicy,
-  ): ProviderFailureDisposition {
+  ): ProviderFailureDisposition & {
+    stateVersion: number;
+    auditFacts: PersistableAuditFact[];
+  } {
     const row = this.loadAttempt(request);
     const command = JSON.parse(row.specification_json) as PersistableCommand;
     const failureKind =
@@ -225,19 +229,16 @@ export class SqliteProviderFailure {
         ...counts,
       },
     };
-    this.appendAudit(
-      request,
-      row.state_version,
-      reservation,
-      normalizedActual,
-      disposition,
-    );
-    this.dependencies.database
-      .prepare(
-        "DELETE FROM mutation_lease WHERE singleton = 1 AND attempt_id = ?",
-      )
-      .run(request.attemptId);
-    return disposition;
+    return {
+      ...disposition,
+      stateVersion: row.state_version,
+      auditFacts: this.appendAuditFacts(
+        request,
+        reservation,
+        normalizedActual,
+        disposition,
+      ),
+    };
   }
 
   private loadAttempt(request: CompleteProviderFailureEvidence): AttemptRow {
@@ -349,7 +350,7 @@ export class SqliteProviderFailure {
       outputTokens: number;
       costUsdMicros: number;
     },
-  ) {
+  ): BudgetReservation {
     if (request.execution.kind === "unknown_outcome") return reservation;
     const nativeBytes = request.execution.recording.nativeUsageBytes;
     if (nativeBytes === undefined) {
@@ -457,13 +458,12 @@ export class SqliteProviderFailure {
     }
   }
 
-  private appendAudit(
+  private appendAuditFacts(
     request: CompleteProviderFailureEvidence,
-    stateVersion: number,
     reservation: BudgetReservation,
     actual: BudgetReservation,
     disposition: ProviderFailureDisposition,
-  ): void {
+  ): PersistableAuditFact[] {
     const evidence = [
       { kind: "artifact", artifactId: request.outcomeArtifact.artifactId },
       ...(request.nativeUsageArtifact === undefined
@@ -475,51 +475,41 @@ export class SqliteProviderFailure {
             },
           ]),
     ];
-    appendAuditEntries({
-      database: this.dependencies.database,
-      workspaceId: this.dependencies.workspaceId,
-      runId: request.runId,
-      stateVersionBefore: stateVersion,
-      stateVersionAfter: stateVersion,
-      correlationId: request.correlationId,
-      facts: [
-        {
-          type:
-            disposition.status === "unknown"
-              ? "command_attempt_unknown"
-              : "command_attempt_completed",
-          actor: { kind: "system", component: "executor", version: "0.0.0" },
-          reason:
-            "Persist the classified provider failure and recovery decision",
-          evidence,
-          payload: {
-            commandId: request.commandId,
-            attemptId: request.attemptId,
-            requestArtifactId: request.requestArtifactId,
-            outcomeArtifactId: request.outcomeArtifact.artifactId,
-            nativeUsageArtifactId:
-              request.nativeUsageArtifact?.artifactId ?? null,
-            providerEvidence: request.execution.evidence,
-            failureKind: disposition.failureKind,
-            failureClass: disposition.failureClass,
-            recovery: disposition.recovery,
-          },
+    return [
+      {
+        type:
+          disposition.status === "unknown"
+            ? "command_attempt_unknown"
+            : "command_attempt_completed",
+        actor: { kind: "system", component: "executor", version: "0.0.0" },
+        reason: "Persist the classified provider failure and recovery decision",
+        evidence,
+        payload: {
+          commandId: request.commandId,
+          attemptId: request.attemptId,
+          requestArtifactId: request.requestArtifactId,
+          outcomeArtifactId: request.outcomeArtifact.artifactId,
+          nativeUsageArtifactId:
+            request.nativeUsageArtifact?.artifactId ?? null,
+          providerEvidence: request.execution.evidence,
+          failureKind: disposition.failureKind,
+          failureClass: disposition.failureClass,
+          recovery: disposition.recovery,
         },
-        {
-          type: "budget_reconciled",
-          actor: { kind: "system", component: "executor", version: "0.0.0" },
-          reason:
-            "Release the reservation and account for the failed provider attempt",
-          evidence,
-          payload: {
-            commandId: request.commandId,
-            attemptId: request.attemptId,
-            reserved: reservation,
-            actual,
-          },
+      },
+      {
+        type: "budget_reconciled",
+        actor: { kind: "system", component: "executor", version: "0.0.0" },
+        reason:
+          "Release the reservation and account for the failed provider attempt",
+        evidence,
+        payload: {
+          commandId: request.commandId,
+          attemptId: request.attemptId,
+          reserved: reservation,
+          actual,
         },
-      ],
-      now: this.dependencies.now,
-    });
+      },
+    ];
   }
 }

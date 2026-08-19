@@ -87,7 +87,7 @@ const executionConfiguration: ResolvedConfigurationSnapshot = {
     outputTokens: 10_000,
     costUsdMicros: 1_000_000,
     retries: 1,
-    repairs: 1,
+    repairs: 2,
     remediationCycles: 1,
     closureCycles: 1,
   },
@@ -489,11 +489,12 @@ describe("SQLite authority", () => {
     );
     const adapter = new OpenAiResponsesAdapter(
       {
-        send: async () => ({
-          status: 200,
-          headers: { "x-request-id": "request_invalid" },
-          body: failedRawBytes,
-        }),
+        send: () =>
+          Promise.resolve({
+            status: 200,
+            headers: { "x-request-id": "request_invalid" },
+            body: failedRawBytes,
+          }),
       },
       () => "secret",
       providerPreflight,
@@ -608,9 +609,10 @@ describe("SQLite authority", () => {
       },
     );
     await expect(
-      completeProviderFailure(
-        authority,
-        {
+      completeProviderFailure(authority, {
+        runId: repairAttempt.runId,
+        expectedStateVersion: 1,
+        completion: {
           runId: repairAttempt.runId,
           commandId: repairAttempt.commandId,
           attemptId: repairAttempt.attemptId,
@@ -622,13 +624,13 @@ describe("SQLite authority", () => {
           nativeUsageArtifact: failedUsage,
           execution: repairExecution,
         },
-        policy,
-      ),
+        executionPolicy: policy,
+      }),
     ).resolves.toMatchObject({
       status: "failed",
       failureClass: "schema_invalid",
-      recovery: "terminal",
-      recoveryBounds: { repairLimit: 1, repairsUsed: 1 },
+      recovery: "schema_repair",
+      recoveryBounds: { repairLimit: 2, repairsUsed: 1 },
     });
     expect(
       database

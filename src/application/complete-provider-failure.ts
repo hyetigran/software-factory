@@ -1,57 +1,157 @@
 import { createHash } from "node:crypto";
 
+import type {
+  AuthorityPort,
+  PersistableTransition,
+  PersistTransitionRequest,
+} from "./authority-port.js";
 import { artifactRegistrationIsValid } from "./artifact-port.js";
-import { canonicalJson } from "../domain/canonical-json.js";
 import type {
   CompleteProviderFailureEvidence,
   ExecutionPolicy,
-  ProviderFailureCompletionPort,
   ProviderFailureDisposition,
 } from "./execution-port.js";
+import { canonicalJson } from "../domain/canonical-json.js";
+import {
+  transition,
+  type NonterminalRunState,
+  type PinnedRunPolicy,
+  type ProviderOutcomeFailed,
+} from "../domain/index.js";
 
-export function completeProviderFailure(
-  authority: ProviderFailureCompletionPort,
-  request: CompleteProviderFailureEvidence,
-  policy: ExecutionPolicy,
-): Promise<ProviderFailureDisposition> {
-  const identities = [
-    request.runId,
-    request.commandId,
-    request.attemptId,
-    request.ownerProcess,
-    request.correlationId,
-    request.requestArtifactId,
-    request.requestContentHash,
-    request.outcomeArtifact.artifactId,
-  ];
-  const rawBytes = request.execution.recording.rawResponseBytes;
-  const nativeBytes = request.execution.recording.nativeUsageBytes;
+export type CompleteProviderFailureRequest = PersistTransitionRequest & {
+  completion: CompleteProviderFailureEvidence;
+  executionPolicy: ExecutionPolicy;
+  terminalInput?: ProviderOutcomeFailed;
+  domainPolicy?: PinnedRunPolicy;
+};
+
+const acceptedFailureBrand = Symbol("AcceptedProviderFailure");
+
+type AcceptedFailureData = {
+  previousStateHash: string;
+  completion: CompleteProviderFailureEvidence;
+  executionPolicy: ExecutionPolicy;
+  persistRequest: PersistTransitionRequest;
+  terminalInput?: ProviderOutcomeFailed;
+  terminalResult?: PersistableTransition<object>;
+};
+
+export class AcceptedProviderFailure {
+  readonly [acceptedFailureBrand] = true;
+
+  private constructor(private readonly value: AcceptedFailureData) {
+    Object.freeze(value);
+    Object.freeze(this);
+  }
+
+  static fromDomain(
+    previousState: NonterminalRunState | null,
+    request: CompleteProviderFailureRequest,
+  ): AcceptedProviderFailure {
+    validateFailureRequest(request);
+    if (
+      (request.terminalInput === undefined) !==
+      (request.domainPolicy === undefined)
+    ) {
+      throw new TypeError("Terminal failure input and policy must be paired");
+    }
+    const terminalResult =
+      request.terminalInput === undefined || request.domainPolicy === undefined
+        ? undefined
+        : transition(
+            previousState,
+            request.terminalInput,
+            request.domainPolicy,
+          );
+    return new AcceptedProviderFailure({
+      previousStateHash: createHash("sha256")
+        .update(canonicalJson(previousState))
+        .digest("hex"),
+      completion: request.completion,
+      executionPolicy: request.executionPolicy,
+      persistRequest: {
+        runId: request.runId,
+        expectedStateVersion: request.expectedStateVersion,
+        ...(request.causationId === undefined
+          ? {}
+          : { causationId: request.causationId }),
+        ...(request.correlationId === undefined
+          ? {}
+          : { correlationId: request.correlationId }),
+        ...(request.stagedArtifacts === undefined
+          ? {}
+          : { stagedArtifacts: request.stagedArtifacts }),
+      },
+      ...(terminalResult === undefined
+        ? {}
+        : {
+            terminalInput: structuredClone(request.terminalInput),
+            terminalResult,
+          }),
+    });
+  }
+
+  toPersistenceData(): AcceptedFailureData {
+    if (this[acceptedFailureBrand] !== true) {
+      throw new TypeError("Provider failure capability is invalid");
+    }
+    return this.value;
+  }
+}
+
+function validateFailureRequest(request: CompleteProviderFailureRequest) {
+  const completion = request.completion;
+  const rawBytes = completion.execution.recording.rawResponseBytes;
+  const nativeBytes = completion.execution.recording.nativeUsageBytes;
   const diagnosticBytes = Buffer.from(
     canonicalJson({
-      kind: request.execution.kind,
-      evidence: request.execution.evidence,
+      kind: completion.execution.kind,
+      evidence: completion.execution.evidence,
     }),
   );
-  const expectedOutcomeHash = createHash("sha256")
-    .update(rawBytes ?? diagnosticBytes)
-    .digest("hex");
   if (
-    identities.some((value) => value.trim().length === 0) ||
-    request.runId !== policy.runId ||
-    !/^[a-f0-9]{64}$/u.test(request.requestContentHash) ||
-    !artifactRegistrationIsValid(request.outcomeArtifact) ||
-    (request.nativeUsageArtifact !== undefined &&
-      !artifactRegistrationIsValid(request.nativeUsageArtifact)) ||
-    request.outcomeArtifact.contentHash !== expectedOutcomeHash ||
+    [
+      completion.runId,
+      completion.commandId,
+      completion.attemptId,
+      completion.ownerProcess,
+      completion.correlationId,
+      completion.requestArtifactId,
+      completion.requestContentHash,
+      completion.outcomeArtifact.artifactId,
+    ].some((value) => value.trim().length === 0) ||
+    request.runId !== completion.runId ||
+    request.runId !== request.executionPolicy.runId ||
+    !/^[a-f0-9]{64}$/u.test(completion.requestContentHash) ||
+    !artifactRegistrationIsValid(completion.outcomeArtifact) ||
+    (completion.nativeUsageArtifact !== undefined &&
+      !artifactRegistrationIsValid(completion.nativeUsageArtifact)) ||
+    completion.outcomeArtifact.contentHash !==
+      createHash("sha256")
+        .update(rawBytes ?? diagnosticBytes)
+        .digest("hex") ||
     (nativeBytes === undefined) !==
-      (request.nativeUsageArtifact === undefined) ||
+      (completion.nativeUsageArtifact === undefined) ||
     (nativeBytes !== undefined &&
-      request.nativeUsageArtifact?.contentHash !==
+      completion.nativeUsageArtifact?.contentHash !==
         createHash("sha256").update(nativeBytes).digest("hex")) ||
-    request.execution.evidence.correlationId !== request.correlationId ||
-    request.execution.evidence.requestedModel.trim().length === 0
+    completion.execution.evidence.correlationId !== completion.correlationId
   ) {
     throw new TypeError("Provider failure evidence is invalid");
   }
-  return authority.completeProviderFailure(request, policy);
+}
+
+export async function completeProviderFailure(
+  authority: AuthorityPort,
+  request: CompleteProviderFailureRequest,
+): Promise<ProviderFailureDisposition | PersistableTransition<object>> {
+  return authority.transaction((transaction) => {
+    const previousState = transaction.loadRun<NonterminalRunState>(
+      request.runId,
+    );
+    return transaction.persistProviderFailure(
+      AcceptedProviderFailure.fromDomain(previousState, request),
+    );
+  });
 }

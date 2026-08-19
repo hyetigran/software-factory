@@ -324,13 +324,6 @@ export interface CommandExecutionPort {
   ): Promise<CompletedCommandAttempt>;
 }
 
-export interface ProviderFailureCompletionPort {
-  completeProviderFailure(
-    request: CompleteProviderFailureEvidence,
-    policy: ExecutionPolicy,
-  ): Promise<ProviderFailureDisposition>;
-}
-
 function schemaRepairPolicyIsValid(
   repair: NonNullable<BeginAttemptRequest["schemaRepair"]>,
 ): boolean {

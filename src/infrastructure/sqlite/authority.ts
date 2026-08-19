@@ -23,15 +23,14 @@ import type {
 } from "../../application/authority-port.js";
 import type { PreparedProviderRequestRegistrationPort } from "../../application/execute-provider-call.js";
 import type { AcceptedProviderCompletion } from "../../application/complete-provider-attempt.js";
+import type { AcceptedProviderFailure } from "../../application/complete-provider-failure.js";
 import type { ProviderRequest } from "../../application/provider-port.js";
 import type {
   BeginAttemptRequest,
   BeginAttemptOutcome,
   CommandExecutionPort,
   CompleteAttemptRequest,
-  CompleteProviderFailureEvidence,
   CompletedCommandAttempt,
-  ExecutionPolicy,
   ProviderFailureDisposition,
   StartedCommandAttempt,
 } from "../../application/execution-port.js";
@@ -170,7 +169,6 @@ export class SqliteAuthority
     });
     this.providerFailure = new SqliteProviderFailure({
       database,
-      workspaceId,
       now,
       readStagedArtifactBytes: (artifact) =>
         this.readVerifiedStagedArtifact(artifact),
@@ -526,6 +524,99 @@ export class SqliteAuthority
           status: "settled" as const,
           completion: settlement.completion,
         };
+      },
+      persistProviderFailure: (accepted: AcceptedProviderFailure) => {
+        assertActive();
+        if (persisted) {
+          throw new Error("Authority transaction accepts exactly one input");
+        }
+        const data = accepted.toPersistenceData();
+        const currentState = this.loadRun<object>(data.persistRequest.runId);
+        const currentStateHash = createHash("sha256")
+          .update(canonicalJson(currentState))
+          .digest("hex");
+        if (currentStateHash !== data.previousStateHash) {
+          throw new TypeError(
+            "Provider failure was not derived from authoritative state",
+          );
+        }
+        const completion = this.providerFailure.complete(
+          data.completion,
+          data.executionPolicy,
+        );
+        const terminal = ["terminal", "pinned_model_unavailable"].includes(
+          completion.recovery,
+        );
+        let result: ProviderFailureDisposition | PersistableTransition<object>;
+        if (terminal) {
+          const terminalInput = data.terminalInput;
+          const expectedClassification =
+            completion.failureClass === "refusal"
+              ? "refusal"
+              : completion.failureClass === "invalid_output" ||
+                  completion.failureClass === "schema_invalid"
+                ? "invalid_output"
+                : completion.failureClass === "provider_error"
+                  ? "provider_error"
+                  : "transport";
+          if (
+            data.terminalResult === undefined ||
+            terminalInput === undefined ||
+            terminalInput.failedCommandId !== data.completion.commandId ||
+            !terminalInput.attemptIds.includes(data.completion.attemptId) ||
+            terminalInput.outcomeArtifact.artifactId !==
+              data.completion.outcomeArtifact.artifactId ||
+            terminalInput.outcomeArtifact.contentHash !==
+              data.completion.outcomeArtifact.contentHash ||
+            terminalInput.failureClassification !== expectedClassification ||
+            canonicalJson(terminalInput.recoveryBounds) !==
+              canonicalJson(completion.recoveryBounds)
+          ) {
+            throw new TypeError(
+              "Terminal provider failure requires its domain transition",
+            );
+          }
+          const combined = {
+            ...data.terminalResult,
+            auditFacts: [
+              ...completion.auditFacts,
+              ...data.terminalResult.auditFacts,
+            ],
+          };
+          this.persistAcceptedTransition(
+            {
+              ...data.persistRequest,
+              stagedArtifacts: [
+                ...(data.persistRequest.stagedArtifacts ?? []),
+                data.completion.outcomeArtifact,
+                ...(data.completion.nativeUsageArtifact === undefined
+                  ? []
+                  : [data.completion.nativeUsageArtifact]),
+              ],
+            },
+            combined,
+          );
+          result = combined;
+        } else {
+          appendAuditEntries({
+            database: this.database,
+            workspaceId: this.workspaceId,
+            runId: data.completion.runId,
+            stateVersionBefore: completion.stateVersion,
+            stateVersionAfter: completion.stateVersion,
+            correlationId: data.completion.correlationId,
+            facts: completion.auditFacts,
+            now: this.now,
+          });
+          result = completion;
+        }
+        this.database
+          .prepare(
+            "DELETE FROM mutation_lease WHERE singleton = 1 AND attempt_id = ?",
+          )
+          .run(data.completion.attemptId);
+        persisted = true;
+        return result;
       },
       persistProviderCompletion: <TState extends object>(
         accepted: AcceptedProviderCompletion,
@@ -1059,28 +1150,6 @@ export class SqliteAuthority
       this.database.exec("ROLLBACK");
       if (error instanceof AuthorityIntegrityError)
         this.quarantine(error.message);
-      throw error;
-    }
-  }
-
-  async completeProviderFailure(
-    request: CompleteProviderFailureEvidence,
-    policy: ExecutionPolicy,
-  ): Promise<ProviderFailureDisposition> {
-    this.assertWritable();
-    await this.verifyIntegrity();
-    this.database.exec("BEGIN IMMEDIATE");
-    try {
-      this.assertWritable();
-      this.verifyAuditChain();
-      const result = this.providerFailure.complete(request, policy);
-      this.database.exec("COMMIT");
-      return result;
-    } catch (error) {
-      this.database.exec("ROLLBACK");
-      if (error instanceof AuthorityIntegrityError) {
-        this.quarantine(error.message);
-      }
       throw error;
     }
   }
