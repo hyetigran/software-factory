@@ -20,6 +20,7 @@ import type {
 import { ValidatedProjection } from "../../src/application/authority-port.js";
 import { commitTransition } from "../../src/application/commit-transition.js";
 import { completeProviderFailure } from "../../src/application/complete-provider-failure.js";
+import { sealProviderExecution } from "../../src/infrastructure/providers/execution-capability.js";
 import {
   ExecutionPolicy,
   type BeginAttemptRequest,
@@ -462,7 +463,29 @@ describe("SQLite authority", () => {
         executionConfiguration.providerRequestSettings.schemaRepair.timeoutMs,
     };
     const repairRequestArtifact = await store.stageArtifact(
-      Buffer.from('{"request":"repair"}'),
+      Buffer.from(
+        canonicalJson({
+          method: "POST",
+          endpoint: "https://api.openai.com/v1/responses",
+          headers: {
+            "content-type": "application/json",
+            "x-client-request-id": repairAttempt.correlationId,
+          },
+          body: {},
+          timeoutMs:
+            executionConfiguration.providerRequestSettings.schemaRepair
+              .timeoutMs,
+          preflight: {
+            capability: {
+              canonicalModelId: "planner",
+              structuredOutput: true,
+              contextWindowTokens: 100_000,
+              maxOutputTokens: 10_000,
+            },
+            inputTokens: 10,
+          },
+        }),
+      ),
       {
         artifactId: "artifact_provider_repair_request",
         kind: "provider_request",
@@ -577,29 +600,35 @@ describe("SQLite authority", () => {
           requestContentHash: repairRequestArtifact.contentHash,
           outcomeArtifact: failedResponse,
           nativeUsageArtifact: failedUsage,
-          actualUsage: {
-            calls: 1,
-            inputTokens: 10,
-            outputTokens: 5,
-            costUsdMicros: 100,
-          },
-          failureKind: "schema_invalid",
-          providerEvidence: {
-            requestedModel: "planner",
-            returnedModel: "planner",
-            endpoint: "https://api.openai.com/v1/responses",
-            behaviorHeaders: {},
-            providerResponseId: "response_invalid",
-            correlationId: repairAttempt.correlationId,
-            completionStatus: "completed",
-            preflight: {
-              canonicalModelId: "planner",
-              structuredOutput: true,
-              contextWindowTokens: 100_000,
-              maxOutputTokens: 10_000,
-              inputTokens: 10,
+          execution: sealProviderExecution({
+            kind: "schema_invalid",
+            raw: "invalid",
+            errors: ["schema mismatch"],
+            evidence: {
+              requestedModel: "planner",
+              returnedModel: "planner",
+              endpoint: "https://api.openai.com/v1/responses",
+              behaviorHeaders: {},
+              providerResponseId: "response_invalid",
+              correlationId: repairAttempt.correlationId,
+              completionStatus: "completed",
+              preflight: {
+                canonicalModelId: "planner",
+                structuredOutput: true,
+                contextWindowTokens: 100_000,
+                maxOutputTokens: 10_000,
+                inputTokens: 10,
+              },
             },
-          },
+            recording: {
+              rawResponseBytes: Buffer.from(
+                '{"id":"response_invalid","model":"planner"}',
+              ),
+              nativeUsageBytes: Buffer.from(
+                '{"input_tokens":10,"output_tokens":5}',
+              ),
+            },
+          }),
         },
         policy,
       ),

@@ -7,6 +7,7 @@ import type {
   ProviderRequest,
   PreparedProviderCall,
 } from "../../application/provider-port.js";
+import { sealProviderExecution } from "./execution-capability.js";
 import {
   assertProviderRequest,
   bytes,
@@ -89,7 +90,7 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
           wireBodyBytes,
           visibleHeaders,
           preflight,
-        );
+        ).then(sealProviderExecution);
       },
     });
   }

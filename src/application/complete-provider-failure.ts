@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
+
 import { artifactRegistrationIsValid } from "./artifact-port.js";
+import { canonicalJson } from "../domain/canonical-json.js";
 import type {
   CompleteProviderFailureEvidence,
   ExecutionPolicy,
@@ -21,7 +24,17 @@ export function completeProviderFailure(
     request.requestContentHash,
     request.outcomeArtifact.artifactId,
   ];
-  const usage = request.actualUsage;
+  const rawBytes = request.execution.recording.rawResponseBytes;
+  const nativeBytes = request.execution.recording.nativeUsageBytes;
+  const diagnosticBytes = Buffer.from(
+    canonicalJson({
+      kind: request.execution.kind,
+      evidence: request.execution.evidence,
+    }),
+  );
+  const expectedOutcomeHash = createHash("sha256")
+    .update(rawBytes ?? diagnosticBytes)
+    .digest("hex");
   if (
     identities.some((value) => value.trim().length === 0) ||
     request.runId !== policy.runId ||
@@ -29,11 +42,14 @@ export function completeProviderFailure(
     !artifactRegistrationIsValid(request.outcomeArtifact) ||
     (request.nativeUsageArtifact !== undefined &&
       !artifactRegistrationIsValid(request.nativeUsageArtifact)) ||
-    !Object.values(usage).every(
-      (value) => Number.isInteger(value) && value >= 0,
-    ) ||
-    request.providerEvidence.correlationId !== request.correlationId ||
-    request.providerEvidence.requestedModel.trim().length === 0
+    request.outcomeArtifact.contentHash !== expectedOutcomeHash ||
+    (nativeBytes === undefined) !==
+      (request.nativeUsageArtifact === undefined) ||
+    (nativeBytes !== undefined &&
+      request.nativeUsageArtifact?.contentHash !==
+        createHash("sha256").update(nativeBytes).digest("hex")) ||
+    request.execution.evidence.correlationId !== request.correlationId ||
+    request.execution.evidence.requestedModel.trim().length === 0
   ) {
     throw new TypeError("Provider failure evidence is invalid");
   }

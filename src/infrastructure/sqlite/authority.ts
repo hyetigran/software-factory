@@ -174,6 +174,7 @@ export class SqliteAuthority
       now,
       readStagedArtifactBytes: (artifact) =>
         this.readVerifiedStagedArtifact(artifact),
+      readObjectBytes: (contentHash) => this.readVerifiedObject(contentHash),
       persistArtifactMetadata: (artifact) =>
         this.persistArtifactMetadata(artifact),
     });

@@ -7,6 +7,7 @@ import type {
   ProviderRequest,
   PreparedProviderCall,
 } from "../../application/provider-port.js";
+import { sealProviderExecution } from "./execution-capability.js";
 import {
   assertProviderRequest,
   bytes,
@@ -87,7 +88,9 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
           throw new Error("Prepared provider call has already been dispatched");
         }
         dispatched = true;
-        return this.dispatch(preparedRequest, wireBodyBytes, preflight);
+        return this.dispatch(preparedRequest, wireBodyBytes, preflight).then(
+          sealProviderExecution,
+        );
       },
     });
   }

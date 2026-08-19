@@ -6,6 +6,7 @@ import type {
   ProviderExecution,
   ProviderRequest,
 } from "../../application/provider-port.js";
+import { sealProviderExecution } from "./execution-capability.js";
 import { assertJsonSchema } from "../../application/json-schema-validator.js";
 import { canonicalJson } from "../../domain/canonical-json.js";
 import { preparedProviderCall } from "./common.js";
@@ -109,7 +110,7 @@ export class StrictReplayAdapter implements ProviderAdapter {
             preparedRequest.outputSchema,
           );
         }
-        return structuredClone(recorded.execution);
+        return sealProviderExecution(recorded.execution);
       },
     });
   }

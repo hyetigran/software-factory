@@ -10,7 +10,7 @@ import {
   artifactRegistrationIsValid,
   type StagedArtifactRegistration,
 } from "./artifact-port.js";
-import type { ProviderEvidence } from "./provider-port.js";
+import type { ProviderEvidence, ProviderExecution } from "./provider-port.js";
 
 export type AttemptStatus =
   "started" | "completed" | "failed" | "unknown" | "discarded";
@@ -273,14 +273,13 @@ export type ProviderFailureKind =
 
 export type CompleteProviderFailureEvidence = Omit<
   CompleteAttemptRequest,
-  "resultArtifact" | "providerEvidence"
+  "resultArtifact" | "providerEvidence" | "actualUsage"
 > & {
   requestArtifactId: string;
   requestContentHash: string;
   outcomeArtifact: StagedArtifactRegistration;
   nativeUsageArtifact?: StagedArtifactRegistration;
-  providerEvidence: ProviderEvidence;
-  failureKind: ProviderFailureKind;
+  execution: Exclude<ProviderExecution, { kind: "completed" }>;
 };
 
 export type ProviderFailureDisposition = {
@@ -293,9 +292,15 @@ export type ProviderFailureDisposition = {
     | "invalid_output"
     | "schema_invalid"
     | "transport"
+    | "transport_retryable"
     | "provider_error"
     | "unknown";
-  recovery: "transport_retry" | "schema_repair" | "terminal";
+  failureKind: ProviderFailureKind;
+  recovery:
+    | "transport_retry"
+    | "schema_repair"
+    | "pinned_model_unavailable"
+    | "terminal";
   recoveryBounds: {
     retryLimit: number;
     repairLimit: number;
