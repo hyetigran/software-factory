@@ -1,3 +1,5 @@
+import type { ProviderBoundaryDisclosure } from "./request-planning.js";
+
 export type RunSummary = {
   runId: string;
   state: string;
@@ -170,17 +172,20 @@ export interface WorkspaceOperations {
       policy: boolean;
       budgets: boolean;
       providerBoundary: boolean;
+      providerBoundaryDisclosureHash: string;
     },
   ): Promise<{
     state: object;
     commandId: string;
-    providerBoundaryDisclosure: {
-      provider: "openai" | "anthropic";
-      modelId: string;
-      externalTransmission: true;
-      providerStorage: "minimize";
-      recordingMode: "record" | "strict_replay";
-    };
+    providerBoundaryDisclosure: ProviderBoundaryDisclosure;
+    providerBoundaryDisclosureHash: string;
+  }>;
+  previewPlanningBoundary(
+    projectRoot: string,
+    runId: string,
+  ): Promise<{
+    providerBoundaryDisclosure: ProviderBoundaryDisclosure;
+    providerBoundaryDisclosureHash: string;
   }>;
   listRuns(projectRoot: string): Promise<RunSummary[]>;
   loadRun(projectRoot: string, runId: string): Promise<object | null>;

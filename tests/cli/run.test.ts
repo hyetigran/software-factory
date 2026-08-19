@@ -307,6 +307,24 @@ describe("factory executable", () => {
         coverageReportArtifactId: executed.data.execution.resultArtifactId,
       },
     });
+    const previewLines: string[] = [];
+    await expect(
+      runCliAsync(
+        ["plan", "preview", started.data.runId, "--json"],
+        (line) => previewLines.push(line),
+        operations,
+        projectRoot,
+      ),
+    ).resolves.toBe(CliExit.success);
+    const previewEnvelope = JSON.parse(previewLines[0] ?? "null") as {
+      data: Awaited<ReturnType<WorkspaceOperations["previewPlanningBoundary"]>>;
+    };
+    expect(previewEnvelope).toMatchObject({
+      ok: true,
+      command: "plan preview",
+      data: { providerBoundaryDisclosure: { mode: "live" } },
+    });
+    const boundaryPreview = previewEnvelope.data;
     const leaseDatabase = new DatabaseSync(
       join(projectRoot, ".factory", "state.db"),
     );
@@ -337,6 +355,7 @@ describe("factory executable", () => {
             "--accept-policy",
             "--accept-budgets",
             "--ack-provider-boundary",
+            boundaryPreview.providerBoundaryDisclosureHash,
             "--json",
           ],
           (line) => blockedLines.push(line),
@@ -364,6 +383,7 @@ describe("factory executable", () => {
           "--accept-policy",
           "--accept-budgets",
           "--ack-provider-boundary",
+          boundaryPreview.providerBoundaryDisclosureHash,
           "--json",
         ],
         (line) => planningLines.push(line),
@@ -380,12 +400,20 @@ describe("factory executable", () => {
       data: {
         state: { state: "planning", stateVersion: 6 },
         providerBoundaryDisclosure: {
+          mode: "live",
           provider: "openai",
           modelId: "gpt-5.6-terra",
           externalTransmission: true,
+          transmittedArtifactClasses: [
+            "system_prompt",
+            "requirements_ledger",
+            "output_schema",
+          ],
           providerStorage: "minimize",
-          recordingMode: "record",
+          retentionApplicability: "provider_terms_apply",
         },
+        providerBoundaryDisclosureHash:
+          boundaryPreview.providerBoundaryDisclosureHash,
       },
     });
     const planningDatabase = new DatabaseSync(
@@ -591,6 +619,7 @@ describe("factory executable", () => {
       executeNext: vi.fn(),
       approveLedger: vi.fn(),
       requestPlanning: vi.fn(),
+      previewPlanningBoundary: vi.fn(),
       listRuns,
       loadRun: vi.fn(),
       listAudit: vi.fn(),
@@ -649,6 +678,7 @@ describe("factory executable", () => {
       executeNext: vi.fn(),
       approveLedger: vi.fn(),
       requestPlanning: vi.fn(),
+      previewPlanningBoundary: vi.fn(),
       listRuns: vi.fn(),
       loadRun: vi.fn().mockResolvedValue({ runId: "run_1" }),
       listAudit: vi.fn(),
@@ -725,6 +755,7 @@ describe("factory executable", () => {
       executeNext: vi.fn(),
       approveLedger: vi.fn(),
       requestPlanning: vi.fn(),
+      previewPlanningBoundary: vi.fn(),
       listRuns: vi.fn(),
       loadRun: vi.fn(),
       listAudit: vi.fn(),

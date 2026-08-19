@@ -1,4 +1,8 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it, vi } from "vitest";
+
+import { canonicalJson } from "../../src/domain/canonical-json.js";
 
 import type {
   AuthorityPort,
@@ -197,6 +201,19 @@ function ledgerApprovalRequestedInput(): LedgerApprovalRequested {
 }
 
 function planningRequestedInput(): PlanningRequested {
+  const providerBoundaryDisclosure = {
+    mode: "live" as const,
+    provider: "openai" as const,
+    modelId: "gpt-5.6-2026-08-01",
+    externalTransmission: true as const,
+    transmittedArtifactClasses: [
+      "system_prompt",
+      "requirements_ledger",
+      "output_schema",
+    ] as ["system_prompt", "requirements_ledger", "output_schema"],
+    providerStorage: "minimize" as const,
+    retentionApplicability: "provider_terms_apply" as const,
+  };
   return {
     type: "PlanningRequested",
     runId: "run_01JTEST0000000000000000000",
@@ -211,13 +228,10 @@ function planningRequestedInput(): PlanningRequested {
     policyAccepted: true,
     budgetsAccepted: true,
     providerBoundaryAcknowledged: true,
-    providerBoundaryDisclosure: {
-      provider: "openai",
-      modelId: "gpt-5.6-2026-08-01",
-      externalTransmission: true,
-      providerStorage: "minimize",
-      recordingMode: "record",
-    },
+    providerBoundaryDisclosure,
+    providerBoundaryDisclosureHash: createHash("sha256")
+      .update(canonicalJson(providerBoundaryDisclosure))
+      .digest("hex"),
     promptArtifactId: "artifact_planner_prompt_01JTEST",
     promptContentHash: plannerPromptContentHash,
     promptArtifactVerified: true,
@@ -2188,6 +2202,8 @@ describe("transition", () => {
         providerBoundaryAcknowledged: true,
         providerBoundaryDisclosure:
           planningRequestedInput().providerBoundaryDisclosure,
+        providerBoundaryDisclosureHash:
+          planningRequestedInput().providerBoundaryDisclosureHash,
       },
     });
     const command = result.commands[0];
@@ -2220,6 +2236,10 @@ describe("transition", () => {
     ["stale state version", { expectedStateVersion: 3 }],
     ["unaccepted policy", { policyAccepted: false }],
     ["unaccepted budgets", { budgetsAccepted: false }],
+    [
+      "mismatched disclosure hash",
+      { providerBoundaryDisclosureHash: "f".repeat(64) },
+    ],
     [
       "unacknowledged provider boundary",
       { providerBoundaryAcknowledged: false },

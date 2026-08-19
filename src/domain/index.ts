@@ -350,13 +350,31 @@ export type PlanningRequested = {
   policyAccepted: boolean;
   budgetsAccepted: boolean;
   providerBoundaryAcknowledged: boolean;
-  providerBoundaryDisclosure: {
-    provider: "openai" | "anthropic";
-    modelId: string;
-    externalTransmission: true;
-    providerStorage: "minimize";
-    recordingMode: "record" | "strict_replay";
-  };
+  providerBoundaryDisclosure:
+    | {
+        mode: "live";
+        provider: "openai" | "anthropic";
+        modelId: string;
+        externalTransmission: true;
+        transmittedArtifactClasses: [
+          "system_prompt",
+          "requirements_ledger",
+          "output_schema",
+        ];
+        providerStorage: "minimize";
+        retentionApplicability: "provider_terms_apply";
+      }
+    | {
+        mode: "strict_replay";
+        provider: "openai" | "anthropic";
+        modelId: string;
+        externalTransmission: false;
+        transmittedArtifactClasses: [];
+        providerStorage: "minimize";
+        retentionApplicability: "not_applicable_no_network";
+        cassetteBoundary: "local_verified_recording";
+      };
+  providerBoundaryDisclosureHash: string;
   promptArtifactId: string;
   promptContentHash: string;
   promptArtifactVerified: boolean;
@@ -1049,6 +1067,7 @@ export type PlanningRequestedFact = {
     budgetsAccepted: true;
     providerBoundaryAcknowledged: true;
     providerBoundaryDisclosure: PlanningRequested["providerBoundaryDisclosure"];
+    providerBoundaryDisclosureHash: string;
   };
 };
 
@@ -2271,8 +2290,30 @@ function requestPlanning(
       input.plannerAssignment.provider ||
     input.providerBoundaryDisclosure.modelId !==
       input.plannerAssignment.modelId ||
-    input.providerBoundaryDisclosure.externalTransmission !== true ||
     input.providerBoundaryDisclosure.providerStorage !== "minimize" ||
+    !/^[a-f0-9]{64}$/.test(input.providerBoundaryDisclosureHash) ||
+    createHash("sha256")
+      .update(canonicalJson(input.providerBoundaryDisclosure))
+      .digest("hex") !== input.providerBoundaryDisclosureHash ||
+    (input.providerBoundaryDisclosure.mode === "live"
+      ? input.providerBoundaryDisclosure.externalTransmission !== true ||
+        input.providerBoundaryDisclosure.retentionApplicability !==
+          "provider_terms_apply" ||
+        canonicalJson(
+          input.providerBoundaryDisclosure.transmittedArtifactClasses,
+        ) !==
+          canonicalJson([
+            "system_prompt",
+            "requirements_ledger",
+            "output_schema",
+          ])
+      : input.providerBoundaryDisclosure.externalTransmission !== false ||
+        input.providerBoundaryDisclosure.transmittedArtifactClasses.length !==
+          0 ||
+        input.providerBoundaryDisclosure.retentionApplicability !==
+          "not_applicable_no_network" ||
+        input.providerBoundaryDisclosure.cassetteBoundary !==
+          "local_verified_recording") ||
     !input.plannerModelAllowed ||
     !input.modelIdentityPinned ||
     !input.promptArtifactVerified ||
@@ -2389,6 +2430,7 @@ function requestPlanning(
           budgetsAccepted: true,
           providerBoundaryAcknowledged: true,
           providerBoundaryDisclosure: input.providerBoundaryDisclosure,
+          providerBoundaryDisclosureHash: input.providerBoundaryDisclosureHash,
         },
       },
       commandPlannedFact(

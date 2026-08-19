@@ -16,7 +16,10 @@ import { loadPinnedConfiguration } from "../../application/load-pinned-configura
 import { approveSourceExclusion } from "../../application/approve-source-exclusion.js";
 import { executeNextLocalCommand } from "../../application/execute-local-command.js";
 import { approveLedger } from "../../application/approve-ledger.js";
-import { requestPlanning } from "../../application/request-planning.js";
+import {
+  providerBoundaryDisclosure,
+  requestPlanning,
+} from "../../application/request-planning.js";
 import {
   DomainTransitionError,
   type NonterminalRunState,
@@ -507,6 +510,24 @@ export function createWorkspaceOperations(): WorkspaceOperations {
         authority.close();
       }
     },
+    async previewPlanningBoundary(projectRoot, runId) {
+      const store = await ContentAddressedArtifactStore.open(projectRoot);
+      const configuration = await loadPinnedConfiguration({
+        runId,
+        read: {
+          loadRun: (id) =>
+            withReadModel(projectRoot, (model) => model.loadRun(id)),
+          listArtifacts: () =>
+            withReadModel(projectRoot, (model) => model.listArtifacts()),
+          readVerified: (contentHash) => store.readVerified(contentHash),
+        },
+      });
+      const preview = providerBoundaryDisclosure(configuration);
+      return {
+        providerBoundaryDisclosure: preview.disclosure,
+        providerBoundaryDisclosureHash: preview.disclosureHash,
+      };
+    },
     async requestPlanning(projectRoot, runId, acceptance) {
       const store = await ContentAddressedArtifactStore.open(projectRoot);
       const configuration = await loadPinnedConfiguration({
@@ -535,6 +556,8 @@ export function createWorkspaceOperations(): WorkspaceOperations {
           policyAccepted: acceptance.policy,
           budgetsAccepted: acceptance.budgets,
           providerBoundaryAcknowledged: acceptance.providerBoundary,
+          providerBoundaryDisclosureHash:
+            acceptance.providerBoundaryDisclosureHash,
           actor: {
             kind: "human",
             displayName: configuration.humanActorDisplayName,

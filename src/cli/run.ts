@@ -23,6 +23,14 @@ type ParsedCommand =
       json: boolean;
       projectRoot: string;
       runId: string;
+      providerBoundaryDisclosureHash: string;
+    }
+  | {
+      kind: "plan_preview";
+      publicName: "plan preview";
+      json: boolean;
+      projectRoot: string;
+      runId: string;
     }
   | {
       kind: "approve_ledger";
@@ -109,7 +117,7 @@ type ParsedCommand =
     };
 
 const usage =
-  "Usage: factory init | configure [project-config.json] [overrides.json] | run start <source.md> <configuration-artifact-id> | run list | run status <run-id> | submit ledger <run-id> <ledger.json> | approve ledger <run-id> | approve exclusion <run-id> <id> <start> <end> <reason> | plan request <run-id> --accept-policy --accept-budgets --ack-provider-boundary | execute next <run-id> | inspect <state|findings|usage|gates> <run-id> | inspect <audit|artifacts> [run-id] [--json] [--project <path>]";
+  "Usage: factory init | configure [project-config.json] [overrides.json] | run start <source.md> <configuration-artifact-id> | run list | run status <run-id> | submit ledger <run-id> <ledger.json> | approve ledger <run-id> | approve exclusion <run-id> <id> <start> <end> <reason> | plan preview <run-id> | plan request <run-id> --accept-policy --accept-budgets --ack-provider-boundary <disclosure-hash> | execute next <run-id> | inspect <state|findings|usage|gates> <run-id> | inspect <audit|artifacts> [run-id] [--json] [--project <path>]";
 
 export function runCli(args: string[], write: Writer): number {
   if (args.includes("--version")) {
@@ -141,7 +149,7 @@ function parseArgs(args: string[], cwd: string): ParsedCommand {
   let project: string | undefined;
   let acceptPolicy = false;
   let acceptBudgets = false;
-  let acknowledgeProvider = false;
+  let acknowledgeProvider: string | undefined;
   const positional: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index] ?? "";
@@ -157,9 +165,17 @@ function parseArgs(args: string[], cwd: string): ParsedCommand {
         throw new TypeError("Duplicate option: --accept-budgets");
       acceptBudgets = true;
     } else if (token === "--ack-provider-boundary") {
-      if (acknowledgeProvider)
-        throw new TypeError("Duplicate option: --ack-provider-boundary");
-      acknowledgeProvider = true;
+      const value = args[index + 1];
+      if (
+        acknowledgeProvider !== undefined ||
+        value === undefined ||
+        !/^[a-f0-9]{64}$/.test(value)
+      )
+        throw new TypeError(
+          "--ack-provider-boundary requires the 64-character hash from the displayed disclosure",
+        );
+      acknowledgeProvider = value;
+      index += 1;
     } else if (token === "--project") {
       const value = args[index + 1];
       if (
@@ -183,7 +199,7 @@ function parseArgs(args: string[], cwd: string): ParsedCommand {
     positional[0] === "plan" &&
     positional[1] === "request";
   if (
-    (acceptPolicy || acceptBudgets || acknowledgeProvider) &&
+    (acceptPolicy || acceptBudgets || acknowledgeProvider !== undefined) &&
     !planningRequest
   )
     throw new TypeError("Planning acceptance options require plan request");
@@ -195,6 +211,20 @@ function parseArgs(args: string[], cwd: string): ParsedCommand {
     return {
       kind: "plan_request",
       publicName: "plan request",
+      json,
+      projectRoot,
+      runId: positional[2] ?? "",
+      providerBoundaryDisclosureHash: acknowledgeProvider,
+    };
+  }
+  if (
+    positional.length === 3 &&
+    positional[0] === "plan" &&
+    positional[1] === "preview"
+  ) {
+    return {
+      kind: "plan_preview",
+      publicName: "plan preview",
       json,
       projectRoot,
       runId: positional[2] ?? "",
@@ -523,16 +553,50 @@ export async function runCliAsync(
         return CliExit.success;
       }
       case "plan_request": {
+        const preview = await operations.previewPlanningBoundary(
+          command.projectRoot,
+          command.runId,
+        );
+        if (!command.json) {
+          const disclosure = preview.providerBoundaryDisclosure;
+          write(
+            disclosure.mode === "live"
+              ? `Provider boundary: ${disclosure.provider}/${disclosure.modelId}; transmits=${disclosure.transmittedArtifactClasses.join(",")}; storage=${disclosure.providerStorage}; retention=${disclosure.retentionApplicability}; disclosureHash=${preview.providerBoundaryDisclosureHash}`
+              : `Replay boundary: no external transmission; cassette=${disclosure.cassetteBoundary}; disclosureHash=${preview.providerBoundaryDisclosureHash}`,
+          );
+        }
         const planned = await operations.requestPlanning(
           command.projectRoot,
           command.runId,
-          { policy: true, budgets: true, providerBoundary: true },
+          {
+            policy: true,
+            budgets: true,
+            providerBoundary: true,
+            providerBoundaryDisclosureHash:
+              command.providerBoundaryDisclosureHash,
+          },
         );
         writeSuccess(
           write,
           command,
           planned,
-          `Requested planning with command ${planned.commandId}\nProvider boundary acknowledged: external transmission to ${planned.providerBoundaryDisclosure.provider}/${planned.providerBoundaryDisclosure.modelId}; storage=${planned.providerBoundaryDisclosure.providerStorage}; recording=${planned.providerBoundaryDisclosure.recordingMode}`,
+          `Requested planning with command ${planned.commandId}; acknowledged disclosure ${planned.providerBoundaryDisclosureHash}`,
+        );
+        return CliExit.success;
+      }
+      case "plan_preview": {
+        const preview = await operations.previewPlanningBoundary(
+          command.projectRoot,
+          command.runId,
+        );
+        const disclosure = preview.providerBoundaryDisclosure;
+        writeSuccess(
+          write,
+          command,
+          preview,
+          disclosure.mode === "live"
+            ? `Provider boundary: ${disclosure.provider}/${disclosure.modelId}; transmits=${disclosure.transmittedArtifactClasses.join(",")}; storage=${disclosure.providerStorage}; retention=${disclosure.retentionApplicability}; disclosureHash=${preview.providerBoundaryDisclosureHash}`
+            : `Replay boundary: no external transmission; cassette=${disclosure.cassetteBoundary}; disclosureHash=${preview.providerBoundaryDisclosureHash}`,
         );
         return CliExit.success;
       }

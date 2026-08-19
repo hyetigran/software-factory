@@ -10,6 +10,70 @@ import type { ResolvedConfigurationSnapshot } from "./stage-configuration.js";
 import type { ArtifactSummary } from "./workspace-operations.js";
 import { WorkspaceOperationError } from "./workspace-operations.js";
 import { packagedControlPaths } from "./resolve-configuration.js";
+import { createHash } from "node:crypto";
+import { canonicalJson } from "../domain/canonical-json.js";
+
+export type ProviderBoundaryDisclosure =
+  | {
+      mode: "live";
+      provider: "openai" | "anthropic";
+      modelId: string;
+      externalTransmission: true;
+      transmittedArtifactClasses: [
+        "system_prompt",
+        "requirements_ledger",
+        "output_schema",
+      ];
+      providerStorage: "minimize";
+      retentionApplicability: "provider_terms_apply";
+    }
+  | {
+      mode: "strict_replay";
+      provider: "openai" | "anthropic";
+      modelId: string;
+      externalTransmission: false;
+      transmittedArtifactClasses: [];
+      providerStorage: "minimize";
+      retentionApplicability: "not_applicable_no_network";
+      cassetteBoundary: "local_verified_recording";
+    };
+
+export function providerBoundaryDisclosure(
+  configuration: ResolvedConfigurationSnapshot,
+): { disclosure: ProviderBoundaryDisclosure; disclosureHash: string } {
+  const base = {
+    provider: configuration.plannerAssignment.provider,
+    modelId: configuration.plannerAssignment.modelId,
+    providerStorage: configuration.providerStorage,
+  };
+  const disclosure: ProviderBoundaryDisclosure =
+    configuration.recordingMode === "strict_replay"
+      ? {
+          mode: "strict_replay",
+          ...base,
+          externalTransmission: false,
+          transmittedArtifactClasses: [],
+          retentionApplicability: "not_applicable_no_network",
+          cassetteBoundary: "local_verified_recording",
+        }
+      : {
+          mode: "live",
+          ...base,
+          externalTransmission: true,
+          transmittedArtifactClasses: [
+            "system_prompt",
+            "requirements_ledger",
+            "output_schema",
+          ],
+          retentionApplicability: "provider_terms_apply",
+        };
+  return {
+    disclosure,
+    disclosureHash: createHash("sha256")
+      .update(canonicalJson(disclosure))
+      .digest("hex"),
+  };
+}
 
 function pinnedArtifact(
   artifacts: Array<Omit<ArtifactSummary, "objectVerified">>,
@@ -42,17 +106,13 @@ export async function requestPlanning(input: {
   policyAccepted: boolean;
   budgetsAccepted: boolean;
   providerBoundaryAcknowledged: boolean;
+  providerBoundaryDisclosureHash: string;
   actor: HumanActor;
 }): Promise<{
   state: object;
   commandId: string;
-  providerBoundaryDisclosure: {
-    provider: "openai" | "anthropic";
-    modelId: string;
-    externalTransmission: true;
-    providerStorage: "minimize";
-    recordingMode: "record" | "strict_replay";
-  };
+  providerBoundaryDisclosure: ProviderBoundaryDisclosure;
+  providerBoundaryDisclosureHash: string;
 }> {
   const prompt = pinnedArtifact(
     input.registeredArtifacts,
@@ -64,13 +124,15 @@ export async function requestPlanning(input: {
     input.configuration.artifactHashes.planSchema,
     packagedControlPaths.planSchema,
   );
-  const disclosure = {
-    provider: input.configuration.plannerAssignment.provider,
-    modelId: input.configuration.plannerAssignment.modelId,
-    externalTransmission: true as const,
-    providerStorage: input.configuration.providerStorage,
-    recordingMode: input.configuration.recordingMode,
-  };
+  const { disclosure, disclosureHash } = providerBoundaryDisclosure(
+    input.configuration,
+  );
+  if (input.providerBoundaryDisclosureHash !== disclosureHash) {
+    throw new WorkspaceOperationError(
+      "CONFLICT",
+      "Provider-boundary disclosure changed; preview and acknowledge it again",
+    );
+  }
   const commandId = `command_${randomUUID().replaceAll("-", "")}`;
   return input.authority.transaction((transaction) => {
     const state = transaction.loadRun<NonterminalRunState>(input.runId);
@@ -99,6 +161,7 @@ export async function requestPlanning(input: {
         budgetsAccepted: input.budgetsAccepted,
         providerBoundaryAcknowledged: input.providerBoundaryAcknowledged,
         providerBoundaryDisclosure: disclosure,
+        providerBoundaryDisclosureHash: disclosureHash,
         promptArtifactId: prompt.artifactId,
         promptContentHash: prompt.contentHash,
         promptArtifactVerified: true,
@@ -133,6 +196,7 @@ export async function requestPlanning(input: {
       state: result.nextState,
       commandId,
       providerBoundaryDisclosure: disclosure,
+      providerBoundaryDisclosureHash: disclosureHash,
     };
   });
 }
