@@ -468,6 +468,23 @@ export class ValidatedProjection {
 
 export interface AuthorityTransaction {
   loadRun<TState extends object>(runId: string): TState | null;
+  loadExecutionCapacity(
+    runId: string,
+    ceilings: {
+      calls: number;
+      inputTokens: number;
+      outputTokens: number;
+      costUsdMicros: number;
+    },
+  ): {
+    availableBudget: {
+      calls: number;
+      inputTokens: number;
+      outputTokens: number;
+      costUsdMicros: number;
+    };
+    mutationLeaseAvailable: boolean;
+  };
   settleProviderCompletion(
     completion: CompleteProviderAttemptEvidence,
   ):

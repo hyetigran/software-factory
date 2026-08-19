@@ -171,7 +171,17 @@ export interface WorkspaceOperations {
       budgets: boolean;
       providerBoundary: boolean;
     },
-  ): Promise<{ state: object; commandId: string }>;
+  ): Promise<{
+    state: object;
+    commandId: string;
+    providerBoundaryDisclosure: {
+      provider: "openai" | "anthropic";
+      modelId: string;
+      externalTransmission: true;
+      providerStorage: "minimize";
+      recordingMode: "record" | "strict_replay";
+    };
+  }>;
   listRuns(projectRoot: string): Promise<RunSummary[]>;
   loadRun(projectRoot: string, runId: string): Promise<object | null>;
   listAudit(projectRoot: string, runId?: string): Promise<AuditSummary[]>;

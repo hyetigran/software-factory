@@ -350,6 +350,13 @@ export type PlanningRequested = {
   policyAccepted: boolean;
   budgetsAccepted: boolean;
   providerBoundaryAcknowledged: boolean;
+  providerBoundaryDisclosure: {
+    provider: "openai" | "anthropic";
+    modelId: string;
+    externalTransmission: true;
+    providerStorage: "minimize";
+    recordingMode: "record" | "strict_replay";
+  };
   promptArtifactId: string;
   promptContentHash: string;
   promptArtifactVerified: boolean;
@@ -1041,6 +1048,7 @@ export type PlanningRequestedFact = {
     policyAccepted: true;
     budgetsAccepted: true;
     providerBoundaryAcknowledged: true;
+    providerBoundaryDisclosure: PlanningRequested["providerBoundaryDisclosure"];
   };
 };
 
@@ -2259,6 +2267,12 @@ function requestPlanning(
     !input.policyAccepted ||
     !input.budgetsAccepted ||
     !input.providerBoundaryAcknowledged ||
+    input.providerBoundaryDisclosure.provider !==
+      input.plannerAssignment.provider ||
+    input.providerBoundaryDisclosure.modelId !==
+      input.plannerAssignment.modelId ||
+    input.providerBoundaryDisclosure.externalTransmission !== true ||
+    input.providerBoundaryDisclosure.providerStorage !== "minimize" ||
     !input.plannerModelAllowed ||
     !input.modelIdentityPinned ||
     !input.promptArtifactVerified ||
@@ -2374,6 +2388,7 @@ function requestPlanning(
           policyAccepted: true,
           budgetsAccepted: true,
           providerBoundaryAcknowledged: true,
+          providerBoundaryDisclosure: input.providerBoundaryDisclosure,
         },
       },
       commandPlannedFact(

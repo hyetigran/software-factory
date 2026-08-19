@@ -211,6 +211,13 @@ function planningRequestedInput(): PlanningRequested {
     policyAccepted: true,
     budgetsAccepted: true,
     providerBoundaryAcknowledged: true,
+    providerBoundaryDisclosure: {
+      provider: "openai",
+      modelId: "gpt-5.6-2026-08-01",
+      externalTransmission: true,
+      providerStorage: "minimize",
+      recordingMode: "record",
+    },
     promptArtifactId: "artifact_planner_prompt_01JTEST",
     promptContentHash: plannerPromptContentHash,
     promptArtifactVerified: true,
@@ -2179,6 +2186,8 @@ describe("transition", () => {
         policyAccepted: true,
         budgetsAccepted: true,
         providerBoundaryAcknowledged: true,
+        providerBoundaryDisclosure:
+          planningRequestedInput().providerBoundaryDisclosure,
       },
     });
     const command = result.commands[0];
@@ -3682,6 +3691,10 @@ describe("transition", () => {
         Promise.resolve(
           work({
             loadRun: <TState extends object>() => state as unknown as TState,
+            loadExecutionCapacity: () => ({
+              availableBudget: planningRequestedInput().availableBudget,
+              mutationLeaseAvailable: true,
+            }),
             settleProviderCompletion: () => ({ status: "eligible" as const }),
             settleProviderFailure: () => ({ status: "eligible" as const }),
             persistProviderFailure: () => {
@@ -3790,6 +3803,9 @@ describe("transition", () => {
           work({
             loadRun: () => {
               throw new Error("late evidence must not load workflow state");
+            },
+            loadExecutionCapacity: () => {
+              throw new Error("late evidence must not load execution capacity");
             },
             settleProviderCompletion: () => ({
               status: "settled" as const,

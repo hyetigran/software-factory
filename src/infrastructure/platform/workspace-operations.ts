@@ -519,10 +519,9 @@ export function createWorkspaceOperations(): WorkspaceOperations {
           readVerified: (contentHash) => store.readVerified(contentHash),
         },
       });
-      const [registeredArtifacts, usage] = await Promise.all([
-        withReadModel(projectRoot, (model) => model.listArtifacts()),
-        withReadModel(projectRoot, (model) => model.loadUsage(runId)),
-      ]);
+      const registeredArtifacts = await withReadModel(projectRoot, (model) =>
+        model.listArtifacts(),
+      );
       const authority = SqliteAuthority.open(
         join(store.workspace.root, "state.db"),
         { artifactStore: store },
@@ -533,7 +532,6 @@ export function createWorkspaceOperations(): WorkspaceOperations {
           runId,
           configuration,
           registeredArtifacts,
-          usage,
           policyAccepted: acceptance.policy,
           budgetsAccepted: acceptance.budgets,
           providerBoundaryAcknowledged: acceptance.providerBoundary,

@@ -307,6 +307,53 @@ describe("factory executable", () => {
         coverageReportArtifactId: executed.data.execution.resultArtifactId,
       },
     });
+    const leaseDatabase = new DatabaseSync(
+      join(projectRoot, ".factory", "state.db"),
+    );
+    try {
+      const leaseCommand = leaseDatabase
+        .prepare(
+          "SELECT command_id FROM logical_commands WHERE run_id = ? AND command_type = 'render_ledger_approval'",
+        )
+        .get(started.data.runId) as { command_id: string };
+      leaseDatabase
+        .prepare(
+          `INSERT INTO mutation_lease
+             (singleton, command_id, attempt_id, owner_process, acquired_at, heartbeat_at)
+           VALUES (1, ?, NULL, 'concurrent-test', ?, ?)`,
+        )
+        .run(
+          leaseCommand.command_id,
+          new Date().toISOString(),
+          new Date().toISOString(),
+        );
+      const blockedLines: string[] = [];
+      await expect(
+        runCliAsync(
+          [
+            "plan",
+            "request",
+            started.data.runId,
+            "--accept-policy",
+            "--accept-budgets",
+            "--ack-provider-boundary",
+            "--json",
+          ],
+          (line) => blockedLines.push(line),
+          operations,
+          projectRoot,
+        ),
+      ).resolves.toBe(CliExit.conflict);
+      expect(JSON.parse(blockedLines[0] ?? "null")).toMatchObject({
+        ok: false,
+        error: { code: "CONFLICT" },
+      });
+      leaseDatabase
+        .prepare("DELETE FROM mutation_lease WHERE singleton = 1")
+        .run();
+    } finally {
+      leaseDatabase.close();
+    }
     const planningLines: string[] = [];
     await expect(
       runCliAsync(
@@ -332,6 +379,13 @@ describe("factory executable", () => {
       command: "plan request",
       data: {
         state: { state: "planning", stateVersion: 6 },
+        providerBoundaryDisclosure: {
+          provider: "openai",
+          modelId: "gpt-5.6-terra",
+          externalTransmission: true,
+          providerStorage: "minimize",
+          recordingMode: "record",
+        },
       },
     });
     const planningDatabase = new DatabaseSync(

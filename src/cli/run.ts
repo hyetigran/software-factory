@@ -532,7 +532,7 @@ export async function runCliAsync(
           write,
           command,
           planned,
-          `Requested planning with command ${planned.commandId}`,
+          `Requested planning with command ${planned.commandId}\nProvider boundary acknowledged: external transmission to ${planned.providerBoundaryDisclosure.provider}/${planned.providerBoundaryDisclosure.modelId}; storage=${planned.providerBoundaryDisclosure.providerStorage}; recording=${planned.providerBoundaryDisclosure.recordingMode}`,
         );
         return CliExit.success;
       }

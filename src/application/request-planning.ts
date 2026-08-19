@@ -7,7 +7,7 @@ import {
 } from "../domain/index.js";
 import type { AuthorityPort } from "./authority-port.js";
 import type { ResolvedConfigurationSnapshot } from "./stage-configuration.js";
-import type { ArtifactSummary, UsageSummary } from "./workspace-operations.js";
+import type { ArtifactSummary } from "./workspace-operations.js";
 import { WorkspaceOperationError } from "./workspace-operations.js";
 import { packagedControlPaths } from "./resolve-configuration.js";
 
@@ -39,12 +39,21 @@ export async function requestPlanning(input: {
   runId: string;
   configuration: ResolvedConfigurationSnapshot;
   registeredArtifacts: Array<Omit<ArtifactSummary, "objectVerified">>;
-  usage: UsageSummary;
   policyAccepted: boolean;
   budgetsAccepted: boolean;
   providerBoundaryAcknowledged: boolean;
   actor: HumanActor;
-}): Promise<{ state: object; commandId: string }> {
+}): Promise<{
+  state: object;
+  commandId: string;
+  providerBoundaryDisclosure: {
+    provider: "openai" | "anthropic";
+    modelId: string;
+    externalTransmission: true;
+    providerStorage: "minimize";
+    recordingMode: "record" | "strict_replay";
+  };
+}> {
   const prompt = pinnedArtifact(
     input.registeredArtifacts,
     input.configuration.artifactHashes.plannerPrompt,
@@ -55,15 +64,13 @@ export async function requestPlanning(input: {
     input.configuration.artifactHashes.planSchema,
     packagedControlPaths.planSchema,
   );
-  const ceilings = input.configuration.hardCeilings;
-  const consumed = input.usage.effectiveConsumption;
-  const availableBudget = {
-    calls: ceilings.calls - consumed.calls,
-    inputTokens: ceilings.inputTokens - consumed.inputTokens,
-    outputTokens: ceilings.outputTokens - consumed.outputTokens,
-    costUsdMicros: ceilings.costUsdMicros - consumed.costUsdMicros,
+  const disclosure = {
+    provider: input.configuration.plannerAssignment.provider,
+    modelId: input.configuration.plannerAssignment.modelId,
+    externalTransmission: true as const,
+    providerStorage: input.configuration.providerStorage,
+    recordingMode: input.configuration.recordingMode,
   };
-  const reservation = { ...availableBudget, calls: 1 };
   const commandId = `command_${randomUUID().replaceAll("-", "")}`;
   return input.authority.transaction((transaction) => {
     const state = transaction.loadRun<NonterminalRunState>(input.runId);
@@ -72,6 +79,12 @@ export async function requestPlanning(input: {
         "RUN_NOT_FOUND",
         `Run not found: ${input.runId}`,
       );
+    const capacity = transaction.loadExecutionCapacity(
+      input.runId,
+      input.configuration.hardCeilings,
+    );
+    const availableBudget = capacity.availableBudget;
+    const reservation = { ...availableBudget, calls: 1 };
     const result = transition(
       state,
       {
@@ -85,6 +98,7 @@ export async function requestPlanning(input: {
         policyAccepted: input.policyAccepted,
         budgetsAccepted: input.budgetsAccepted,
         providerBoundaryAcknowledged: input.providerBoundaryAcknowledged,
+        providerBoundaryDisclosure: disclosure,
         promptArtifactId: prompt.artifactId,
         promptContentHash: prompt.contentHash,
         promptArtifactVerified: true,
@@ -101,7 +115,7 @@ export async function requestPlanning(input: {
         auditChainVerified: true,
         databaseIntegrityVerified: true,
         schemaCompatible: true,
-        mutationLeaseAvailable: true,
+        mutationLeaseAvailable: capacity.mutationLeaseAvailable,
         generateCommandId: commandId,
         actor: input.actor,
       },
@@ -115,6 +129,10 @@ export async function requestPlanning(input: {
       { runId: input.runId, expectedStateVersion: state.stateVersion },
       result,
     );
-    return { state: result.nextState, commandId };
+    return {
+      state: result.nextState,
+      commandId,
+      providerBoundaryDisclosure: disclosure,
+    };
   });
 }

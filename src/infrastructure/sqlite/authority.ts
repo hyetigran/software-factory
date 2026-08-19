@@ -463,6 +463,36 @@ export class SqliteAuthority
         assertActive();
         return this.loadRun<TState>(runId);
       },
+      loadExecutionCapacity: (runId, ceilings) => {
+        assertActive();
+        const consumed = this.database
+          .prepare(
+            `SELECT
+               COALESCE(SUM(CASE WHEN kind IN ('actual', 'conservative_charge', 'reservation') THEN calls WHEN kind = 'release' THEN -calls ELSE 0 END), 0) AS calls,
+               COALESCE(SUM(CASE WHEN kind IN ('actual', 'conservative_charge', 'reservation') THEN input_tokens WHEN kind = 'release' THEN -input_tokens ELSE 0 END), 0) AS input_tokens,
+               COALESCE(SUM(CASE WHEN kind IN ('actual', 'conservative_charge', 'reservation') THEN output_tokens WHEN kind = 'release' THEN -output_tokens ELSE 0 END), 0) AS output_tokens,
+               COALESCE(SUM(CASE WHEN kind IN ('actual', 'conservative_charge', 'reservation') THEN cost_usd_micros WHEN kind = 'release' THEN -cost_usd_micros ELSE 0 END), 0) AS cost_usd_micros
+             FROM usage_ledger WHERE run_id = ?`,
+          )
+          .get(runId) as {
+          calls: number;
+          input_tokens: number;
+          output_tokens: number;
+          cost_usd_micros: number;
+        };
+        return {
+          availableBudget: {
+            calls: ceilings.calls - consumed.calls,
+            inputTokens: ceilings.inputTokens - consumed.input_tokens,
+            outputTokens: ceilings.outputTokens - consumed.output_tokens,
+            costUsdMicros: ceilings.costUsdMicros - consumed.cost_usd_micros,
+          },
+          mutationLeaseAvailable:
+            this.database
+              .prepare("SELECT 1 FROM mutation_lease WHERE singleton = 1")
+              .get() === undefined,
+        };
+      },
       settleProviderCompletion: (completionRequest) => {
         assertActive();
         if (persisted) {
