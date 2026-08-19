@@ -7,6 +7,7 @@ import {
 } from "../domain/index.js";
 import type { AuthorityPort } from "./authority-port.js";
 import type { ResolvedConfigurationSnapshot } from "./stage-configuration.js";
+import { WorkspaceOperationError } from "./workspace-operations.js";
 
 export async function approveSourceExclusion(input: {
   authority: AuthorityPort;
@@ -24,7 +25,10 @@ export async function approveSourceExclusion(input: {
     const previousState = transaction.loadRun<NonterminalRunState>(input.runId);
     if (previousState === null) throw new TypeError("Run does not exist");
     if (previousState.sourceContentHash !== input.expectedSourceContentHash)
-      throw new TypeError("Run source changed while approving exclusion");
+      throw new WorkspaceOperationError(
+        "INTEGRITY_ERROR",
+        "Run source identity changed while approving exclusion",
+      );
     const accepted = transition(
       previousState,
       {
