@@ -148,6 +148,7 @@ describe("workspace and content-addressed artifact store", () => {
       },
       hardCeilings: {
         calls: 4,
+        physicalAttempts: 6,
         inputTokens: 100_000,
         outputTokens: 40_000,
         costUsdMicros: 100_000_000,
@@ -158,6 +159,10 @@ describe("workspace and content-addressed artifact store", () => {
       },
       credentialReferences: {
         openai: { kind: "environment" as const, reference: "OPENAI_API_KEY" },
+        anthropic: {
+          kind: "os_credential_store" as const,
+          reference: "service:software-factory/account:anthropic",
+        },
       },
     };
 
@@ -178,6 +183,80 @@ describe("workspace and content-addressed artifact store", () => {
         { ...configuration, apiKey: "secret-value" } as typeof configuration,
         {
           artifactId: "artifact_configuration_bad_01JTEST",
+          createdBy: "human:tig",
+        },
+      ),
+    ).rejects.toThrow("secret-free");
+    await expect(
+      stageResolvedConfiguration(
+        store,
+        {
+          ...configuration,
+          credentialReferences: {
+            openai: configuration.credentialReferences.openai,
+            anthropic: {
+              kind: "os_credential_store",
+              reference: "service:software-factory/account:anthropic",
+              credential: "opaque-value",
+            },
+          },
+        } as unknown as typeof configuration,
+        {
+          artifactId: "artifact_configuration_os_secret_01JTEST",
+          createdBy: "human:tig",
+        },
+      ),
+    ).rejects.toThrow("secret-free");
+    await expect(
+      stageResolvedConfiguration(
+        store,
+        {
+          ...configuration,
+          credentialReferences: {
+            openai: configuration.credentialReferences.openai,
+          },
+        },
+        {
+          artifactId: "artifact_configuration_missing_provider_01JTEST",
+          createdBy: "human:tig",
+        },
+      ),
+    ).rejects.toThrow("secret-free");
+    await expect(
+      stageResolvedConfiguration(
+        store,
+        {
+          ...configuration,
+          hardCeilings: {
+            calls: 0,
+            physicalAttempts: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            costUsdMicros: 0,
+            retries: 0,
+            repairs: 0,
+            remediationCycles: 0,
+            closureCycles: 0,
+          },
+        },
+        {
+          artifactId: "artifact_configuration_zero_bounds_01JTEST",
+          createdBy: "human:tig",
+        },
+      ),
+    ).rejects.toThrow("secret-free");
+    await expect(
+      stageResolvedConfiguration(
+        store,
+        {
+          ...configuration,
+          hardCeilings: {
+            ...configuration.hardCeilings,
+            physicalAttempts: undefined,
+          },
+        } as unknown as typeof configuration,
+        {
+          artifactId: "artifact_configuration_missing_attempts_01JTEST",
           createdBy: "human:tig",
         },
       ),

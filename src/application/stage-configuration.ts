@@ -24,6 +24,7 @@ export type ResolvedArtifactPins = {
 
 export type HardCeilings = {
   calls: number;
+  physicalAttempts: number;
   inputTokens: number;
   outputTokens: number;
   costUsdMicros: number;
@@ -73,13 +74,16 @@ function hasExactKeys(value: unknown, keys: string[]): boolean {
 }
 
 function credentialReferenceIsValid(reference: CredentialReference): boolean {
-  return hasExactKeys(reference, ["kind", "reference"]) &&
-    reference.kind === "environment"
-    ? /^[A-Z_][A-Z0-9_]{1,127}$/u.test(reference.reference)
-    : reference.kind === "os_credential_store" &&
-        /^service:[A-Za-z0-9._-]+\/account:[A-Za-z0-9._@-]+$/u.test(
-          reference.reference,
-        );
+  if (!hasExactKeys(reference, ["kind", "reference"])) return false;
+  if (reference.kind === "environment") {
+    return /^[A-Z_][A-Z0-9_]{1,127}$/u.test(reference.reference);
+  }
+  return (
+    reference.kind === "os_credential_store" &&
+    /^service:[A-Za-z0-9._-]+\/account:[A-Za-z0-9._@-]+$/u.test(
+      reference.reference,
+    )
+  );
 }
 
 const secretValuePattern =
@@ -121,6 +125,7 @@ function configurationIsValid(value: ResolvedConfigurationSnapshot): boolean {
     ) &&
     hasExactKeys(value.hardCeilings, [
       "calls",
+      "physicalAttempts",
       "inputTokens",
       "outputTokens",
       "costUsdMicros",
@@ -129,9 +134,22 @@ function configurationIsValid(value: ResolvedConfigurationSnapshot): boolean {
       "remediationCycles",
       "closureCycles",
     ]) &&
-    Object.values(value.hardCeilings).every(
-      (budget) => Number.isInteger(budget) && budget >= 0,
-    ) &&
+    Object.values(value.hardCeilings).every(Number.isInteger) &&
+    value.hardCeilings.calls >= 1 &&
+    value.hardCeilings.physicalAttempts >= 1 &&
+    value.hardCeilings.inputTokens >= 1 &&
+    value.hardCeilings.outputTokens >= 1 &&
+    value.hardCeilings.costUsdMicros >= 1 &&
+    value.hardCeilings.retries >= 0 &&
+    value.hardCeilings.repairs >= 0 &&
+    value.hardCeilings.remediationCycles >= 0 &&
+    value.hardCeilings.closureCycles >= 1 &&
+    hasExactKeys(value.credentialReferences, [
+      ...new Set([
+        value.plannerAssignment.provider,
+        value.reviewerAssignment.provider,
+      ]),
+    ]) &&
     Object.values(value.credentialReferences).every(
       credentialReferenceIsValid,
     ) &&
