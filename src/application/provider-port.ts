@@ -69,9 +69,9 @@ export type ProviderExecution = ProviderResult & {
 };
 
 export type PreparedProviderCall = {
-  redactedRequestBytes: Uint8Array;
-  normalizedRequestHash: string;
-  identity: {
+  readonly redactedRequestBytes: Uint8Array;
+  readonly normalizedRequestHash: string;
+  readonly identity: {
     endpoint: string;
     apiVersion?: string;
     behaviorHeaders: Record<string, string>;

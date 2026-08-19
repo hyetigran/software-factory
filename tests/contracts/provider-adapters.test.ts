@@ -455,8 +455,14 @@ describe("provider adapter contract", () => {
       preflight,
     );
     const prepared = adapter.prepare(request);
+    const normalizedRequestHash = prepared.normalizedRequestHash;
     prepared.redactedRequestBytes[0] = 0;
     prepared.identity.endpoint = "https://mutated.invalid";
+    expect(() => {
+      Object.defineProperty(prepared, "normalizedRequestHash", {
+        value: "0".repeat(64),
+      });
+    }).toThrow();
     (request.outputSchema as { properties: object }).properties = {};
     await expect(prepared.dispatch()).resolves.toMatchObject({
       kind: "completed",
@@ -473,6 +479,7 @@ describe("provider adapter contract", () => {
     expect(prepared.identity.endpoint).toBe(
       "https://api.openai.com/v1/responses",
     );
+    expect(prepared.normalizedRequestHash).toBe(normalizedRequestHash);
     expect(() => prepared.dispatch()).toThrow("already been dispatched");
   });
 

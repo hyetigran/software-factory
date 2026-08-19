@@ -78,16 +78,19 @@ export function preparedProviderCall(input: {
 }): PreparedProviderCall {
   const recordedBytes = Buffer.from(input.redactedRequestBytes);
   const identity = structuredClone(input.identity);
-  return {
+  const normalizedRequestHash = input.normalizedRequestHash;
+  return Object.freeze({
     get redactedRequestBytes() {
       return Buffer.from(recordedBytes);
     },
-    normalizedRequestHash: input.normalizedRequestHash,
+    get normalizedRequestHash() {
+      return normalizedRequestHash;
+    },
     get identity() {
       return structuredClone(identity);
     },
     dispatch: input.dispatch,
-  };
+  });
 }
 
 export function objectFromBytes(value: Uint8Array): Record<string, unknown> {
