@@ -15,7 +15,6 @@ import { canonicalJson } from "../../domain/canonical-json.js";
 import type {
   AuthorityPort,
   AuthorityTransaction,
-  PersistableAuditFact,
   PersistableCommand,
   PersistableTransition,
   PersistTransitionRequest,
@@ -24,8 +23,8 @@ import type {
 } from "../../application/authority-port.js";
 import type {
   BeginAttemptRequest,
+  BeginAttemptOutcome,
   CommandExecutionPort,
-  StartedCommandAttempt,
 } from "../../application/execution-port.js";
 import { commandIsValid } from "../../application/command-validation.js";
 import { artifactRegistrationIsValid } from "../../application/artifact-port.js";
@@ -37,6 +36,7 @@ import {
 } from "./projections.js";
 import { SqliteMigration } from "./migration.js";
 import { decodeAuditEntry, type AuditRow } from "./audit-codec.js";
+import { appendAuditEntries } from "./audit-journal.js";
 
 const ZERO_HASH = "0".repeat(64);
 
@@ -467,7 +467,7 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
 
   async beginAttempt(
     request: BeginAttemptRequest,
-  ): Promise<StartedCommandAttempt> {
+  ): Promise<BeginAttemptOutcome> {
     this.assertWritable();
     await this.verifyIntegrity();
     this.database.exec("BEGIN IMMEDIATE");
@@ -512,31 +512,74 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
         state.configurationContentHash !== request.policy.configurationHash ||
         row.configuration_content_hash !== request.policy.configurationHash ||
         command.policyHash !== request.policy.configuration.policyHash ||
-        row.accepted_attempt_id !== null ||
-        !["planned", "failed", "unknown"].includes(row.status) ||
         row.triggering_state_version !== row.state_version ||
         !commandIsValid(command)
       ) {
         throw new TypeError("Logical command is not eligible for execution");
       }
-      const prerequisites = command.prerequisiteCommandIds ?? [];
       if (
-        prerequisites.some((commandId) => {
-          const prerequisite = this.database
-            .prepare(
-              `SELECT status, accepted_attempt_id FROM logical_commands
-                WHERE command_id = ? AND run_id = ?`,
-            )
-            .get(commandId, request.runId) as
-            { status: string; accepted_attempt_id: string | null } | undefined;
-          return (
-            prerequisite?.status !== "succeeded" ||
-            prerequisite.accepted_attempt_id === null
-          );
-        })
+        command.runId !== row.run_id ||
+        command.triggeringStateVersion !== row.triggering_state_version
       ) {
-        throw new TypeError("Logical command prerequisites are incomplete");
+        throw new AuthorityIntegrityError(
+          "Logical command relational identity disagrees with its envelope",
+        );
       }
+      if (
+        row.accepted_attempt_id !== null &&
+        request.attemptKind !== "human_rerun"
+      ) {
+        this.database.exec("COMMIT");
+        return {
+          status: "already_succeeded",
+          runId: request.runId,
+          commandId: request.commandId,
+          acceptedAttemptId: row.accepted_attempt_id,
+        };
+      }
+      const unresolvedInputHash = command.inputArtifactHashes.find(
+        (hash) =>
+          this.database
+            .prepare("SELECT 1 FROM artifacts WHERE content_hash = ?")
+            .get(hash) === undefined,
+      );
+      if (unresolvedInputHash !== undefined) {
+        throw new TypeError("Logical command input artifact is unavailable");
+      }
+      const prerequisites = command.prerequisiteCommandIds ?? [];
+      const resolvedPrerequisiteArtifacts = prerequisites.map((commandId) => {
+        const prerequisite = this.database
+          .prepare(
+            `SELECT c.status, c.accepted_attempt_id, a.result_artifact_id,
+                    r.content_hash
+               FROM logical_commands c
+               LEFT JOIN command_attempts a ON a.attempt_id = c.accepted_attempt_id
+               LEFT JOIN artifacts r ON r.artifact_id = a.result_artifact_id
+              WHERE c.command_id = ? AND c.run_id = ?`,
+          )
+          .get(commandId, request.runId) as
+          | {
+              status: string;
+              accepted_attempt_id: string | null;
+              result_artifact_id: string | null;
+              content_hash: string | null;
+            }
+          | undefined;
+        if (
+          prerequisite?.status !== "succeeded" ||
+          prerequisite.accepted_attempt_id === null ||
+          prerequisite.result_artifact_id === null ||
+          prerequisite.content_hash === null
+        ) {
+          throw new TypeError("Logical command prerequisites are incomplete");
+        }
+        return {
+          commandId,
+          attemptId: prerequisite.accepted_attempt_id,
+          artifactId: prerequisite.result_artifact_id,
+          contentHash: prerequisite.content_hash,
+        };
+      });
       const lease = this.database
         .prepare("SELECT command_id FROM mutation_lease WHERE singleton = 1")
         .get() as { command_id: string } | undefined;
@@ -559,6 +602,38 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
       ) {
         throw new TypeError("Physical-attempt hard ceiling is exhausted");
       }
+      const lastAttempt = this.database
+        .prepare(
+          `SELECT status, failure_class FROM command_attempts
+            WHERE command_id = ? ORDER BY attempt_number DESC LIMIT 1`,
+        )
+        .get(request.commandId) as
+        { status: string; failure_class: string | null } | undefined;
+      const priorAttempts = attemptCounts.command_attempts ?? 0;
+      const attemptKindAllowed =
+        (request.attemptKind === "initial" &&
+          row.status === "planned" &&
+          priorAttempts === 0) ||
+        (request.attemptKind === "transport_retry" &&
+          (row.status === "failed" || row.status === "unknown") &&
+          priorAttempts - 1 < request.policy.ceilings.retries &&
+          (lastAttempt?.status === "unknown" ||
+            ["transport", "provider_error"].includes(
+              lastAttempt?.failure_class ?? "",
+            ))) ||
+        (request.attemptKind === "schema_repair" &&
+          command.commandType === "repair_schema" &&
+          priorAttempts < request.policy.ceilings.repairs) ||
+        (request.attemptKind === "strict_replay" &&
+          ["planned", "failed", "unknown"].includes(row.status)) ||
+        (request.attemptKind === "human_rerun" &&
+          request.humanAuthorizationId !== undefined &&
+          ["planned", "failed", "unknown", "succeeded"].includes(row.status));
+      if (!attemptKindAllowed) {
+        throw new TypeError(
+          "Attempt kind is not eligible under recovery policy",
+        );
+      }
       const usage = this.database
         .prepare(
           `SELECT
@@ -574,7 +649,15 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
         output_tokens: number;
         cost: number;
       };
-      const reservation = command.budgetReservation;
+      const reservation =
+        request.attemptKind === "strict_replay"
+          ? {
+              calls: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              costUsdMicros: 0,
+            }
+          : command.budgetReservation;
       if (
         usage.calls + reservation.calls > request.policy.ceilings.calls ||
         usage.input_tokens + reservation.inputTokens >
@@ -639,7 +722,9 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
           "UPDATE logical_commands SET status = 'running' WHERE command_id = ?",
         )
         .run(request.commandId);
-      this.appendAuditFacts({
+      appendAuditEntries({
+        database: this.database,
+        workspaceId: this.workspaceId,
         runId: request.runId,
         stateVersionBefore: row.state_version,
         stateVersionAfter: row.state_version,
@@ -665,9 +750,11 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
             payload: { commandId: request.commandId, reservation },
           },
         ],
+        now: this.now,
       });
       this.database.exec("COMMIT");
       return {
+        status: "started",
         runId: request.runId,
         commandId: request.commandId,
         attemptId: request.attemptId,
@@ -681,6 +768,7 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
           heartbeatAt: startedAt,
         },
         startedAt,
+        resolvedPrerequisiteArtifacts,
       };
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -825,151 +913,21 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
       );
     }
 
-    const metadata = this.database
-      .prepare(
-        `SELECT next_audit_sequence, audit_chain_head
-           FROM workspaces WHERE workspace_id = ?`,
-      )
-      .get(this.workspaceId) as {
-      next_audit_sequence: number;
-      audit_chain_head: string;
-    };
-    let sequence = metadata.next_audit_sequence - 1;
-    let previousEntryHash = metadata.audit_chain_head;
-    const insertAudit = this.database.prepare(`
-        INSERT INTO audit_entries
-          (audit_entry_id, workspace_id, run_id, sequence,
-           state_version_before, state_version_after, fact_type, schema_version,
-           actor_json, reason, evidence_json, causation_id, correlation_id,
-           recorded_at, payload_json, previous_entry_hash, entry_hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-    for (const fact of result.auditFacts) {
-      sequence += 1;
-      const withoutHash = {
-        auditEntryId: `${request.runId}:audit:${sequence}`,
-        sequence,
-        runId: request.runId,
-        stateVersionBefore: actualVersion,
-        stateVersionAfter: nextVersion,
-        factType: fact.type,
-        schemaVersion: 1 as const,
-        actor: fact.actor,
-        ...(fact.reason === undefined ? {} : { reason: fact.reason }),
-        evidence: fact.evidence,
-        ...(request.causationId === undefined
-          ? {}
-          : { causationId: request.causationId }),
-        ...(request.correlationId === undefined
-          ? {}
-          : { correlationId: request.correlationId }),
-        recordedAt: this.now(),
-        payload: fact.payload,
-        previousEntryHash,
-      };
-      const entryHash = sha256(canonicalJson(withoutHash));
-      const entry: AuditEntry = { ...withoutHash, entryHash };
-      insertAudit.run(
-        entry.auditEntryId,
-        this.workspaceId,
-        request.runId,
-        sequence,
-        actualVersion,
-        nextVersion,
-        fact.type,
-        canonicalJson(fact.actor),
-        fact.reason ?? null,
-        canonicalJson(fact.evidence),
-        request.causationId ?? null,
-        request.correlationId ?? null,
-        entry.recordedAt,
-        canonicalJson(fact.payload),
-        previousEntryHash,
-        entryHash,
-      );
-      previousEntryHash = entryHash;
-    }
-    this.database
-      .prepare(
-        `UPDATE workspaces
-           SET next_audit_sequence = ?, audit_chain_head = ?
-           WHERE workspace_id = ?`,
-      )
-      .run(sequence + 1, previousEntryHash, this.workspaceId);
-  }
-
-  private appendAuditFacts(input: {
-    runId: string;
-    stateVersionBefore: number;
-    stateVersionAfter: number;
-    correlationId?: string;
-    facts: PersistableAuditFact[];
-  }): void {
-    const metadata = this.database
-      .prepare(
-        `SELECT next_audit_sequence, audit_chain_head
-           FROM workspaces WHERE workspace_id = ?`,
-      )
-      .get(this.workspaceId) as {
-      next_audit_sequence: number;
-      audit_chain_head: string;
-    };
-    let sequence = metadata.next_audit_sequence - 1;
-    let previousEntryHash = metadata.audit_chain_head;
-    const insertAudit = this.database.prepare(`
-      INSERT INTO audit_entries
-        (audit_entry_id, workspace_id, run_id, sequence,
-         state_version_before, state_version_after, fact_type, schema_version,
-         actor_json, reason, evidence_json, causation_id, correlation_id,
-         recorded_at, payload_json, previous_entry_hash, entry_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
-    `);
-    for (const fact of input.facts) {
-      sequence += 1;
-      const withoutHash = {
-        auditEntryId: `${input.runId}:audit:${sequence}`,
-        sequence,
-        runId: input.runId,
-        stateVersionBefore: input.stateVersionBefore,
-        stateVersionAfter: input.stateVersionAfter,
-        factType: fact.type,
-        schemaVersion: 1 as const,
-        actor: fact.actor,
-        ...(fact.reason === undefined ? {} : { reason: fact.reason }),
-        evidence: fact.evidence,
-        ...(input.correlationId === undefined
-          ? {}
-          : { correlationId: input.correlationId }),
-        recordedAt: this.now(),
-        payload: fact.payload,
-        previousEntryHash,
-      };
-      const entryHash = sha256(canonicalJson(withoutHash));
-      insertAudit.run(
-        withoutHash.auditEntryId,
-        this.workspaceId,
-        input.runId,
-        sequence,
-        input.stateVersionBefore,
-        input.stateVersionAfter,
-        fact.type,
-        canonicalJson(fact.actor),
-        fact.reason ?? null,
-        canonicalJson(fact.evidence),
-        input.correlationId ?? null,
-        withoutHash.recordedAt,
-        canonicalJson(fact.payload),
-        previousEntryHash,
-        entryHash,
-      );
-      previousEntryHash = entryHash;
-    }
-    this.database
-      .prepare(
-        `UPDATE workspaces SET next_audit_sequence = ?, audit_chain_head = ?
-          WHERE workspace_id = ?`,
-      )
-      .run(sequence + 1, previousEntryHash, this.workspaceId);
+    appendAuditEntries({
+      database: this.database,
+      workspaceId: this.workspaceId,
+      runId: request.runId,
+      stateVersionBefore: actualVersion,
+      stateVersionAfter: nextVersion,
+      ...(request.causationId === undefined
+        ? {}
+        : { causationId: request.causationId }),
+      ...(request.correlationId === undefined
+        ? {}
+        : { correlationId: request.correlationId }),
+      facts: result.auditFacts,
+      now: this.now,
+    });
   }
 
   private verifyStagedArtifact(artifact: StagedArtifactRegistration): void {

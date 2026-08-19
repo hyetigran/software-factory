@@ -11,6 +11,7 @@ export type AttemptStatus =
   "started" | "completed" | "failed" | "unknown" | "discarded";
 
 export type StartedCommandAttempt = {
+  status: "started";
   runId: string;
   commandId: string;
   attemptId: string;
@@ -24,7 +25,22 @@ export type StartedCommandAttempt = {
     heartbeatAt: string;
   };
   startedAt: string;
+  resolvedPrerequisiteArtifacts: Array<{
+    commandId: string;
+    attemptId: string;
+    artifactId: string;
+    contentHash: string;
+  }>;
 };
+
+export type BeginAttemptOutcome =
+  | StartedCommandAttempt
+  | {
+      status: "already_succeeded";
+      runId: string;
+      commandId: string;
+      acceptedAttemptId: string;
+    };
 
 const executionPolicyBrand = Symbol("ExecutionPolicy");
 
@@ -93,16 +109,23 @@ export type BeginAttemptRequest = {
   ownerProcess: string;
   configurationArtifactId: string;
   policy: ExecutionPolicy;
+  attemptKind:
+    | "initial"
+    | "transport_retry"
+    | "schema_repair"
+    | "strict_replay"
+    | "human_rerun";
+  humanAuthorizationId?: string;
 };
 
 export interface CommandExecutionPort {
-  beginAttempt(request: BeginAttemptRequest): Promise<StartedCommandAttempt>;
+  beginAttempt(request: BeginAttemptRequest): Promise<BeginAttemptOutcome>;
 }
 
 export function beginEligibleCommandAttempt(
   execution: CommandExecutionPort,
   request: BeginAttemptRequest,
-): Promise<StartedCommandAttempt> {
+): Promise<BeginAttemptOutcome> {
   if (
     request.commandId.trim().length === 0 ||
     request.runId !== request.policy.runId ||
@@ -111,6 +134,8 @@ export function beginEligibleCommandAttempt(
     request.attemptId.trim().length === 0 ||
     request.correlationId.trim().length === 0 ||
     request.ownerProcess.trim().length === 0 ||
+    (request.attemptKind === "human_rerun" &&
+      (request.humanAuthorizationId?.trim().length ?? 0) === 0) ||
     request.policy[executionPolicyBrand] !== true
   ) {
     throw new TypeError(

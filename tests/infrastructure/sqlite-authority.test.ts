@@ -208,6 +208,7 @@ describe("SQLite authority", () => {
         ownerProcess: "pid:123",
         configurationArtifactId: "artifact_configuration",
         policy,
+        attemptKind: "initial",
       }),
     ).resolves.toMatchObject({
       attemptNumber: 1,
@@ -230,9 +231,47 @@ describe("SQLite authority", () => {
         ownerProcess: "pid:123",
         configurationArtifactId: "artifact_configuration",
         policy,
+        attemptKind: "initial",
       }),
-    ).rejects.toThrow("not eligible");
+    ).rejects.toThrow("Mutation lease is unavailable");
     authority.close();
+
+    const database = new DatabaseSync(path);
+    database.exec("PRAGMA foreign_keys = ON");
+    database
+      .prepare(
+        `UPDATE command_attempts SET status = 'completed', completed_at = ?
+          WHERE attempt_id = ?`,
+      )
+      .run("2026-08-19T00:01:00.000Z", "attempt_execute_1");
+    database
+      .prepare(
+        `UPDATE logical_commands SET status = 'succeeded', accepted_attempt_id = ?
+          WHERE command_id = ?`,
+      )
+      .run("attempt_execute_1", "command_execute");
+    database.exec("DELETE FROM mutation_lease");
+    database.close();
+
+    const reopened = await openAuthority(path);
+    await expect(
+      reopened.beginAttempt({
+        runId: "run_execute",
+        commandId: "command_execute",
+        attemptId: "attempt_execute_noop",
+        correlationId: "correlation_execute_noop",
+        ownerProcess: "pid:456",
+        configurationArtifactId: "artifact_configuration",
+        policy,
+        attemptKind: "initial",
+      }),
+    ).resolves.toEqual({
+      status: "already_succeeded",
+      runId: "run_execute",
+      commandId: "command_execute",
+      acceptedAttemptId: "attempt_execute_1",
+    });
+    reopened.close();
   });
 
   it("accepts the public pure-domain transition without an adapter DTO", async () => {

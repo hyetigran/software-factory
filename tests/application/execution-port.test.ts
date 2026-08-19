@@ -54,6 +54,7 @@ describe("execution policy and attempt boundary", () => {
       expectedContentHash,
     });
     const beginAttempt = vi.fn().mockResolvedValue({
+      status: "started",
       runId: "run_1",
       commandId: "command_1",
       attemptId: "attempt_1",
@@ -72,6 +73,7 @@ describe("execution policy and attempt boundary", () => {
         heartbeatAt: "2026-08-19T00:00:00.000Z",
       },
       startedAt: "2026-08-19T00:00:00.000Z",
+      resolvedPrerequisiteArtifacts: [],
     });
 
     await expect(
@@ -85,6 +87,7 @@ describe("execution policy and attempt boundary", () => {
           ownerProcess: "pid:1",
           configurationArtifactId: "artifact_configuration",
           policy,
+          attemptKind: "initial",
         },
       ),
     ).resolves.toMatchObject({ attemptNumber: 1 });
@@ -106,6 +109,7 @@ describe("execution policy and attempt boundary", () => {
           ownerProcess: "pid:1",
           configurationArtifactId: "artifact_configuration",
           policy,
+          attemptKind: "initial",
         },
       ),
     ).toThrow("identity and execution policy");
