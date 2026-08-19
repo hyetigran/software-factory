@@ -3351,6 +3351,37 @@ describe("transition", () => {
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 
+  it("rejects model unavailability through the generic failure input", () => {
+    expect(() =>
+      transition(
+        planningState(),
+        {
+          ...providerOutcomeFailedInput(),
+          failureKind: "model_unavailable",
+          failureClassification: "provider_error",
+        },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("binds unavailable identity to the active pinned model", () => {
+    expect(() =>
+      transition(
+        planningState(),
+        {
+          ...providerOutcomeFailedInput(),
+          type: "PinnedModelUnavailable",
+          failureKind: "model_unavailable",
+          failureClassification: "provider_error",
+          unavailableModelId: "different-pinned-model",
+          providerConfirmedUnavailable: true,
+        },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
   it("rejects baseline failure before retry and repair bounds are exhausted", () => {
     expect(() =>
       transition(

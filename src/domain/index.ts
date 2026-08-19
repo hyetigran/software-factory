@@ -3287,6 +3287,13 @@ function haltAfterProviderFailure(
             purposeId: previousState.activeReview.reviewPurposeId,
           }
         : undefined;
+  const activeModelId =
+    previousState.state === "planning" || previousState.state === "remediation"
+      ? previousState.activePlanning.plannerAssignment.modelId
+      : previousState.state === "baseline_review" ||
+          previousState.state === "closure"
+        ? previousState.activeReview.reviewerAssignment.modelId
+        : undefined;
   const attemptsUnique =
     new Set(input.attemptIds).size === input.attemptIds.length;
   const bounds = input.recoveryBounds;
@@ -3316,9 +3323,12 @@ function haltAfterProviderFailure(
           : "transport";
   const classificationValid =
     input.failureClassification === expectedClassification &&
+    (input.type === "PinnedModelUnavailable") ===
+      (input.failureKind === "model_unavailable") &&
     (input.type !== "PinnedModelUnavailable" ||
       (input.failureKind === "model_unavailable" &&
-        input.failureClassification === "provider_error"));
+        input.failureClassification === "provider_error" &&
+        input.unavailableModelId === activeModelId));
   if (
     input.expectedStateVersion !== previousState.stateVersion ||
     activeCommand === undefined ||
