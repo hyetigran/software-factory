@@ -1147,7 +1147,7 @@ function requestPlanning(
   ) {
     throw new DomainTransitionError(
       "PRECONDITION_FAILED",
-      "PlanningRequested requires accepted policy, verified provider inputs, and sufficient reserved budget",
+      "PlanningRequested requires accepted policy, verified provider inputs, and sufficient available budget",
     );
   }
 
