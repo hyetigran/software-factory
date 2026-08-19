@@ -25,6 +25,7 @@ const baseRequest: Omit<ProviderRequest, "provider"> = {
   systemPrompt: "Produce a plan.",
   inputArtifacts: [
     {
+      artifactId: "ledger_1",
       kind: "requirements_ledger",
       content: inputContent,
       contentHash: createHash("sha256").update(inputContent).digest("hex"),

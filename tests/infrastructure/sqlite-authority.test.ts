@@ -181,7 +181,141 @@ function transitionResult(
   };
 }
 
+function providerTransitionResult(
+  runId: string,
+  stateVersion: number,
+): PersistableTransition<TestState> {
+  const inputHash = createHash("sha256").update("source").digest("hex");
+  const commandWithoutIdentity = {
+    commandType: "generate_plan",
+    schemaVersion: 1,
+    runId,
+    triggeringStateVersion: stateVersion,
+    purposeId: "planning",
+    inputArtifactHashes: [inputHash],
+    policyHash: "a".repeat(64),
+    provider: "openai" as const,
+    modelId: "planner",
+    budgetReservation: {
+      calls: 1,
+      inputTokens: 100,
+      outputTokens: 100,
+      costUsdMicros: 100,
+    },
+    payload: {
+      ledgerVersionId: "ledger_1",
+      ledgerArtifactId: "artifact_source",
+      promptArtifactId: "artifact_source",
+      outputSchemaArtifactId: "artifact_source",
+      providerStorage: "minimize" as const,
+    },
+  };
+  const commandKey = createHash("sha256")
+    .update(canonicalJson(commandWithoutIdentity))
+    .digest("hex");
+  return {
+    ...transitionResult(runId, stateVersion),
+    commands: [
+      {
+        commandId: "command_provider",
+        commandKey,
+        ...commandWithoutIdentity,
+      },
+    ],
+  };
+}
+
 describe("SQLite authority", () => {
+  it("binds a recorded provider request to the active leased attempt", async () => {
+    const path = await databasePath();
+    const authority = await openAuthority(path);
+    await commitTransition<TestState>(authority, {
+      runId: "run_provider_request",
+      expectedStateVersion: 0,
+      transition: () => providerTransitionResult("run_provider_request", 1),
+    });
+    const policy = ExecutionPolicy.fromConfiguration({
+      runId: "run_provider_request",
+      configurationArtifactId: "artifact_configuration",
+      configuration: executionConfiguration,
+      expectedContentHash: executionConfigurationHash,
+    });
+    const attempt = await authority.beginAttempt({
+      runId: "run_provider_request",
+      commandId: "command_provider",
+      attemptId: "attempt_provider_1",
+      correlationId: "correlation_provider_1",
+      ownerProcess: "pid:provider",
+      configurationArtifactId: "artifact_configuration",
+      policy,
+      attemptKind: "initial",
+    });
+    expect(attempt.status).toBe("started");
+    if (attempt.status !== "started") throw new Error("attempt must start");
+    const store = await ContentAddressedArtifactStore.open(
+      resolve(path, "../.."),
+    );
+    const requestBytes = Buffer.from('{"request":"redacted"}');
+    const requestArtifact = await store.stageArtifact(requestBytes, {
+      artifactId: "artifact_provider_request",
+      kind: "provider_request",
+      mediaType: "application/json",
+      schemaId: "provider-request-recording.v1",
+      createdBy: "pid:provider",
+      provenance: {
+        method: "application_generated",
+        purpose: "provider_request",
+        sourceArtifactIds: ["artifact_source"],
+        commandId: "command_provider",
+        attemptId: "attempt_provider_1",
+      },
+    });
+    const command = authority
+      .listCommands("run_provider_request")
+      .find(({ commandId }) => commandId === "command_provider");
+    expect(command).toBeDefined();
+    const providerRequest = {
+      provider: "openai" as const,
+      role: "planner" as const,
+      modelId: "planner",
+      logicalCommandKey: command?.commandKey ?? "",
+      correlationId: "correlation_provider_1",
+      systemPrompt: "plan",
+      inputArtifacts: [
+        {
+          artifactId: "artifact_source",
+          kind: "raw_requirements",
+          content: "source",
+          contentHash: createHash("sha256").update("source").digest("hex"),
+        },
+      ],
+      outputSchema: {},
+      maxOutputTokens: 100,
+      timeoutMs: 1_000,
+      providerStorage: "minimize" as const,
+    };
+
+    await expect(
+      authority.registerPreparedProviderRequest({
+        attempt,
+        providerRequest,
+        normalizedRequestHash: requestArtifact.contentHash,
+        artifact: requestArtifact,
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      authority.registerPreparedProviderRequest({
+        attempt,
+        providerRequest: {
+          ...providerRequest,
+          logicalCommandKey: "f".repeat(64),
+        },
+        normalizedRequestHash: requestArtifact.contentHash,
+        artifact: requestArtifact,
+      }),
+    ).rejects.toThrow("not bound to the active command attempt");
+  });
+
   it("atomically reserves budget, acquires the lease, and starts one attempt", async () => {
     const path = await databasePath();
     const authority = await openAuthority(path, {

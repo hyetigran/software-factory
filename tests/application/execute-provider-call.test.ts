@@ -64,7 +64,8 @@ describe("executeProviderCall", () => {
       schemaId: "provider-request-recording.v1",
       createdBy: "executor",
       provenance: {
-        method: "provider_generated" as const,
+        method: "application_generated" as const,
+        purpose: "provider_request" as const,
         sourceArtifactIds: ["ledger_1"],
         commandId: "command_1",
         attemptId: "attempt_1",
@@ -78,7 +79,7 @@ describe("executeProviderCall", () => {
         return Promise.resolve(descriptor);
       },
     );
-    const registerArtifact = vi.fn(() => {
+    const registerPreparedProviderRequest = vi.fn(() => {
       events.push("register");
       return Promise.resolve();
     });
@@ -86,7 +87,7 @@ describe("executeProviderCall", () => {
     const result = await executeProviderCall({
       adapter,
       artifactStaging: { stageArtifact },
-      artifactRegistration: { registerArtifact },
+      requestRegistration: { registerPreparedProviderRequest },
       providerRequest: {
         provider: "openai",
         role: "planner",
@@ -95,7 +96,12 @@ describe("executeProviderCall", () => {
         correlationId: "correlation_1",
         systemPrompt: "plan",
         inputArtifacts: [
-          { kind: "ledger", content: "{}", contentHash: "b".repeat(64) },
+          {
+            artifactId: "ledger_1",
+            kind: "ledger",
+            content: "{}",
+            contentHash: "b".repeat(64),
+          },
         ],
         outputSchema: {},
         maxOutputTokens: 1_000,
@@ -103,15 +109,35 @@ describe("executeProviderCall", () => {
         providerStorage: "minimize",
       },
       requestArtifactId: "provider_request_1",
-      commandId: "command_1",
-      attemptId: "attempt_1",
-      inputArtifactIds: ["ledger_1"],
-      createdBy: "executor",
+      attempt: {
+        status: "started",
+        runId: "run_1",
+        commandId: "command_1",
+        attemptId: "attempt_1",
+        attemptNumber: 1,
+        triggeringStateVersion: 1,
+        correlationId: "correlation_1",
+        reservation: {
+          calls: 1,
+          inputTokens: 1_000,
+          outputTokens: 1_000,
+          costUsdMicros: 1_000,
+        },
+        lease: {
+          ownerProcess: "executor",
+          acquiredAt: "2026-08-19T00:00:00.000Z",
+          heartbeatAt: "2026-08-19T00:00:00.000Z",
+        },
+        startedAt: "2026-08-19T00:00:00.000Z",
+        resolvedPrerequisiteArtifacts: [],
+      },
     });
 
     expect(events).toEqual(["stage", "register", "dispatch"]);
     expect(stageArtifact.mock.calls[0]?.[0]).toEqual(requestBytes);
-    expect(registerArtifact).toHaveBeenCalledWith(descriptor);
+    expect(registerPreparedProviderRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ artifact: descriptor }),
+    );
     expect(result.requestArtifact).toEqual(descriptor);
     expect(result.execution.kind).toBe("completed");
   });
@@ -149,16 +175,35 @@ describe("executeProviderCall", () => {
               byteLength: bytes.length,
             }),
         },
-        artifactRegistration: {
-          registerArtifact: () =>
+        requestRegistration: {
+          registerPreparedProviderRequest: () =>
             Promise.reject(new Error("database unavailable")),
         },
-        providerRequest: {} as never,
+        providerRequest: {
+          provider: "openai",
+          role: "planner",
+          modelId: "model",
+          logicalCommandKey: "a".repeat(64),
+          correlationId: "correlation_1",
+          systemPrompt: "plan",
+          inputArtifacts: [
+            {
+              artifactId: "ledger_1",
+              kind: "ledger",
+              content: "{}",
+              contentHash: "b".repeat(64),
+            },
+          ],
+          outputSchema: {},
+          maxOutputTokens: 1,
+          timeoutMs: 1,
+          providerStorage: "minimize",
+        },
         requestArtifactId: "provider_request_1",
-        commandId: "command_1",
-        attemptId: "attempt_1",
-        inputArtifactIds: ["ledger_1"],
-        createdBy: "executor",
+        attempt: {
+          attemptId: "attempt_1",
+          lease: { ownerProcess: "executor" },
+        } as never,
       }),
     ).rejects.toThrow("database unavailable");
     expect(dispatch).not.toHaveBeenCalled();

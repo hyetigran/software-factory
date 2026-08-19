@@ -6,6 +6,7 @@ export type ProviderRequest = {
   correlationId: string;
   systemPrompt: string;
   inputArtifacts: Array<{
+    artifactId: string;
     kind: string;
     content: string;
     contentHash: string;

@@ -27,6 +27,13 @@ export type ArtifactProvenance =
       attemptId: string;
     }
   | {
+      method: "application_generated";
+      purpose: "provider_request";
+      sourceArtifactIds: string[];
+      commandId: string;
+      attemptId: string;
+    }
+  | {
       method: "deterministic_render";
       sourceArtifactIds: string[];
       commandId: string;
@@ -112,6 +119,20 @@ export function artifactRegistrationIsValid(
             "commandId",
             "attemptId",
           ]) &&
+          identifiers(provenance.sourceArtifactIds) &&
+          provenance.commandId.trim().length > 0 &&
+          provenance.attemptId.trim().length > 0
+        );
+      case "application_generated":
+        return (
+          exactKeys(provenance, [
+            "method",
+            "purpose",
+            "sourceArtifactIds",
+            "commandId",
+            "attemptId",
+          ]) &&
+          provenance.purpose === "provider_request" &&
           identifiers(provenance.sourceArtifactIds) &&
           provenance.commandId.trim().length > 0 &&
           provenance.attemptId.trim().length > 0

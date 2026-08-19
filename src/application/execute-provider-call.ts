@@ -1,8 +1,8 @@
 import type {
-  ArtifactRegistrationPort,
   ArtifactStagingPort,
   StagedArtifactRegistration,
 } from "./artifact-port.js";
+import type { StartedCommandAttempt } from "./execution-port.js";
 import type {
   ProviderAdapter,
   ProviderExecution,
@@ -12,14 +12,20 @@ import type {
 export type ExecuteProviderCallRequest = {
   adapter: ProviderAdapter;
   artifactStaging: ArtifactStagingPort;
-  artifactRegistration: ArtifactRegistrationPort;
+  requestRegistration: PreparedProviderRequestRegistrationPort;
   providerRequest: ProviderRequest;
   requestArtifactId: string;
-  commandId: string;
-  attemptId: string;
-  inputArtifactIds: string[];
-  createdBy: string;
+  attempt: StartedCommandAttempt;
 };
+
+export interface PreparedProviderRequestRegistrationPort {
+  registerPreparedProviderRequest(input: {
+    attempt: StartedCommandAttempt;
+    providerRequest: ProviderRequest;
+    normalizedRequestHash: string;
+    artifact: StagedArtifactRegistration;
+  }): Promise<void>;
+}
 
 export type ExecutedProviderCall = {
   requestArtifact: StagedArtifactRegistration;
@@ -31,38 +37,57 @@ export async function executeProviderCall(
 ): Promise<ExecutedProviderCall> {
   if (
     input.requestArtifactId.trim().length === 0 ||
-    input.commandId.trim().length === 0 ||
-    input.attemptId.trim().length === 0 ||
-    input.createdBy.trim().length === 0 ||
-    input.inputArtifactIds.length === 0 ||
-    new Set(input.inputArtifactIds).size !== input.inputArtifactIds.length ||
-    input.inputArtifactIds.some((id) => id.trim().length === 0)
+    input.attempt.attemptId.trim().length === 0 ||
+    input.providerRequest.inputArtifacts.length === 0 ||
+    new Set(
+      input.providerRequest.inputArtifacts.map(({ artifactId }) => artifactId),
+    ).size !== input.providerRequest.inputArtifacts.length
   ) {
     throw new TypeError("Provider call recording identity is invalid");
   }
 
   const prepared = input.adapter.prepare(input.providerRequest);
+  const registration = {
+    artifactId: input.requestArtifactId,
+    kind: "provider_request",
+    mediaType: "application/json",
+    schemaId: "provider-request-recording.v1",
+    createdBy: input.attempt.lease.ownerProcess,
+    provenance: {
+      method: "application_generated",
+      purpose: "provider_request",
+      sourceArtifactIds: input.providerRequest.inputArtifacts.map(
+        ({ artifactId }) => artifactId,
+      ),
+      commandId: input.attempt.commandId,
+      attemptId: input.attempt.attemptId,
+    },
+  } as const;
   const requestArtifact = await input.artifactStaging.stageArtifact(
     prepared.redactedRequestBytes,
-    {
-      artifactId: input.requestArtifactId,
-      kind: "provider_request",
-      mediaType: "application/json",
-      schemaId: "provider-request-recording.v1",
-      createdBy: input.createdBy,
-      provenance: {
-        method: "provider_generated",
-        sourceArtifactIds: [...input.inputArtifactIds],
-        commandId: input.commandId,
-        attemptId: input.attemptId,
-      },
-    },
+    registration,
   );
-  if (requestArtifact.contentHash !== prepared.normalizedRequestHash) {
+  if (
+    requestArtifact.contentHash !== prepared.normalizedRequestHash ||
+    requestArtifact.byteLength !== prepared.redactedRequestBytes.byteLength ||
+    requestArtifact.schemaVersion !== 1 ||
+    requestArtifact.artifactId !== registration.artifactId ||
+    requestArtifact.kind !== registration.kind ||
+    requestArtifact.mediaType !== registration.mediaType ||
+    requestArtifact.schemaId !== registration.schemaId ||
+    requestArtifact.createdBy !== registration.createdBy ||
+    JSON.stringify(requestArtifact.provenance) !==
+      JSON.stringify(registration.provenance)
+  ) {
     throw new TypeError(
-      "Staged provider request does not match its normalized request hash",
+      "Staged provider request does not match its requested identity",
     );
   }
-  await input.artifactRegistration.registerArtifact(requestArtifact);
+  await input.requestRegistration.registerPreparedProviderRequest({
+    attempt: input.attempt,
+    providerRequest: input.providerRequest,
+    normalizedRequestHash: prepared.normalizedRequestHash,
+    artifact: requestArtifact,
+  });
   return { requestArtifact, execution: await prepared.dispatch() };
 }
