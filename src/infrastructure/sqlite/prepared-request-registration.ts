@@ -168,11 +168,11 @@ export class SqlitePreparedRequestRegistration {
           "Command attempt already has a different provider request",
         );
       }
+      this.dependencies.persistArtifactMetadata(input.artifact);
       if (existing !== undefined) {
         database.exec("COMMIT");
         return "already_claimed";
       }
-      this.dependencies.persistArtifactMetadata(input.artifact);
       database.exec("COMMIT");
       return "claimed";
     } catch (error) {
