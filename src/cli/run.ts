@@ -16,11 +16,23 @@ export const CliExit = {
 
 type Writer = (line: string) => void;
 type ParsedCommand =
-  | { kind: "init"; json: boolean; projectRoot: string }
-  | { kind: "run_list"; json: boolean; projectRoot: string }
-  | { kind: "run_state"; json: boolean; projectRoot: string; runId: string }
+  | { kind: "init"; publicName: "init"; json: boolean; projectRoot: string }
+  | {
+      kind: "run_list";
+      publicName: "run list";
+      json: boolean;
+      projectRoot: string;
+    }
+  | {
+      kind: "run_state";
+      publicName: "run status" | "inspect state";
+      json: boolean;
+      projectRoot: string;
+      runId: string;
+    }
   | {
       kind: "audit";
+      publicName: "inspect audit";
       json: boolean;
       projectRoot: string;
       runId?: string;
@@ -82,14 +94,14 @@ function parseArgs(args: string[], cwd: string): ParsedCommand {
   }
   const projectRoot = resolve(project ?? cwd);
   if (positional.length === 1 && positional[0] === "init") {
-    return { kind: "init", json, projectRoot };
+    return { kind: "init", publicName: "init", json, projectRoot };
   }
   if (
     positional.length === 2 &&
     positional[0] === "run" &&
     positional[1] === "list"
   ) {
-    return { kind: "run_list", json, projectRoot };
+    return { kind: "run_list", publicName: "run list", json, projectRoot };
   }
   if (
     positional.length === 3 &&
@@ -98,6 +110,7 @@ function parseArgs(args: string[], cwd: string): ParsedCommand {
   ) {
     return {
       kind: "run_state",
+      publicName: positional[0] === "run" ? "run status" : "inspect state",
       json,
       projectRoot,
       runId: positional[2] ?? "",
@@ -111,6 +124,7 @@ function parseArgs(args: string[], cwd: string): ParsedCommand {
   ) {
     return {
       kind: "audit",
+      publicName: "inspect audit",
       json,
       projectRoot,
       ...(positional[2] === undefined ? {} : { runId: positional[2] }),
@@ -127,7 +141,7 @@ function writeSuccess(
 ): void {
   write(
     command.json
-      ? JSON.stringify({ ok: true, command: command.kind, data })
+      ? JSON.stringify({ ok: true, command: command.publicName, data })
       : human,
   );
 }
@@ -182,7 +196,13 @@ export async function runCliAsync(
     command = parseArgs(args, cwd);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    writeError(write, args.includes("--json"), "parse", "USAGE_ERROR", message);
+    writeError(
+      write,
+      args.includes("--json"),
+      args.filter((argument) => !argument.startsWith("--")).join(" "),
+      "USAGE_ERROR",
+      message,
+    );
     return CliExit.usage;
   }
   try {

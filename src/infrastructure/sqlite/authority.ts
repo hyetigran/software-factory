@@ -53,10 +53,9 @@ import { SqliteOperationalCompletion } from "./operational-completion.js";
 import { SqliteProviderCompletion } from "./provider-completion.js";
 import { SqliteProviderFailure } from "./provider-failure.js";
 import { SqlitePreparedRequestRegistration } from "./prepared-request-registration.js";
+import { verifySqliteAuthorityIntegrity } from "./authority-integrity.js";
 
 export { AuthorityIntegrityError, StaleStateError } from "./errors.js";
-
-const ZERO_HASH = "0".repeat(64);
 
 type JsonObject = Record<string, unknown>;
 
@@ -78,10 +77,6 @@ export type AuditEntry = {
   previousEntryHash: string;
   entryHash: string;
 };
-
-function sha256(value: string | Uint8Array): string {
-  return createHash("sha256").update(value).digest("hex");
-}
 
 function stateIsTerminal(state: JsonObject): boolean {
   return ["approved", "approved_with_waivers", "halted", "cancelled"].includes(
@@ -355,99 +350,13 @@ export class SqliteAuthority
   }
 
   verifyAuditChain(): void {
-    const metadata = this.database
-      .prepare(
-        `SELECT next_audit_sequence, audit_chain_head
-         FROM workspaces WHERE workspace_id = ?`,
-      )
-      .get(this.workspaceId) as
-      { next_audit_sequence: number; audit_chain_head: string } | undefined;
-    if (metadata === undefined) {
-      throw new AuthorityIntegrityError("Workspace metadata is missing");
-    }
-
-    const rows = this.database
-      .prepare(
-        `SELECT * FROM audit_entries
-         WHERE workspace_id = ? ORDER BY sequence`,
-      )
-      .all(this.workspaceId) as AuditRow[];
-    let previousHash = ZERO_HASH;
-    const versionsByRun = new Map<string, { before: number; after: number }>();
-    for (const [index, row] of rows.entries()) {
-      if (row.sequence !== index + 1) {
-        throw new AuthorityIntegrityError("Audit sequence is not contiguous");
-      }
-      const entry = auditEntryFromRow(row);
-      const { entryHash, ...withoutHash } = entry;
-      const priorVersions = versionsByRun.get(entry.runId);
-      const versionsContinue =
-        priorVersions === undefined
-          ? entry.stateVersionBefore === 0
-          : (entry.stateVersionBefore === priorVersions.before &&
-              entry.stateVersionAfter === priorVersions.after) ||
-            entry.stateVersionBefore === priorVersions.after;
-      if (
-        entry.sequence !== row.sequence ||
-        entry.previousEntryHash !== previousHash ||
-        !versionsContinue ||
-        entry.stateVersionAfter < entry.stateVersionBefore ||
-        sha256(canonicalJson(withoutHash)) !== entryHash
-      ) {
-        throw new AuthorityIntegrityError(
-          `Audit chain verification failed at sequence ${row.sequence}`,
-        );
-      }
-      previousHash = entryHash;
-      versionsByRun.set(entry.runId, {
-        before: entry.stateVersionBefore,
-        after: entry.stateVersionAfter,
-      });
-    }
-    if (
-      metadata.next_audit_sequence !== rows.length + 1 ||
-      metadata.audit_chain_head !== previousHash
-    ) {
-      throw new AuthorityIntegrityError(
-        "Audit chain head does not match metadata",
-      );
-    }
-    const runs = this.database
-      .prepare(
-        `SELECT runs.run_id, runs.state, runs.state_version,
-                run_state_snapshots.state_version AS snapshot_state_version,
-                run_state_snapshots.state_json
-         FROM runs
-         LEFT JOIN run_state_snapshots USING (run_id)`,
-      )
-      .all() as Array<{
-      run_id: string;
-      state: string;
-      state_version: number;
-      snapshot_state_version: number;
-      state_json: string | null;
-    }>;
-    for (const run of runs) {
-      if (run.state_json === null) {
-        throw new AuthorityIntegrityError(
-          `Authoritative run snapshot is missing: ${run.run_id}`,
-        );
-      }
-      const state = parseObject(run.state_json);
-      const audited = versionsByRun.get(run.run_id);
-      if (
-        audited === undefined ||
-        audited.after !== run.state_version ||
-        run.snapshot_state_version !== run.state_version ||
-        state.runId !== run.run_id ||
-        state.state !== run.state ||
-        state.stateVersion !== run.state_version
-      ) {
-        throw new AuthorityIntegrityError(
-          `Authoritative run state disagrees with audit: ${run.run_id}`,
-        );
-      }
-    }
+    verifySqliteAuthorityIntegrity(
+      this.database,
+      this.workspaceId,
+      (message) => {
+        throw new AuthorityIntegrityError(message);
+      },
+    );
   }
 
   loadRun<TState extends object>(runId: string): TState | null {

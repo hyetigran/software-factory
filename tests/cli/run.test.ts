@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mkdtemp, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 
 import { CliExit, runCli, runCliAsync } from "../../src/cli/run.js";
 import { createWorkspaceOperations } from "../../src/infrastructure/platform/workspace-operations.js";
@@ -59,7 +60,7 @@ describe("factory executable", () => {
     ).resolves.toBe(CliExit.success);
     expect(JSON.parse(listLines[0] ?? "null")).toMatchObject({
       ok: true,
-      command: "run_list",
+      command: "run list",
       data: { runs: [] },
     });
 
@@ -121,6 +122,47 @@ describe("factory executable", () => {
     ).resolves.toBe(CliExit.success);
 
     expect(await readdir(projectRoot, { recursive: true })).toEqual(before);
+  });
+
+  it("rejects tampered authority data without rewriting it", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "factory-cli-"));
+    const operations = createWorkspaceOperations();
+    await runCliAsync(["init"], vi.fn(), operations, projectRoot);
+    const databasePath = join(projectRoot, ".factory", "state.db");
+    const database = new DatabaseSync(databasePath);
+    database
+      .prepare("UPDATE workspaces SET audit_chain_head = ?")
+      .run("f".repeat(64));
+    database.close();
+    const before = await readdir(projectRoot, { recursive: true });
+
+    await expect(
+      runCliAsync(["run", "list"], vi.fn(), operations, projectRoot),
+    ).resolves.toBe(CliExit.integrity);
+
+    expect(await readdir(projectRoot, { recursive: true })).toEqual(before);
+  });
+
+  it("preserves the invoked alias in JSON output", async () => {
+    const lines: string[] = [];
+    const operations: WorkspaceOperations = {
+      initialize: vi.fn(),
+      listRuns: vi.fn(),
+      loadRun: vi.fn().mockResolvedValue({ runId: "run_1" }),
+      listAudit: vi.fn(),
+    };
+
+    await runCliAsync(
+      ["inspect", "state", "run_1", "--json"],
+      (line) => lines.push(line),
+      operations,
+      "/project",
+    );
+
+    expect(JSON.parse(lines[0] ?? "null")).toMatchObject({
+      ok: true,
+      command: "inspect state",
+    });
   });
 
   it("returns not found for audit inspection of a missing run", async () => {

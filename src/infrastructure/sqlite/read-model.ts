@@ -9,6 +9,7 @@ import {
   type RunSummary,
 } from "../../application/workspace-operations.js";
 import { decodeAuditEntry, type AuditRow } from "./audit-codec.js";
+import { verifySqliteAuthorityIntegrity } from "./authority-integrity.js";
 
 export class SqliteReadModel {
   private constructor(private readonly database: DatabaseSync) {}
@@ -41,11 +42,22 @@ export class SqliteReadModel {
       } catch {
         walExists = false;
       }
-      const location = walExists ? databasePath : pathToFileURL(databasePath);
-      if (!walExists && location instanceof URL) {
-        location.searchParams.set("immutable", "1");
+      const openDatabase = (immutable: boolean) => {
+        const location = immutable ? pathToFileURL(databasePath) : databasePath;
+        if (location instanceof URL)
+          location.searchParams.set("immutable", "1");
+        return new DatabaseSync(location, { readOnly: true });
+      };
+      database = openDatabase(!walExists);
+      if (!walExists) {
+        try {
+          await access(`${databasePath}-wal`);
+          database.close();
+          database = openDatabase(false);
+        } catch {
+          // The immutable snapshot was opened while no WAL existed.
+        }
       }
-      database = new DatabaseSync(location, { readOnly: true });
       database.exec("PRAGMA query_only = ON");
       const version = database
         .prepare(
@@ -59,6 +71,22 @@ export class SqliteReadModel {
           { schemaVersion: version?.schema_version ?? null },
         );
       }
+      const workspace = database
+        .prepare("SELECT workspace_id FROM workspaces")
+        .get() as { workspace_id: string } | undefined;
+      if (workspace === undefined) {
+        throw new WorkspaceOperationError(
+          "INTEGRITY_ERROR",
+          "Workspace metadata is missing",
+        );
+      }
+      verifySqliteAuthorityIntegrity(
+        database,
+        workspace.workspace_id,
+        (message) => {
+          throw new WorkspaceOperationError("INTEGRITY_ERROR", message);
+        },
+      );
       return new SqliteReadModel(database);
     } catch (error) {
       database?.close();
