@@ -14,7 +14,6 @@ import type {
 import { canonicalJson } from "../../domain/canonical-json.js";
 import type { BudgetReservation } from "../../domain/index.js";
 import { createHash } from "node:crypto";
-import { AuthorityIntegrityError } from "./errors.js";
 import {
   providerEvidenceMatchesRecording,
   providerResponseMatchesEvidence,
@@ -23,6 +22,7 @@ import { isAuthenticOpenAiExecution } from "../providers/openai.js";
 import { isAuthenticAnthropicExecution } from "../providers/anthropic.js";
 import { isAuthenticReplayExecution } from "../providers/replay.js";
 import { decideProviderFailure } from "../../application/provider-failure-policy.js";
+import { ProviderAttemptAccounting } from "./provider-attempt-accounting.js";
 
 type Dependencies = {
   database: DatabaseSync;
@@ -58,7 +58,11 @@ type AttemptRow = {
 };
 
 export class SqliteProviderFailure {
-  constructor(private readonly dependencies: Dependencies) {}
+  private readonly accounting: ProviderAttemptAccounting;
+
+  constructor(private readonly dependencies: Dependencies) {
+    this.accounting = new ProviderAttemptAccounting(dependencies.database);
+  }
 
   settle(
     request: CompleteProviderFailureEvidence,
@@ -169,7 +173,7 @@ export class SqliteProviderFailure {
       }
       this.dependencies.persistArtifactMetadata(request.nativeUsageArtifact);
     }
-    const reservation = this.loadReservation(request.attemptId);
+    const reservation = this.accounting.reservation(request.attemptId);
     const normalizedActual = this.normalizedUsage(request, reservation);
     const counts = this.recoveryCounts(request);
     const decided = decideProviderFailure({
@@ -213,7 +217,21 @@ export class SqliteProviderFailure {
         )
         .run(request.commandId);
     }
-    this.reconcileUsage(request, reservation, normalizedActual, completedAt);
+    this.accounting.reconcile({
+      runId: request.runId,
+      commandId: request.commandId,
+      attemptId: request.attemptId,
+      reservation,
+      actual: normalizedActual,
+      actualKind:
+        request.execution.kind === "unknown_outcome"
+          ? "conservative_charge"
+          : "actual",
+      ...(request.nativeUsageArtifact === undefined
+        ? {}
+        : { nativeUsageArtifactId: request.nativeUsageArtifact.artifactId }),
+      createdAt: completedAt,
+    });
     return {
       ...disposition,
       stateVersion: row.state_version,
@@ -222,6 +240,7 @@ export class SqliteProviderFailure {
         reservation,
         normalizedActual,
         disposition,
+        row.accepted_attempt_id,
       ),
     };
   }
@@ -298,7 +317,7 @@ export class SqliteProviderFailure {
       );
       this.dependencies.persistArtifactMetadata(request.nativeUsageArtifact);
     }
-    const reservation = this.loadReservation(request.attemptId);
+    const reservation = this.accounting.reservation(request.attemptId);
     const actual = this.normalizedUsage(request, reservation);
     const audit = this.dependencies.database
       .prepare(
@@ -322,6 +341,18 @@ export class SqliteProviderFailure {
       counts: this.recoveryCounts(request),
       policy,
     });
+    const auditedBounds = payload?.recoveryBounds;
+    const boundsValid =
+      auditedBounds !== null &&
+      typeof auditedBounds === "object" &&
+      !Array.isArray(auditedBounds) &&
+      Object.keys(auditedBounds).sort().join(",") ===
+        ["repairLimit", "repairsUsed", "retriesUsed", "retryLimit"]
+          .sort()
+          .join(",") &&
+      Object.values(auditedBounds).every(
+        (value) => Number.isInteger(value) && Number(value) >= 0,
+      );
     if (
       row.run_id !== request.runId ||
       row.correlation_id !== request.correlationId ||
@@ -354,7 +385,15 @@ export class SqliteProviderFailure {
       row.actual_output_tokens !== actual.outputTokens ||
       row.actual_cost_usd_micros !== actual.costUsdMicros ||
       payload?.failureKind !== derived.failureKind ||
-      payload.failureClass !== derived.failureClass
+      payload.failureClass !== derived.failureClass ||
+      !boundsValid ||
+      ![
+        "transport_retry",
+        "schema_repair",
+        "pinned_model_unavailable",
+        "terminal",
+        "none",
+      ].includes(String(payload.recovery))
     ) {
       throw new TypeError("Settled provider failure evidence conflicts");
     }
@@ -365,6 +404,8 @@ export class SqliteProviderFailure {
         row.attempt_status === "discarded"
           ? "none"
           : (payload.recovery as ProviderFailureDisposition["recovery"]),
+      recoveryBounds:
+        auditedBounds as ProviderFailureDisposition["recoveryBounds"],
       stateVersion: row.state_version,
       auditFacts: [],
     };
@@ -459,30 +500,6 @@ export class SqliteProviderFailure {
     }
   }
 
-  private loadReservation(attemptId: string) {
-    const row = this.dependencies.database
-      .prepare(
-        `SELECT calls, input_tokens, output_tokens, cost_usd_micros
-           FROM usage_ledger WHERE attempt_id = ? AND kind = 'reservation'`,
-      )
-      .get(attemptId) as
-      | {
-          calls: number;
-          input_tokens: number;
-          output_tokens: number;
-          cost_usd_micros: number;
-        }
-      | undefined;
-    if (row === undefined)
-      throw new AuthorityIntegrityError("Attempt reservation is missing");
-    return {
-      calls: row.calls,
-      inputTokens: row.input_tokens,
-      outputTokens: row.output_tokens,
-      costUsdMicros: row.cost_usd_micros,
-    };
-  }
-
   private normalizedUsage(
     request: CompleteProviderFailureEvidence,
     reservation: {
@@ -561,49 +578,12 @@ export class SqliteProviderFailure {
     return { retriesUsed: row.retries ?? 0, repairsUsed: row.repairs ?? 0 };
   }
 
-  private reconcileUsage(
-    request: CompleteProviderFailureEvidence,
-    reservation: BudgetReservation,
-    actual: BudgetReservation,
-    createdAt: string,
-  ): void {
-    const insert = this.dependencies.database.prepare(
-      `INSERT INTO usage_ledger
-         (usage_entry_id, run_id, command_id, attempt_id, kind, calls,
-          input_tokens, output_tokens, cost_usd_micros,
-          native_usage_artifact_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    for (const [kind, usage] of [
-      ["release", reservation],
-      [
-        request.execution.kind === "unknown_outcome"
-          ? "conservative_charge"
-          : "actual",
-        actual,
-      ],
-    ] as const) {
-      insert.run(
-        `${request.attemptId}:${kind}`,
-        request.runId,
-        request.commandId,
-        request.attemptId,
-        kind,
-        usage.calls,
-        usage.inputTokens,
-        usage.outputTokens,
-        usage.costUsdMicros,
-        request.nativeUsageArtifact?.artifactId ?? null,
-        createdAt,
-      );
-    }
-  }
-
   private appendAuditFacts(
     request: CompleteProviderFailureEvidence,
     reservation: BudgetReservation,
     actual: BudgetReservation,
     disposition: ProviderFailureDisposition,
+    acceptedAttemptId: string | null,
   ): PersistableAuditFact[] {
     const evidence = [
       { kind: "artifact", artifactId: request.outcomeArtifact.artifactId },
@@ -667,6 +647,7 @@ export class SqliteProviderFailure {
               payload: {
                 commandId: request.commandId,
                 attemptId: request.attemptId,
+                acceptedAttemptId,
               },
             },
           ]

@@ -14,6 +14,7 @@ import { canonicalJson } from "../../domain/canonical-json.js";
 import type { StagedArtifactRegistration } from "../../application/artifact-port.js";
 import { structuredTextFromProviderResponse } from "../providers/recording-codec.js";
 import { AuthorityIntegrityError } from "./errors.js";
+import { ProviderAttemptAccounting } from "./provider-attempt-accounting.js";
 
 type Dependencies = {
   database: DatabaseSync;
@@ -127,7 +128,11 @@ export function providerResponseMatchesEvidence(
 }
 
 export class SqliteProviderCompletion {
-  constructor(private readonly dependencies: Dependencies) {}
+  private readonly accounting: ProviderAttemptAccounting;
+
+  constructor(private readonly dependencies: Dependencies) {
+    this.accounting = new ProviderAttemptAccounting(dependencies.database);
+  }
 
   settle(
     request: CompleteProviderAttemptEvidence,
@@ -381,7 +386,7 @@ export class SqliteProviderCompletion {
     this.dependencies.persistArtifactMetadata(request.outputArtifact);
     this.dependencies.persistArtifactMetadata(request.rawResponseArtifact);
     this.dependencies.persistArtifactMetadata(request.nativeUsageArtifact);
-    const reservation = this.loadReservation(request.attemptId);
+    const reservation = this.accounting.reservation(request.attemptId);
     if (
       !Object.values(request.actualUsage).every(
         (value) => Number.isInteger(value) && value >= 0,
@@ -428,7 +433,15 @@ export class SqliteProviderCompletion {
         )
         .run(request.commandId);
     }
-    this.reconcileUsage(request, reservation, completedAt);
+    this.accounting.reconcile({
+      runId: request.runId,
+      commandId: request.commandId,
+      attemptId: request.attemptId,
+      reservation,
+      actual: request.actualUsage,
+      actualKind: "actual",
+      createdAt: completedAt,
+    });
     const evidence = [
       { kind: "artifact", artifactId: request.outputArtifact.artifactId },
       { kind: "artifact", artifactId: request.rawResponseArtifact.artifactId },
@@ -655,68 +668,6 @@ export class SqliteProviderCompletion {
       request.providerEvidence,
       request.correlationId,
       bytes,
-    );
-  }
-
-  private loadReservation(attemptId: string) {
-    const row = this.dependencies.database
-      .prepare(
-        `SELECT calls, input_tokens, output_tokens, cost_usd_micros
-           FROM usage_ledger WHERE attempt_id = ? AND kind = 'reservation'`,
-      )
-      .get(attemptId) as
-      | {
-          calls: number;
-          input_tokens: number;
-          output_tokens: number;
-          cost_usd_micros: number;
-        }
-      | undefined;
-    if (row === undefined) {
-      throw new AuthorityIntegrityError("Attempt reservation is missing");
-    }
-    return {
-      calls: row.calls,
-      inputTokens: row.input_tokens,
-      outputTokens: row.output_tokens,
-      costUsdMicros: row.cost_usd_micros,
-    };
-  }
-
-  private reconcileUsage(
-    request: CompleteProviderAttemptEvidence,
-    reservation: ReturnType<SqliteProviderCompletion["loadReservation"]>,
-    createdAt: string,
-  ): void {
-    const insert = this.dependencies.database.prepare(
-      `INSERT INTO usage_ledger
-         (usage_entry_id, run_id, command_id, attempt_id, kind,
-          calls, input_tokens, output_tokens, cost_usd_micros, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    insert.run(
-      `${request.attemptId}:release`,
-      request.runId,
-      request.commandId,
-      request.attemptId,
-      "release",
-      reservation.calls,
-      reservation.inputTokens,
-      reservation.outputTokens,
-      reservation.costUsdMicros,
-      createdAt,
-    );
-    insert.run(
-      `${request.attemptId}:actual`,
-      request.runId,
-      request.commandId,
-      request.attemptId,
-      "actual",
-      request.actualUsage.calls,
-      request.actualUsage.inputTokens,
-      request.actualUsage.outputTokens,
-      request.actualUsage.costUsdMicros,
-      createdAt,
     );
   }
 }

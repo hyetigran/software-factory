@@ -38,6 +38,7 @@ import { schemaRepairOverlayFromUnknown } from "../../application/execution-port
 import { commandIsValid } from "../../application/command-validation.js";
 import { artifactRegistrationIsValid } from "../../application/artifact-port.js";
 import { terminalFailureClassification } from "../../application/provider-failure-policy.js";
+import { terminalFailureEvidenceDocuments } from "../../application/terminal-failure-evidence.js";
 import { decideAttemptPolicy } from "../../application/attempt-policy.js";
 import type { ContentAddressedArtifactStore } from "../artifacts/object-store.js";
 import {
@@ -604,8 +605,102 @@ export class SqliteAuthority
           const stagedTerminalEvidence = new Map(
             (data.persistRequest.stagedArtifacts ?? []).map((artifact) => [
               artifact.artifactId,
-              artifact.contentHash,
+              artifact,
             ]),
+          );
+          const usageRows = this.database
+            .prepare(
+              `SELECT kind, calls, input_tokens, output_tokens, cost_usd_micros
+                 FROM usage_ledger WHERE attempt_id = ?`,
+            )
+            .all(data.completion.attemptId) as Array<{
+            kind: string;
+            calls: number;
+            input_tokens: number;
+            output_tokens: number;
+            cost_usd_micros: number;
+          }>;
+          const usage = (kind: "reservation" | "actual") => {
+            const row = usageRows.find(({ kind: storedKind }) =>
+              kind === "actual"
+                ? ["actual", "conservative_charge"].includes(storedKind)
+                : storedKind === kind,
+            );
+            if (row === undefined) {
+              throw new AuthorityIntegrityError(
+                `Terminal failure ${kind} usage is missing`,
+              );
+            }
+            return {
+              calls: row.calls,
+              inputTokens: row.input_tokens,
+              outputTokens: row.output_tokens,
+              costUsdMicros: row.cost_usd_micros,
+            };
+          };
+          const documents = terminalFailureEvidenceDocuments({
+            completion: data.completion,
+            disposition: completion,
+            attemptIds: authoritativeAttemptIds,
+            reserved: usage("reservation"),
+            actual: usage("actual"),
+          });
+          const terminalDescriptors =
+            terminalInput === undefined
+              ? []
+              : [
+                  {
+                    input: terminalInput.terminalPolicyDecisionArtifact,
+                    purpose: "terminal_policy_decision" as const,
+                    bytes: documents.policyDecision,
+                    sources: [data.completion.outcomeArtifact.artifactId],
+                  },
+                  {
+                    input: terminalInput.budgetReportArtifact,
+                    purpose: "terminal_budget_report" as const,
+                    bytes: documents.budgetReport,
+                    sources: [
+                      data.completion.outcomeArtifact.artifactId,
+                      ...(data.completion.nativeUsageArtifact === undefined
+                        ? []
+                        : [data.completion.nativeUsageArtifact.artifactId]),
+                    ],
+                  },
+                  {
+                    input: terminalInput.diagnosticArtifact,
+                    purpose: "terminal_failure_diagnostic" as const,
+                    bytes: documents.diagnostic,
+                    sources: [
+                      data.completion.requestArtifactId,
+                      data.completion.outcomeArtifact.artifactId,
+                      ...(data.completion.nativeUsageArtifact === undefined
+                        ? []
+                        : [data.completion.nativeUsageArtifact.artifactId]),
+                    ],
+                  },
+                ];
+          const terminalEvidenceValid = terminalDescriptors.every(
+            ({ input, purpose, bytes, sources }) => {
+              const descriptor = stagedTerminalEvidence.get(input.artifactId);
+              const provenance = descriptor?.provenance;
+              return (
+                descriptor !== undefined &&
+                descriptor.contentHash === input.contentHash &&
+                descriptor.contentHash ===
+                  createHash("sha256").update(bytes).digest("hex") &&
+                descriptor.kind === "other" &&
+                descriptor.mediaType === "application/json" &&
+                descriptor.schemaId === "terminal-failure-evidence.v1" &&
+                descriptor.createdBy === data.completion.ownerProcess &&
+                provenance?.method === "application_generated" &&
+                provenance.purpose === purpose &&
+                provenance.commandId === data.completion.commandId &&
+                provenance.attemptId === data.completion.attemptId &&
+                canonicalJson(provenance.sourceArtifactIds) ===
+                  canonicalJson(sources) &&
+                this.readVerifiedStagedArtifact(descriptor).equals(bytes)
+              );
+            },
           );
           const expectedClassification =
             terminalFailureClassification(completion);
@@ -622,15 +717,9 @@ export class SqliteAuthority
             !terminalInput.attemptIds.includes(data.completion.attemptId) ||
             canonicalJson(terminalInput.attemptIds) !==
               canonicalJson(authoritativeAttemptIds) ||
-            stagedTerminalEvidence.get(
-              terminalInput.terminalPolicyDecisionArtifact.artifactId,
-            ) !== terminalInput.terminalPolicyDecisionArtifact.contentHash ||
-            stagedTerminalEvidence.get(
-              terminalInput.budgetReportArtifact.artifactId,
-            ) !== terminalInput.budgetReportArtifact.contentHash ||
-            stagedTerminalEvidence.get(
-              terminalInput.diagnosticArtifact.artifactId,
-            ) !== terminalInput.diagnosticArtifact.contentHash ||
+            new Set(terminalDescriptors.map(({ input }) => input.artifactId))
+              .size !== terminalDescriptors.length ||
+            !terminalEvidenceValid ||
             terminalInput.outcomeArtifact.artifactId !==
               data.completion.outcomeArtifact.artifactId ||
             terminalInput.outcomeArtifact.contentHash !==

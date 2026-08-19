@@ -3257,8 +3257,13 @@ function haltAfterProviderFailure(
 ): TerminalTransitionResult {
   if (
     previousState === null ||
-    (previousState.state !== "planning" &&
+    (input.type === "ProviderOutcomeFailed" &&
+      previousState.state !== "planning" &&
       previousState.state !== "baseline_review") ||
+    (input.type === "PinnedModelUnavailable" &&
+      !["planning", "baseline_review", "remediation", "closure"].includes(
+        previousState.state,
+      )) ||
     previousState.runId !== input.runId
   ) {
     throw new DomainTransitionError(
@@ -3268,12 +3273,15 @@ function haltAfterProviderFailure(
   }
 
   const activeCommand =
-    previousState.state === "planning"
+    previousState.state === "planning" || previousState.state === "remediation"
       ? previousState.activePlanning
-      : {
-          commandId: previousState.activeReview.commandId,
-          purposeId: previousState.activeReview.reviewPurposeId,
-        };
+      : previousState.state === "baseline_review" ||
+          previousState.state === "closure"
+        ? {
+            commandId: previousState.activeReview.commandId,
+            purposeId: previousState.activeReview.reviewPurposeId,
+          }
+        : undefined;
   const attemptsUnique =
     new Set(input.attemptIds).size === input.attemptIds.length;
   const bounds = input.recoveryBounds;
@@ -3297,6 +3305,7 @@ function haltAfterProviderFailure(
   ].includes(input.failureClassification);
   if (
     input.expectedStateVersion !== previousState.stateVersion ||
+    activeCommand === undefined ||
     input.failedCommandId !== activeCommand.commandId ||
     input.failedPurposeId !== activeCommand.purposeId ||
     (input.type === "PinnedModelUnavailable" &&
@@ -3341,10 +3350,14 @@ function haltAfterProviderFailure(
       previousState.configurationArtifactId,
       previousState.configurationContentHash,
     ),
-    artifactEvidence(
-      previousState.currentLedger.artifactId,
-      previousState.currentLedger.contentHash,
-    ),
+    ...(previousState.state === "draft"
+      ? []
+      : [
+          artifactEvidence(
+            previousState.currentLedger.artifactId,
+            previousState.currentLedger.contentHash,
+          ),
+        ]),
     artifactEvidence(
       input.outcomeArtifact.artifactId,
       input.outcomeArtifact.contentHash,
@@ -3363,7 +3376,7 @@ function haltAfterProviderFailure(
     ),
   ];
   const planEvidence =
-    previousState.state === "baseline_review"
+    "currentPlan" in previousState
       ? [
           artifactEvidence(
             previousState.currentPlan.artifactId,
@@ -3380,13 +3393,17 @@ function haltAfterProviderFailure(
           ...previousState.reviewContext.evidence,
         ]
       : [];
+  const downstreamArtifacts =
+    previousState.state === "draft"
+      ? []
+      : previousState.downstreamQualification.artifacts;
   const failureEvidence = [
     ...coreEvidence,
-    ...previousState.downstreamQualification.artifacts,
+    ...downstreamArtifacts,
     ...planEvidence,
   ];
   const independence: ActiveReview["independence"] =
-    previousState.state === "baseline_review"
+    "activeReview" in previousState
       ? previousState.activeReview.independence
       : previousState.reviewIndependenceOverride === undefined
         ? { reduced: false }
@@ -3394,7 +3411,10 @@ function haltAfterProviderFailure(
             reduced: true,
             overrideEvidence: previousState.reviewIndependenceOverride.evidence,
           };
-  const unresolvedFindingIds: string[] = [];
+  const unresolvedFindingIds =
+    "activeFindings" in previousState
+      ? previousState.activeFindings.map(({ findingId }) => findingId)
+      : [];
   const command = planCommand<ExportTerminal>(input.terminalReportCommandId, {
     commandType: "export_terminal",
     schemaVersion: 1,
@@ -3415,9 +3435,12 @@ function haltAfterProviderFailure(
       unresolvedFindingIds,
       sourceArtifactId: previousState.sourceArtifactId,
       configurationArtifactId: previousState.configurationArtifactId,
-      ledgerArtifactId: previousState.currentLedger.artifactId,
+      ledgerArtifactId:
+        previousState.state === "draft"
+          ? null
+          : previousState.currentLedger.artifactId,
       planArtifactId:
-        previousState.state === "baseline_review"
+        "currentPlan" in previousState
           ? previousState.currentPlan.artifactId
           : null,
       policyHash: policy.policyHash,
@@ -3426,7 +3449,7 @@ function haltAfterProviderFailure(
       budgetReportArtifactId: input.budgetReportArtifact.artifactId,
       recoveryBounds: bounds,
       independence,
-      lineageArtifactIds: previousState.downstreamQualification.artifacts.map(
+      lineageArtifactIds: downstreamArtifacts.map(
         ({ artifactId }) => artifactId,
       ),
       waiverIds: [],

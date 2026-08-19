@@ -31,7 +31,10 @@ export type ArtifactProvenance =
       purpose:
         | "provider_request"
         | "structured_provider_output"
-        | "provider_failure_evidence";
+        | "provider_failure_evidence"
+        | "terminal_policy_decision"
+        | "terminal_budget_report"
+        | "terminal_failure_diagnostic";
       sourceArtifactIds: string[];
       commandId: string;
       attemptId: string;
