@@ -286,7 +286,8 @@ export function completeCommandAttempt(
     ].every((value) => Number.isInteger(value) && value >= 0) ||
     Object.values(request.providerEvidence).some(
       (value) => value !== null && typeof value !== "string",
-    )
+    ) ||
+    Object.keys(request.providerEvidence).length !== 0
   ) {
     throw new TypeError("Completed command attempt evidence is invalid");
   }
