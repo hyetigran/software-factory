@@ -10,6 +10,7 @@ import {
   type PlanGenerated,
   type PlanSubmitted,
   type PlanningRequested,
+  type ProviderOutcomeFailed,
   type ReviewAccepted,
   type RunStarted,
   type SourceExclusionApproved,
@@ -497,6 +498,39 @@ function reviewAcceptedInput(blockingFindingIds: string[]): ReviewAccepted {
       kind: "reviewer",
       provider: "anthropic",
       modelId: "claude-frontier-pinned-20260801",
+    },
+  };
+}
+
+function providerOutcomeFailedInput(): ProviderOutcomeFailed {
+  return {
+    type: "ProviderOutcomeFailed",
+    runId: "run_01JTEST0000000000000000000",
+    expectedStateVersion: 5,
+    failedCommandId: "command_generate_plan_01JTEST",
+    failedPurposeId: "purpose_plan_01JTEST",
+    retryRepairExhausted: true,
+    outcomeArtifact: {
+      artifactId: "artifact_provider_failure_01JTEST",
+      contentHash: "9".repeat(64),
+      verified: true,
+    },
+    diagnosticArtifact: {
+      artifactId: "artifact_provider_diagnostic_01JTEST",
+      contentHash: "2".repeat(64),
+      verified: true,
+    },
+    attemptIds: ["attempt_generate_plan_01JTEST_1"],
+    terminalReportCommandId: "command_terminal_report_01JTEST",
+    reason: "Provider output repair limit exhausted",
+    auditChainVerified: true,
+    databaseIntegrityVerified: true,
+    schemaCompatible: true,
+    mutationLeaseAvailable: true,
+    actor: {
+      kind: "system",
+      component: "provider-executor",
+      version: "0.0.0",
     },
   };
 }
@@ -2849,6 +2883,54 @@ describe("transition", () => {
       transition(
         baselineReviewState(),
         { ...reviewAcceptedInput([]), ...override },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("halts planning with evidence when provider recovery is exhausted", () => {
+    const result = transition(
+      planningState(),
+      providerOutcomeFailedInput(),
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.state).toBe("halted");
+    expect(result.commands).toEqual([
+      expect.objectContaining({ commandType: "export_terminal_report" }),
+    ]);
+    expect(result.auditFacts.map(({ type }) => type)).toEqual([
+      "run_halted",
+      "command_planned",
+    ]);
+  });
+
+  it("halts baseline review against its exact active review command", () => {
+    const result = transition(
+      baselineReviewState(),
+      {
+        ...providerOutcomeFailedInput(),
+        expectedStateVersion: 6,
+        failedCommandId: "command_baseline_review_01JTEST",
+        failedPurposeId:
+          "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
+      },
+      pinnedPolicy,
+    );
+
+    expect(result.nextState).toEqual(
+      expect.objectContaining({
+        state: "halted",
+        haltedFrom: "baseline_review",
+      }),
+    );
+  });
+
+  it("rejects provider failure before retry and repair bounds are exhausted", () => {
+    expect(() =>
+      transition(
+        planningState(),
+        { ...providerOutcomeFailedInput(), retryRepairExhausted: false },
         pinnedPolicy,
       ),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));

@@ -184,6 +184,16 @@ export type AdvancedRunState = AdvancedStateBase &
 
 export type NonterminalRunState = DraftRunState | AdvancedRunState;
 
+export type HaltedRunState = RunStateBase & {
+  state: "halted";
+  policyLocked: boolean;
+  haltedFrom: NonterminalRunState["state"];
+  haltReason: string;
+  failureEvidence: ArtifactEvidenceReference[];
+  attemptIds: string[];
+  unresolvedFindingIds: string[];
+};
+
 export type RunStarted = {
   type: "RunStarted";
   runId: string;
@@ -453,6 +463,25 @@ export type ReviewAccepted = {
   actor: ModelActor & { kind: "reviewer" };
 };
 
+export type ProviderOutcomeFailed = {
+  type: "ProviderOutcomeFailed";
+  runId: string;
+  expectedStateVersion: number;
+  failedCommandId: string;
+  failedPurposeId: string;
+  retryRepairExhausted: boolean;
+  outcomeArtifact: VerifiedArtifactInput;
+  diagnosticArtifact: VerifiedArtifactInput;
+  attemptIds: string[];
+  terminalReportCommandId: string;
+  reason: string;
+  auditChainVerified: boolean;
+  databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
+  actor: SystemActor;
+};
+
 export type BudgetReservation = {
   calls: number;
   inputTokens: number;
@@ -664,6 +693,28 @@ export type ClosureReview = {
   };
 };
 
+export type ExportTerminalReport = {
+  commandId: string;
+  commandKey: string;
+  commandType: "export_terminal_report";
+  schemaVersion: 1;
+  runId: string;
+  triggeringStateVersion: number;
+  purposeId: string;
+  inputArtifactHashes: string[];
+  policyHash: string;
+  provider: "local";
+  budgetReservation: BudgetReservation;
+  payload: {
+    haltedFrom: NonterminalRunState["state"];
+    reason: string;
+    failedCommandId: string;
+    attemptIds: string[];
+    evidenceArtifactIds: string[];
+    unresolvedFindingIds: string[];
+  };
+};
+
 export type RunStartedFact = {
   type: "run_started";
   actor: HumanActor;
@@ -706,7 +757,8 @@ export type CommandPlannedFact = {
       | "render_plan"
       | "baseline_review"
       | "generate_remediation"
-      | "closure_review";
+      | "closure_review"
+      | "export_terminal_report";
     reservation: BudgetReservation;
   };
 };
@@ -830,6 +882,20 @@ export type FindingCreatedFact = {
   };
 };
 
+export type RunHaltedFact = {
+  type: "run_halted";
+  actor: SystemActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    haltedFrom: NonterminalRunState["state"];
+    failedCommandId: string;
+    failedPurposeId: string;
+    attemptIds: string[];
+    unresolvedFindingIds: string[];
+  };
+};
+
 export type IndependenceOverrideGrantedFact = {
   type: "independence_override_granted";
   actor: HumanActor;
@@ -872,12 +938,19 @@ export type TransitionResult = {
   >;
 };
 
+export type TerminalTransitionResult = {
+  nextState: HaltedRunState;
+  commands: [ExportTerminalReport];
+  auditFacts: [RunHaltedFact, CommandPlannedFact];
+};
+
 type LocalCommand =
   | RenderSourceRegistrationReport
   | ValidateLedger
   | RenderLedger
   | RenderLedgerApproval
-  | RenderPlan;
+  | RenderPlan
+  | ExportTerminalReport;
 
 type PlannedCommand =
   | LocalCommand
@@ -999,20 +1072,32 @@ export class DomainTransitionError extends Error {
   }
 }
 
+type NonterminalDomainInput =
+  | RunStarted
+  | LedgerSubmitted
+  | SourceExclusionApproved
+  | LedgerApprovalRequested
+  | PlanningRequested
+  | PlanGenerated
+  | PlanSubmitted
+  | ReviewAccepted
+  | IndependenceOverrideGranted;
+
 export function transition(
   previousState: NonterminalRunState | null,
-  input:
-    | RunStarted
-    | LedgerSubmitted
-    | SourceExclusionApproved
-    | LedgerApprovalRequested
-    | PlanningRequested
-    | PlanGenerated
-    | PlanSubmitted
-    | ReviewAccepted
-    | IndependenceOverrideGranted,
+  input: ProviderOutcomeFailed,
   policy: PinnedRunPolicy,
-): TransitionResult {
+): TerminalTransitionResult;
+export function transition(
+  previousState: NonterminalRunState | null,
+  input: NonterminalDomainInput,
+  policy: PinnedRunPolicy,
+): TransitionResult;
+export function transition(
+  previousState: NonterminalRunState | null,
+  input: NonterminalDomainInput | ProviderOutcomeFailed,
+  policy: PinnedRunPolicy,
+): TransitionResult | TerminalTransitionResult {
   switch (input.type) {
     case "RunStarted":
       return startRun(previousState, input, policy);
@@ -1030,6 +1115,8 @@ export function transition(
       return acceptPlanForBaseline(previousState, input, policy);
     case "ReviewAccepted":
       return acceptBaselineReview(previousState, input, policy);
+    case "ProviderOutcomeFailed":
+      return haltAfterProviderFailure(previousState, input, policy);
     case "IndependenceOverrideGranted":
       return grantIndependenceOverride(previousState, input, policy);
     default:
@@ -2523,6 +2610,132 @@ function acceptBaselineReview(
             previousState.currentPlan.contentHash,
           ),
         ],
+      ),
+    ],
+  };
+}
+
+function haltAfterProviderFailure(
+  previousState: NonterminalRunState | null,
+  input: ProviderOutcomeFailed,
+  policy: PinnedRunPolicy,
+): TerminalTransitionResult {
+  if (
+    previousState === null ||
+    (previousState.state !== "planning" &&
+      previousState.state !== "baseline_review") ||
+    previousState.runId !== input.runId
+  ) {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      "ProviderOutcomeFailed requires the matching planning or baseline-review run",
+    );
+  }
+
+  const activeCommand =
+    previousState.state === "planning"
+      ? previousState.activePlanning
+      : {
+          commandId: previousState.activeReview.commandId,
+          purposeId: previousState.activeReview.reviewPurposeId,
+        };
+  const attemptsUnique =
+    new Set(input.attemptIds).size === input.attemptIds.length;
+  if (
+    input.expectedStateVersion !== previousState.stateVersion ||
+    input.failedCommandId !== activeCommand.commandId ||
+    input.failedPurposeId !== activeCommand.purposeId ||
+    !input.retryRepairExhausted ||
+    !verifiedArtifactInputIsValid(input.outcomeArtifact) ||
+    !verifiedArtifactInputIsValid(input.diagnosticArtifact) ||
+    input.outcomeArtifact.artifactId === input.diagnosticArtifact.artifactId ||
+    input.attemptIds.length === 0 ||
+    !attemptsUnique ||
+    input.terminalReportCommandId.length === 0 ||
+    input.reason.trim().length === 0 ||
+    input.actor.component.length === 0 ||
+    input.actor.version.length === 0 ||
+    policy.policyHash !== previousState.policyHash ||
+    !input.auditChainVerified ||
+    !input.databaseIntegrityVerified ||
+    !input.schemaCompatible ||
+    !input.mutationLeaseAvailable
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "ProviderOutcomeFailed requires exhausted recovery bounds and verified failure evidence for the active command",
+    );
+  }
+
+  const nextStateVersion = previousState.stateVersion + 1;
+  const failureEvidence = [
+    artifactEvidence(
+      input.outcomeArtifact.artifactId,
+      input.outcomeArtifact.contentHash,
+    ),
+    artifactEvidence(
+      input.diagnosticArtifact.artifactId,
+      input.diagnosticArtifact.contentHash,
+    ),
+  ];
+  const unresolvedFindingIds: string[] = [];
+  const command = planCommand<ExportTerminalReport>(
+    input.terminalReportCommandId,
+    {
+      commandType: "export_terminal_report",
+      schemaVersion: 1,
+      runId: input.runId,
+      triggeringStateVersion: nextStateVersion,
+      purposeId: `${input.runId}:terminal-report:${nextStateVersion}`,
+      inputArtifactHashes: failureEvidence.map(
+        ({ contentHash }) => contentHash,
+      ),
+      policyHash: policy.policyHash,
+      provider: "local",
+      budgetReservation: zeroBudgetReservation(),
+      payload: {
+        haltedFrom: previousState.state,
+        reason: input.reason,
+        failedCommandId: input.failedCommandId,
+        attemptIds: input.attemptIds,
+        evidenceArtifactIds: failureEvidence.map(
+          ({ artifactId }) => artifactId,
+        ),
+        unresolvedFindingIds,
+      },
+    },
+  );
+
+  return {
+    nextState: {
+      ...previousState,
+      state: "halted",
+      stateVersion: nextStateVersion,
+      haltedFrom: previousState.state,
+      haltReason: input.reason,
+      failureEvidence,
+      attemptIds: input.attemptIds,
+      unresolvedFindingIds,
+    },
+    commands: [command],
+    auditFacts: [
+      {
+        type: "run_halted",
+        actor: input.actor,
+        reason: input.reason,
+        evidence: failureEvidence,
+        payload: {
+          haltedFrom: previousState.state,
+          failedCommandId: input.failedCommandId,
+          failedPurposeId: input.failedPurposeId,
+          attemptIds: input.attemptIds,
+          unresolvedFindingIds,
+        },
+      },
+      commandPlannedFact(
+        command,
+        "Export the evidence-rich terminal report",
+        failureEvidence,
       ),
     ],
   };
