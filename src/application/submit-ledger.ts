@@ -66,6 +66,16 @@ export async function submitLedger(input: {
   const result = await input.authority.transaction((transaction) => {
     const previousState = transaction.loadRun<NonterminalRunState>(input.runId);
     if (previousState === null) throw new TypeError("Run does not exist");
+    if (
+      transaction.loadAcceptedCommandResult(
+        input.runId,
+        "render_source_registration_report",
+      ) === null
+    )
+      throw new WorkspaceOperationError(
+        "CONFLICT",
+        "Source registration receipt must be rendered before ledger submission",
+      );
     if (ledger.source_artifact_id !== previousState.sourceArtifactId)
       throw new TypeError(
         "Ledger source identity does not match the run source",

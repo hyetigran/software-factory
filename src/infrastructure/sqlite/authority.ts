@@ -465,6 +465,23 @@ export class SqliteAuthority
         assertActive();
         return this.loadRun<TState>(runId);
       },
+      loadAcceptedCommandResult: (runId, commandType) => {
+        assertActive();
+        const row = this.database
+          .prepare(
+            `SELECT a.artifact_id, a.content_hash
+               FROM logical_commands c
+               JOIN command_attempts ca ON ca.attempt_id = c.accepted_attempt_id
+               JOIN artifacts a ON a.artifact_id = ca.result_artifact_id
+              WHERE c.run_id = ? AND c.command_type = ? AND c.status = 'succeeded'
+              ORDER BY c.rowid DESC LIMIT 1`,
+          )
+          .get(runId, commandType) as
+          { artifact_id: string; content_hash: string } | undefined;
+        return row === undefined
+          ? null
+          : { artifactId: row.artifact_id, contentHash: row.content_hash };
+      },
       loadExecutionCapacity: (runId, ceilings) => {
         assertActive();
         const consumed = this.database

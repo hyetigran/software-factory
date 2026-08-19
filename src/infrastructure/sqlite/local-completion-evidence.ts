@@ -15,6 +15,8 @@ import {
 } from "../../domain/index.js";
 import {
   renderLedger,
+  renderLedgerApproval,
+  renderSourceRegistrationReport,
   validateLedger,
 } from "../../application/deterministic-documents.js";
 import { localCommandSpecification } from "../../application/local-command-specification.js";
@@ -131,6 +133,72 @@ export class LocalCompletionEvidence {
     )
       throw new TypeError(
         "Local usage evidence does not match the completed attempt",
+      );
+  }
+
+  assertOperationalResult(
+    request: CompleteAttemptRequest,
+    command: PersistableCommand,
+  ): void {
+    const specification = localCommandSpecification(command);
+    if (specification === null || specification.stateChanging)
+      throw new TypeError("Operational local command specification is invalid");
+    const payload = command.payload as Record<string, unknown>;
+    const bytesByField = new Map<string, Buffer>();
+    for (const field of specification.controlledArtifactFields) {
+      const artifactId = String(payload[field]);
+      const row = this.database
+        .prepare("SELECT content_hash FROM artifacts WHERE artifact_id = ?")
+        .get(artifactId) as { content_hash: string } | undefined;
+      if (row === undefined)
+        throw new AuthorityIntegrityError("Operational input is missing");
+      bytesByField.set(field, this.readRegisteredObject(row.content_hash));
+    }
+    const required = (field: string): Buffer => {
+      const bytes = bytesByField.get(field);
+      if (bytes === undefined)
+        throw new AuthorityIntegrityError("Operational input is incomplete");
+      return bytes;
+    };
+    const expected =
+      command.commandType === "render_source_registration_report"
+        ? renderSourceRegistrationReport({
+            sourceArtifactId: String(payload.sourceArtifactId),
+            sourceBytes: required("sourceArtifactId"),
+            configurationArtifactId: String(payload.configurationArtifactId),
+            configurationBytes: required("configurationArtifactId"),
+            policyHash: command.policyHash,
+          })
+        : renderLedgerApproval({
+            ledgerVersionId: String(payload.ledgerVersionId),
+            ledgerArtifactId: String(payload.ledgerArtifactId),
+            ledgerBytes: required("ledgerArtifactId"),
+            coverageReportArtifactId: String(payload.coverageReportArtifactId),
+            coverageReportBytes: required("coverageReportArtifactId"),
+            sourceArtifactId: String(payload.sourceArtifactId),
+            sourceBytes: required("sourceArtifactId"),
+            coverageValidatedStateVersion: Number(
+              payload.coverageValidatedStateVersion,
+            ),
+            coverageValidatedPolicyHash: String(
+              payload.coverageValidatedPolicyHash,
+            ),
+            approvalGateId: String(payload.approvalGateId),
+            sourceExclusions: payload.sourceExclusions as unknown[],
+            approvedBy: payload.approvedBy as {
+              displayName: string;
+              osAccount: string;
+            },
+          });
+    const actual = this.readStagedArtifactBytes(request.resultArtifact);
+    if (
+      !actual.equals(expected.bytes) ||
+      request.resultArtifact.contentHash !== expected.contentHash ||
+      request.resultArtifact.kind !== specification.resultKind ||
+      request.resultArtifact.mediaType !== specification.resultMediaType
+    )
+      throw new TypeError(
+        "Operational result does not match deterministic output",
       );
   }
 

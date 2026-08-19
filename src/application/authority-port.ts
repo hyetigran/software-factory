@@ -468,6 +468,10 @@ export class ValidatedProjection {
 
 export interface AuthorityTransaction {
   loadRun<TState extends object>(runId: string): TState | null;
+  loadAcceptedCommandResult(
+    runId: string,
+    commandType: PersistableCommand["commandType"],
+  ): { artifactId: string; contentHash: string } | null;
   loadExecutionCapacity(
     runId: string,
     ceilings: {

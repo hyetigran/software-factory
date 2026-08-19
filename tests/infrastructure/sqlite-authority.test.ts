@@ -20,6 +20,7 @@ import type {
 } from "../../src/application/authority-port.js";
 import { ValidatedProjection } from "../../src/application/authority-port.js";
 import { commitTransition } from "../../src/application/commit-transition.js";
+import { renderSourceRegistrationReport } from "../../src/application/deterministic-documents.js";
 import { completeProviderFailure } from "../../src/application/complete-provider-failure.js";
 import { OpenAiResponsesAdapter } from "../../src/infrastructure/providers/openai.js";
 import type { ProviderPreflight } from "../../src/infrastructure/providers/transport.js";
@@ -175,7 +176,10 @@ function transitionResult(
     runId,
     triggeringStateVersion: stateVersion,
     purposeId: `purpose_${stateVersion}`,
-    inputArtifactHashes: [createHash("sha256").update("source").digest("hex")],
+    inputArtifactHashes: [
+      createHash("sha256").update("source").digest("hex"),
+      executionConfigurationHash,
+    ],
     policyHash: "a".repeat(64),
     provider: "local" as const,
     budgetReservation: {
@@ -184,7 +188,10 @@ function transitionResult(
       outputTokens: 0,
       costUsdMicros: 0,
     },
-    payload: { sourceArtifactId: "artifact_source" },
+    payload: {
+      sourceArtifactId: "artifact_source",
+      configurationArtifactId: "artifact_configuration",
+    },
   };
   const commandKey =
     forcedCommandKey ??
@@ -730,18 +737,31 @@ describe("SQLite authority", () => {
     const store = await ContentAddressedArtifactStore.open(
       resolve(path, "../.."),
     );
-    const result = await store.stageArtifact(Buffer.from("rendered"), {
-      artifactId: "artifact_result",
-      kind: "coverage_report",
-      mediaType: "application/json",
-      createdBy: "system:test",
-      provenance: {
-        method: "application_generated",
-        purpose: "source_registration",
-        sourceArtifactIds: ["artifact_source"],
-        commandId: "command_execute",
-        attemptId: "attempt_execute_1",
+    const result = await store.stageArtifact(
+      renderSourceRegistrationReport({
+        sourceArtifactId: "artifact_source",
+        sourceBytes: Buffer.from("source"),
+        configurationArtifactId: "artifact_configuration",
+        configurationBytes: Buffer.from(canonicalJson(executionConfiguration)),
+        policyHash: "a".repeat(64),
+      }).bytes,
+      {
+        artifactId: "artifact_result",
+        kind: "other",
+        mediaType: "text/markdown; charset=utf-8",
+        createdBy: "system:test",
+        provenance: {
+          method: "application_generated",
+          purpose: "source_registration",
+          sourceArtifactIds: ["artifact_source", "artifact_configuration"],
+          commandId: "command_execute",
+          attemptId: "attempt_execute_1",
+        },
       },
+    );
+    const invalidResult = await store.stageArtifact(Buffer.from("forged"), {
+      ...result,
+      artifactId: "artifact_invalid_result",
     });
     const usageBytes = Buffer.from(
       canonicalJson({
@@ -761,7 +781,7 @@ describe("SQLite authority", () => {
       provenance: {
         method: "application_generated",
         purpose: "local_usage",
-        sourceArtifactIds: ["artifact_source"],
+        sourceArtifactIds: ["artifact_source", "artifact_configuration"],
         commandId: "command_execute",
         attemptId: "attempt_execute_1",
       },
@@ -786,6 +806,24 @@ describe("SQLite authority", () => {
         artifactId: "artifact_invalid_usage",
       },
     );
+    await expect(
+      authority.completeAttempt({
+        runId: "run_execute",
+        commandId: "command_execute",
+        attemptId: "attempt_execute_1",
+        correlationId: "correlation_execute_1",
+        ownerProcess: "pid:123",
+        resultArtifact: invalidResult,
+        nativeUsageArtifact: usage,
+        actualUsage: {
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsdMicros: 0,
+        },
+        providerEvidence: {},
+      }),
+    ).rejects.toThrow("deterministic output");
     await expect(
       authority.completeAttempt({
         runId: "run_execute",

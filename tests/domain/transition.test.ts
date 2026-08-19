@@ -842,7 +842,7 @@ describe("transition", () => {
         {
           commandId: "command_render_source_01JTEST",
           commandKey:
-            "684db2024a706ffc91c075de8abdca100e1dc5d8164449c3f553beaa759fb7ba",
+            "f273aefe38e0576c687fb68b61d4ef0fe573d4674890d6409cf5c4d260a88a29",
           commandType: "render_source_registration_report",
           schemaVersion: 1,
           runId: "run_01JTEST0000000000000000000",
@@ -859,6 +859,7 @@ describe("transition", () => {
           },
           payload: {
             sourceArtifactId: "artifact_source_01JTEST",
+            configurationArtifactId: "artifact_config_01JTEST",
           },
         },
       ],
@@ -929,7 +930,7 @@ describe("transition", () => {
           payload: {
             commandId: "command_render_source_01JTEST",
             commandKey:
-              "684db2024a706ffc91c075de8abdca100e1dc5d8164449c3f553beaa759fb7ba",
+              "f273aefe38e0576c687fb68b61d4ef0fe573d4674890d6409cf5c4d260a88a29",
             commandType: "render_source_registration_report",
             reservation: {
               calls: 0,
@@ -1794,7 +1795,7 @@ describe("transition", () => {
       {
         commandId: "command_render_approval_01JTEST",
         commandKey:
-          "f190c9b19d77e957235212a4bea8950e56d5be7b55540a224927093e689a8c5e",
+          "8a91e046f970e35ea99fdd0350d6207d69b45d0d0c06786f04d60d7b2f5b9c95",
         commandType: "render_ledger_approval",
         schemaVersion: 1,
         runId: exclusionApproved.runId,
@@ -1817,6 +1818,7 @@ describe("transition", () => {
           ledgerVersionId: "ledger_01JTEST",
           ledgerArtifactId: "artifact_ledger_01JTEST",
           coverageReportArtifactId: "artifact_coverage_01JTEST",
+          sourceArtifactId: "artifact_source_01JTEST",
           coverageValidatedStateVersion: 4,
           coverageValidatedPolicyHash: policyHash,
           approvalGateId: "gate_requirements_approval_01JTEST",
@@ -1879,7 +1881,7 @@ describe("transition", () => {
       payload: {
         commandId: "command_render_approval_01JTEST",
         commandKey:
-          "f190c9b19d77e957235212a4bea8950e56d5be7b55540a224927093e689a8c5e",
+          "8a91e046f970e35ea99fdd0350d6207d69b45d0d0c06786f04d60d7b2f5b9c95",
         commandType: "render_ledger_approval",
         reservation: {
           calls: 0,
@@ -3776,6 +3778,7 @@ describe("transition", () => {
         Promise.resolve(
           work({
             loadRun: <TState extends object>() => state as unknown as TState,
+            loadAcceptedCommandResult: () => null,
             loadExecutionCapacity: () => ({
               availableBudget: planningRequestedInput().availableBudget,
               mutationLeaseAvailable: true,
@@ -3889,6 +3892,7 @@ describe("transition", () => {
             loadRun: () => {
               throw new Error("late evidence must not load workflow state");
             },
+            loadAcceptedCommandResult: () => null,
             loadExecutionCapacity: () => {
               throw new Error("late evidence must not load execution capacity");
             },

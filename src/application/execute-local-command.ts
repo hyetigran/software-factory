@@ -7,7 +7,12 @@ import type {
   PersistableTransition,
 } from "./authority-port.js";
 import type { ArtifactStagingPort } from "./artifact-port.js";
-import { renderLedger, validateLedger } from "./deterministic-documents.js";
+import {
+  renderLedger,
+  renderLedgerApproval,
+  renderSourceRegistrationReport,
+  validateLedger,
+} from "./deterministic-documents.js";
 import {
   beginEligibleCommandAttempt,
   ExecutionPolicy,
@@ -106,17 +111,19 @@ export async function executeNextLocalCommand(input: {
       )
         throw new TypeError("Local command input artifact identity is invalid");
       const sourceIds = bindings.map(({ artifactId }) => artifactId);
+      const inputBytes = await Promise.all(
+        bindings.map(({ contentHash }) => input.readVerified(contentHash)),
+      );
       const ledgerHash = bindings[0]?.contentHash;
-      const sourceHash = bindings[1]?.contentHash;
-      if (ledgerHash === undefined)
-        throw new TypeError("Ledger command input is incomplete");
-      const ledgerBytes = await input.readVerified(ledgerHash);
+      const ledgerBytes = inputBytes[0];
+      if (ledgerHash === undefined || ledgerBytes === undefined)
+        throw new TypeError("Local command input is incomplete");
       let report: ReturnType<typeof validateLedger> | undefined;
       let resultBytes: Uint8Array;
       if (command.commandType === "validate_ledger") {
-        if (sourceHash === undefined)
+        const sourceBytes = inputBytes[1];
+        if (sourceBytes === undefined)
           throw new TypeError("Ledger validation source is incomplete");
-        const sourceBytes = await input.readVerified(sourceHash);
         const ledgerSchema = JSON.parse(
           Buffer.from(
             await input.readVerified(
@@ -149,8 +156,46 @@ export async function executeNextLocalCommand(input: {
           throw new LocalValidationRejected(error);
         }
         resultBytes = Buffer.from(canonicalJson(report));
-      } else {
+      } else if (command.commandType === "render_ledger") {
         resultBytes = renderLedger(ledgerBytes).bytes;
+      } else if (command.commandType === "render_source_registration_report") {
+        const configurationBytes = inputBytes[1];
+        if (configurationBytes === undefined)
+          throw new TypeError("Source registration configuration is missing");
+        resultBytes = renderSourceRegistrationReport({
+          sourceArtifactId: String(payload.sourceArtifactId),
+          sourceBytes: ledgerBytes,
+          configurationArtifactId: String(payload.configurationArtifactId),
+          configurationBytes,
+          policyHash: command.policyHash,
+        }).bytes;
+      } else {
+        const coverageReportBytes = inputBytes[1];
+        const sourceBytes = inputBytes[2];
+        const approvedBy = payload.approvedBy as Record<string, unknown>;
+        if (coverageReportBytes === undefined || sourceBytes === undefined)
+          throw new TypeError("Ledger approval evidence is incomplete");
+        resultBytes = renderLedgerApproval({
+          ledgerVersionId: String(payload.ledgerVersionId),
+          ledgerArtifactId: String(payload.ledgerArtifactId),
+          ledgerBytes,
+          coverageReportArtifactId: String(payload.coverageReportArtifactId),
+          coverageReportBytes,
+          sourceArtifactId: String(payload.sourceArtifactId),
+          sourceBytes,
+          coverageValidatedStateVersion: Number(
+            payload.coverageValidatedStateVersion,
+          ),
+          coverageValidatedPolicyHash: String(
+            payload.coverageValidatedPolicyHash,
+          ),
+          approvalGateId: String(payload.approvalGateId),
+          sourceExclusions: payload.sourceExclusions as unknown[],
+          approvedBy: {
+            displayName: String(approvedBy.displayName),
+            osAccount: String(approvedBy.osAccount),
+          },
+        }).bytes;
       }
       const result = await input.staging.stageArtifact(resultBytes, {
         artifactId: `${specification.resultKind}_${randomUUID().replaceAll("-", "")}`,
@@ -228,31 +273,37 @@ export async function executeNextLocalCommand(input: {
                 version: "0.0.0",
               },
             }
-          : {
-              type: "LedgerRendered" as const,
-              runId: input.runId,
-              expectedStateVersion: input.currentState.stateVersion,
-              commandId: command.commandId,
-              ledgerVersionId: String(payload.ledgerVersionId),
-              ledgerContentHash: ledgerHash,
-              renderedArtifactId: result.artifactId,
-              renderedContentHash: result.contentHash,
-              actor: {
-                kind: "system" as const,
-                component: "deterministic-local-executor",
-                version: "0.0.0",
-              },
-            };
-      const domainResult = transition(input.currentState, domainInput, {
-        policyHash: input.configuration.policyHash,
-        plannerAssignment: input.configuration.plannerAssignment,
-        reviewerAssignment: input.configuration.reviewerAssignment,
-      });
-      await input.execution.completeLocalTransition(
-        completion,
-        input.currentState.stateVersion,
-        domainResult,
-      );
+          : command.commandType === "render_ledger"
+            ? {
+                type: "LedgerRendered" as const,
+                runId: input.runId,
+                expectedStateVersion: input.currentState.stateVersion,
+                commandId: command.commandId,
+                ledgerVersionId: String(payload.ledgerVersionId),
+                ledgerContentHash: ledgerHash,
+                renderedArtifactId: result.artifactId,
+                renderedContentHash: result.contentHash,
+                actor: {
+                  kind: "system" as const,
+                  component: "deterministic-local-executor",
+                  version: "0.0.0",
+                },
+              }
+            : null;
+      if (domainInput === null) {
+        await input.execution.completeAttempt(completion);
+      } else {
+        const domainResult = transition(input.currentState, domainInput, {
+          policyHash: input.configuration.policyHash,
+          plannerAssignment: input.configuration.plannerAssignment,
+          reviewerAssignment: input.configuration.reviewerAssignment,
+        });
+        await input.execution.completeLocalTransition(
+          completion,
+          input.currentState.stateVersion,
+          domainResult,
+        );
+      }
       return {
         commandId: command.commandId,
         commandType: command.commandType,

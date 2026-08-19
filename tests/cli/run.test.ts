@@ -111,6 +111,21 @@ describe("factory executable", () => {
     expect(started.data.runId).toMatch(/^run_/u);
     expect(started.data.state.state).toBe("draft");
 
+    const sourceReceiptLines: string[] = [];
+    await expect(
+      runCliAsync(
+        ["execute", "next", started.data.runId, "--json"],
+        (line) => sourceReceiptLines.push(line),
+        operations,
+        projectRoot,
+      ),
+    ).resolves.toBe(CliExit.success);
+    expect(JSON.parse(sourceReceiptLines[0] ?? "null")).toMatchObject({
+      data: {
+        execution: { commandType: "render_source_registration_report" },
+      },
+    });
+
     const sourceArtifactId = (
       started.data.state as unknown as { sourceArtifactId: string }
     ).sourceArtifactId;
@@ -329,6 +344,18 @@ describe("factory executable", () => {
         },
         coverageReportArtifactId: executed.data.execution.resultArtifactId,
       },
+    });
+    const approvalReceiptLines: string[] = [];
+    await expect(
+      runCliAsync(
+        ["execute", "next", started.data.runId, "--json"],
+        (line) => approvalReceiptLines.push(line),
+        operations,
+        projectRoot,
+      ),
+    ).resolves.toBe(CliExit.success);
+    expect(JSON.parse(approvalReceiptLines[0] ?? "null")).toMatchObject({
+      data: { execution: { commandType: "render_ledger_approval" } },
     });
     const previewLines: string[] = [];
     await expect(

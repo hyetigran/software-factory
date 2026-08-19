@@ -241,6 +241,65 @@ export function renderLedger(ledgerBytes: Uint8Array): RenderedProjection {
   return projection(`${lines.join("\n")}\n`);
 }
 
+export function renderSourceRegistrationReport(input: {
+  sourceArtifactId: string;
+  sourceBytes: Uint8Array;
+  configurationArtifactId: string;
+  configurationBytes: Uint8Array;
+  policyHash: string;
+}): RenderedProjection {
+  return projection(
+    [
+      "# Source Registration",
+      "",
+      `- Source artifact: ${input.sourceArtifactId}`,
+      `- Source content hash: ${sha256(input.sourceBytes)}`,
+      `- Source byte length: ${input.sourceBytes.byteLength}`,
+      `- Configuration artifact: ${input.configurationArtifactId}`,
+      `- Configuration content hash: ${sha256(input.configurationBytes)}`,
+      `- Policy hash: ${input.policyHash}`,
+      "",
+    ].join("\n"),
+  );
+}
+
+export function renderLedgerApproval(input: {
+  ledgerVersionId: string;
+  ledgerArtifactId: string;
+  ledgerBytes: Uint8Array;
+  coverageReportArtifactId: string;
+  coverageReportBytes: Uint8Array;
+  sourceArtifactId: string;
+  sourceBytes: Uint8Array;
+  coverageValidatedStateVersion: number;
+  coverageValidatedPolicyHash: string;
+  approvalGateId: string;
+  sourceExclusions: unknown[];
+  approvedBy: { displayName: string; osAccount: string };
+}): RenderedProjection {
+  return projection(
+    [
+      `# Ledger Approval ${input.ledgerVersionId}`,
+      "",
+      `- Ledger artifact: ${input.ledgerArtifactId}`,
+      `- Ledger content hash: ${sha256(input.ledgerBytes)}`,
+      `- Coverage report artifact: ${input.coverageReportArtifactId}`,
+      `- Coverage report hash: ${sha256(input.coverageReportBytes)}`,
+      `- Source artifact: ${input.sourceArtifactId}`,
+      `- Source content hash: ${sha256(input.sourceBytes)}`,
+      `- Validated state version: ${input.coverageValidatedStateVersion}`,
+      `- Validated policy hash: ${input.coverageValidatedPolicyHash}`,
+      `- Approval gate: ${input.approvalGateId}`,
+      `- Approved by: ${input.approvedBy.displayName} (${input.approvedBy.osAccount})`,
+      "",
+      "## Approved source exclusions",
+      "",
+      canonicalJson(input.sourceExclusions),
+      "",
+    ].join("\n"),
+  );
+}
+
 export function renderPlan(planBytes: Uint8Array): RenderedProjection {
   const parsed: unknown = JSON.parse(Buffer.from(planBytes).toString("utf8"));
   assertJsonSchema(parsed, schema("plan.v1.schema.json"));

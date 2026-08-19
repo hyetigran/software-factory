@@ -117,6 +117,16 @@ export async function requestPlanning(input: {
         "RUN_NOT_FOUND",
         `Run not found: ${input.runId}`,
       );
+    if (
+      transaction.loadAcceptedCommandResult(
+        input.runId,
+        "render_ledger_approval",
+      ) === null
+    )
+      throw new WorkspaceOperationError(
+        "CONFLICT",
+        "Ledger approval receipt must be rendered before planning",
+      );
     const capacity = transaction.loadExecutionCapacity(
       input.runId,
       input.configuration.hardCeilings,

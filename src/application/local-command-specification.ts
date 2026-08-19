@@ -16,12 +16,12 @@ export type LocalCommandSpecification = {
 
 const specifications = {
   render_source_registration_report: {
-    controlledArtifactFields: ["sourceArtifactId"],
+    controlledArtifactFields: ["sourceArtifactId", "configurationArtifactId"],
     resultPurpose: "source_registration",
     resultKind: "other",
     resultMediaType: "text/markdown; charset=utf-8",
     stateChanging: false,
-    executable: false,
+    executable: true,
   },
   validate_ledger: {
     controlledArtifactFields: ["ledgerArtifactId", "sourceArtifactId"],
@@ -49,7 +49,7 @@ const specifications = {
     resultKind: "other",
     resultMediaType: "text/markdown; charset=utf-8",
     stateChanging: false,
-    executable: false,
+    executable: true,
   },
 } as const;
 

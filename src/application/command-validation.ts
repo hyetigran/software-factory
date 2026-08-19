@@ -101,8 +101,8 @@ function payloadIsValid(commandType: string, value: object): boolean {
   switch (commandType) {
     case "render_source_registration_report":
       return (
-        hasExactKeys(value, ["sourceArtifactId"]) &&
-        stringFields(["sourceArtifactId"])
+        hasExactKeys(value, ["sourceArtifactId", "configurationArtifactId"]) &&
+        stringFields(["sourceArtifactId", "configurationArtifactId"])
       );
     case "validate_ledger":
       return (
@@ -130,6 +130,7 @@ function payloadIsValid(commandType: string, value: object): boolean {
           "ledgerVersionId",
           "ledgerArtifactId",
           "coverageReportArtifactId",
+          "sourceArtifactId",
           "coverageValidatedStateVersion",
           "coverageValidatedPolicyHash",
           "approvalGateId",
@@ -140,6 +141,7 @@ function payloadIsValid(commandType: string, value: object): boolean {
           "ledgerVersionId",
           "ledgerArtifactId",
           "coverageReportArtifactId",
+          "sourceArtifactId",
           "coverageValidatedPolicyHash",
           "approvalGateId",
         ]) &&
