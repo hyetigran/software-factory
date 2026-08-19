@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { canonicalJson } from "../../domain/canonical-json.js";
 import type { StagedArtifactDescriptor } from "../artifacts/object-store.js";
+import type { ContentAddressedArtifactStore } from "../artifacts/object-store.js";
 
 const ZERO_HASH = "0".repeat(64);
 
@@ -19,6 +20,18 @@ export type PersistableCommand = {
   runId: string;
   triggeringStateVersion: number;
   purposeId: string;
+  prerequisiteCommandIds?: string[];
+  inputArtifactHashes: string[];
+  policyHash: string;
+  provider?: "openai" | "anthropic" | "manual" | "local";
+  modelId?: string;
+  budgetReservation: {
+    calls: number;
+    inputTokens: number;
+    outputTokens: number;
+    costUsdMicros: number;
+  };
+  payload: object;
 };
 
 export type PersistableAuditFact = {
@@ -82,6 +95,26 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function commandIsValid(command: PersistableCommand): boolean {
+  const commandWithoutIdentity = Object.fromEntries(
+    Object.entries(command).filter(
+      ([key]) => key !== "commandId" && key !== "commandKey",
+    ),
+  );
+  return (
+    command.schemaVersion === 1 &&
+    command.commandId.length > 0 &&
+    command.commandType.length > 0 &&
+    command.purposeId.length > 0 &&
+    /^[a-f0-9]{64}$/u.test(command.policyHash) &&
+    command.inputArtifactHashes.every((hash) => /^[a-f0-9]{64}$/u.test(hash)) &&
+    Object.values(command.budgetReservation).every(
+      (value) => Number.isInteger(value) && value >= 0,
+    ) &&
+    sha256(canonicalJson(commandWithoutIdentity)) === command.commandKey
+  );
+}
+
 function stateIsTerminal(state: JsonObject): boolean {
   return ["approved", "approved_with_waivers", "halted", "cancelled"].includes(
     String(state.state),
@@ -128,17 +161,26 @@ export class SqliteAuthority {
     private readonly database: DatabaseSync,
     private readonly now: () => string,
     private readonly workspaceId: string,
+    private readonly artifactStore?: ContentAddressedArtifactStore,
   ) {}
 
   static open(
     databasePath: string,
-    options: { now?: () => string } = {},
+    options: {
+      now?: () => string;
+      artifactStore?: ContentAddressedArtifactStore;
+    } = {},
   ): SqliteAuthority {
     mkdirSync(dirname(databasePath), { recursive: true, mode: 0o700 });
     const database = new DatabaseSync(databasePath);
     database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
     const now = options.now ?? (() => new Date().toISOString());
-    const authority = new SqliteAuthority(database, now, "workspace_local");
+    const authority = new SqliteAuthority(
+      database,
+      now,
+      "workspace_local",
+      options.artifactStore,
+    );
     authority.migrate();
     return authority;
   }
@@ -161,10 +203,33 @@ export class SqliteAuthority {
       );
       this.database.exec(readFileSync(schemaPath, "utf8"));
     }
-    const version = this.database
+    let version = this.database
       .prepare("SELECT schema_version FROM schema_metadata WHERE singleton = 1")
       .get() as { schema_version: number } | undefined;
-    if (version?.schema_version !== 1) {
+    if (version?.schema_version === 1) {
+      const runCount = this.database
+        .prepare("SELECT count(*) AS count FROM runs")
+        .get() as {
+        count: number;
+      };
+      if (runCount.count > 0) {
+        throw new AuthorityIntegrityError(
+          "Schema v1 contains runs and requires the backup migration workflow",
+        );
+      }
+      const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+      const migrationPath = resolve(
+        moduleDirectory,
+        "../../../database/migrations/0002_run_state_snapshots.sql",
+      );
+      this.database.exec(readFileSync(migrationPath, "utf8"));
+      version = this.database
+        .prepare(
+          "SELECT schema_version FROM schema_metadata WHERE singleton = 1",
+        )
+        .get() as { schema_version: number } | undefined;
+    }
+    if (version?.schema_version !== 2) {
       throw new AuthorityIntegrityError(
         `Unsupported database schema version: ${version?.schema_version ?? "missing"}`,
       );
@@ -178,10 +243,21 @@ export class SqliteAuthority {
       .run(this.workspaceId, this.now(), ZERO_HASH);
   }
 
-  registerArtifact(descriptor: StagedArtifactDescriptor): void {
+  async registerArtifact(descriptor: StagedArtifactDescriptor): Promise<void> {
+    if (this.artifactStore === undefined) {
+      throw new TypeError(
+        "Artifact registration requires a bound object store",
+      );
+    }
+    const bytes = await this.artifactStore.readVerified(descriptor.contentHash);
+    if (bytes.byteLength !== descriptor.byteLength) {
+      throw new AuthorityIntegrityError(
+        `Artifact byte length does not match staged object: ${descriptor.artifactId}`,
+      );
+    }
     this.database
       .prepare(
-        `INSERT INTO artifacts
+        `INSERT OR IGNORE INTO artifacts
           (artifact_id, kind, content_hash, byte_length, media_type,
            schema_id, metadata_json, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -200,17 +276,82 @@ export class SqliteAuthority {
         }),
         this.now(),
       );
+    const stored = this.database
+      .prepare(
+        `SELECT kind, content_hash, byte_length, media_type, schema_id
+         FROM artifacts WHERE artifact_id = ?`,
+      )
+      .get(descriptor.artifactId) as
+      | {
+          kind: string;
+          content_hash: string;
+          byte_length: number;
+          media_type: string;
+          schema_id: string | null;
+        }
+      | undefined;
+    if (
+      stored === undefined ||
+      stored.kind !== descriptor.kind ||
+      stored.content_hash !== descriptor.contentHash ||
+      stored.byte_length !== descriptor.byteLength ||
+      stored.media_type !== descriptor.mediaType ||
+      stored.schema_id !== (descriptor.schemaId ?? null)
+    ) {
+      throw new AuthorityIntegrityError(
+        `Artifact identity is already bound to different metadata: ${descriptor.artifactId}`,
+      );
+    }
   }
 
   verifyIntegrity(): void {
-    const result = this.database.prepare("PRAGMA quick_check").get() as
-      { quick_check: string } | undefined;
-    if (result?.quick_check !== "ok") {
-      throw new AuthorityIntegrityError(
-        `SQLite integrity check failed: ${result?.quick_check ?? "no result"}`,
-      );
+    try {
+      const result = this.database.prepare("PRAGMA integrity_check").get() as
+        { integrity_check: string } | undefined;
+      if (result?.integrity_check !== "ok") {
+        throw new AuthorityIntegrityError(
+          `SQLite integrity check failed: ${result?.integrity_check ?? "no result"}`,
+        );
+      }
+      const foreignKeyFailure = this.database
+        .prepare("PRAGMA foreign_key_check")
+        .get();
+      if (foreignKeyFailure !== undefined) {
+        throw new AuthorityIntegrityError("SQLite foreign-key check failed");
+      }
+      this.verifyAuditChain();
+    } catch (error) {
+      if (error instanceof AuthorityIntegrityError) {
+        this.quarantine(error.message);
+      }
+      throw error;
     }
-    this.verifyAuditChain();
+  }
+
+  private quarantine(reason: string): void {
+    try {
+      this.database
+        .prepare(
+          `UPDATE workspaces SET read_only_reason = ? WHERE workspace_id = ?`,
+        )
+        .run(reason, this.workspaceId);
+    } catch {
+      // A physically corrupt database may be unable to persist quarantine.
+    }
+  }
+
+  readOnlyReason(): string | null {
+    const row = this.database
+      .prepare("SELECT read_only_reason FROM workspaces WHERE workspace_id = ?")
+      .get(this.workspaceId) as { read_only_reason: string | null } | undefined;
+    return row?.read_only_reason ?? null;
+  }
+
+  private assertWritable(): void {
+    const reason = this.readOnlyReason();
+    if (reason !== null) {
+      throw new AuthorityIntegrityError(`Workspace is read-only: ${reason}`);
+    }
   }
 
   verifyAuditChain(): void {
@@ -271,11 +412,42 @@ export class SqliteAuthority {
         "Audit chain head does not match metadata",
       );
     }
+    const runs = this.database
+      .prepare(
+        `SELECT runs.run_id, runs.state, runs.state_version,
+                run_state_snapshots.state_version AS snapshot_state_version,
+                run_state_snapshots.state_json
+         FROM runs
+         JOIN run_state_snapshots USING (run_id)`,
+      )
+      .all() as Array<{
+      run_id: string;
+      state: string;
+      state_version: number;
+      snapshot_state_version: number;
+      state_json: string;
+    }>;
+    for (const run of runs) {
+      const state = parseObject(run.state_json);
+      const audited = versionsByRun.get(run.run_id);
+      if (
+        audited === undefined ||
+        audited.after !== run.state_version ||
+        run.snapshot_state_version !== run.state_version ||
+        state.runId !== run.run_id ||
+        state.state !== run.state ||
+        state.stateVersion !== run.state_version
+      ) {
+        throw new AuthorityIntegrityError(
+          `Authoritative run state disagrees with audit: ${run.run_id}`,
+        );
+      }
+    }
   }
 
   loadRun<TState extends object>(runId: string): TState | null {
     const row = this.database
-      .prepare("SELECT state_json FROM runs WHERE run_id = ?")
+      .prepare("SELECT state_json FROM run_state_snapshots WHERE run_id = ?")
       .get(runId) as { state_json: string } | undefined;
     return row === undefined
       ? null
@@ -307,6 +479,7 @@ export class SqliteAuthority {
   commitTransition<TState extends object>(
     request: CommitTransitionRequest<TState>,
   ): PersistableTransition<TState> {
+    this.assertWritable();
     this.database.exec("BEGIN IMMEDIATE");
     try {
       this.verifyIntegrity();
@@ -333,7 +506,8 @@ export class SqliteAuthority {
         result.commands.some(
           (command) =>
             command.runId !== request.runId ||
-            command.triggeringStateVersion !== nextVersion,
+            command.triggeringStateVersion !== nextVersion ||
+            !commandIsValid(command),
         )
       ) {
         throw new TypeError("Transition output violates authority invariants");
@@ -344,15 +518,14 @@ export class SqliteAuthority {
           `INSERT INTO runs
              (run_id, workspace_id, parent_run_id, state, state_version,
               source_artifact_id, configuration_artifact_id, policy_hash,
-              policy_locked_at, created_at, terminal_at, state_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              policy_locked_at, created_at, terminal_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(run_id) DO UPDATE SET
              state_version = excluded.state_version,
              state = excluded.state,
              policy_hash = excluded.policy_hash,
              policy_locked_at = COALESCE(runs.policy_locked_at, excluded.policy_locked_at),
-             terminal_at = excluded.terminal_at,
-             state_json = excluded.state_json`,
+             terminal_at = excluded.terminal_at`,
         )
         .run(
           request.runId,
@@ -366,8 +539,16 @@ export class SqliteAuthority {
           nextState.policyLocked === true ? this.now() : null,
           this.now(),
           stateIsTerminal(nextState) ? this.now() : null,
-          canonicalJson(result.nextState),
         );
+      this.database
+        .prepare(
+          `INSERT INTO run_state_snapshots (run_id, state_version, state_json)
+           VALUES (?, ?, ?)
+           ON CONFLICT(run_id) DO UPDATE SET
+             state_version = excluded.state_version,
+             state_json = excluded.state_json`,
+        )
+        .run(request.runId, nextVersion, canonicalJson(result.nextState));
 
       const insertCommand = this.database.prepare(`
         INSERT INTO logical_commands
@@ -463,6 +644,9 @@ export class SqliteAuthority {
       return result;
     } catch (error) {
       this.database.exec("ROLLBACK");
+      if (error instanceof AuthorityIntegrityError) {
+        this.quarantine(error.message);
+      }
       throw error;
     }
   }

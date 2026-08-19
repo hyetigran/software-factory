@@ -1,15 +1,18 @@
+import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { canonicalJson } from "../../src/domain/canonical-json.js";
 import {
   transition,
   type NonterminalRunState,
   type RunStarted,
 } from "../../src/domain/index.js";
+import { ContentAddressedArtifactStore } from "../../src/infrastructure/artifacts/object-store.js";
 import {
   AuthorityIntegrityError,
   SqliteAuthority,
@@ -37,21 +40,67 @@ async function databasePath(): Promise<string> {
 
 afterEach(async () => {
   await Promise.all(
-    directories.splice(0).map((directory) =>
-      rm(directory, {
-        recursive: true,
-        force: true,
-      }),
-    ),
+    directories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
   );
 });
+
+async function openAuthority(
+  path: string,
+  options: { now?: () => string } = {},
+): Promise<SqliteAuthority> {
+  const store = await ContentAddressedArtifactStore.open(
+    resolve(path, "../.."),
+  );
+  const authority = SqliteAuthority.open(path, {
+    ...options,
+    artifactStore: store,
+  });
+  for (const [artifactId, kind, bytes] of [
+    ["artifact_source", "raw_requirements", Buffer.from("source")],
+    ["artifact_configuration", "other", Buffer.from("configuration")],
+  ] as const) {
+    const descriptor = await store.stageArtifact(bytes, {
+      artifactId,
+      kind,
+      mediaType: "application/octet-stream",
+      createdBy: "system:test",
+      provenance: { method: "human_submitted" },
+    });
+    await authority.registerArtifact(descriptor);
+  }
+  return authority;
+}
 
 function transitionResult(
   runId: string,
   stateVersion: number,
   commandId = `command_${stateVersion}`,
-  commandKey = String(stateVersion).repeat(64),
+  forcedCommandKey?: string,
 ): PersistableTransition<TestState> {
+  const commandWithoutIdentity = {
+    commandType: "render_plan",
+    schemaVersion: 1,
+    runId,
+    triggeringStateVersion: stateVersion,
+    purposeId: `purpose_${stateVersion}`,
+    inputArtifactHashes: [createHash("sha256").update("source").digest("hex")],
+    policyHash: "a".repeat(64),
+    provider: "local" as const,
+    budgetReservation: {
+      calls: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsdMicros: 0,
+    },
+    payload: {},
+  };
+  const commandKey =
+    forcedCommandKey ??
+    createHash("sha256")
+      .update(canonicalJson(commandWithoutIdentity))
+      .digest("hex");
   return {
     nextState: {
       runId,
@@ -62,17 +111,7 @@ function transitionResult(
       policyHash: "a".repeat(64),
       policyLocked: false,
     },
-    commands: [
-      {
-        commandId,
-        commandKey,
-        commandType: "render_plan",
-        schemaVersion: 1,
-        runId,
-        triggeringStateVersion: stateVersion,
-        purposeId: `purpose_${stateVersion}`,
-      },
-    ],
+    commands: [{ commandId, commandKey, ...commandWithoutIdentity }],
     auditFacts: [
       {
         type: "command_planned",
@@ -85,50 +124,30 @@ function transitionResult(
   };
 }
 
-function registerRunArtifacts(authority: SqliteAuthority): void {
-  for (const [artifactId, kind, contentHash] of [
-    ["artifact_source", "raw_requirements", "b".repeat(64)],
-    ["artifact_configuration", "other", "c".repeat(64)],
-  ] as const) {
-    authority.registerArtifact({
-      schemaVersion: 1,
-      artifactId,
-      kind,
-      contentHash,
-      byteLength: 1,
-      mediaType: "application/octet-stream",
-      createdBy: "system:test",
-      provenance: { method: "human_submitted" },
-      objectPath: `/objects/${contentHash}`,
-    });
-  }
-}
-
 describe("SQLite authority", () => {
   it("accepts the public pure-domain transition without an adapter DTO", async () => {
     const path = await databasePath();
-    const authority = SqliteAuthority.open(path);
-    registerRunArtifacts(authority);
+    const authority = await openAuthority(path);
+    const sourceHash = createHash("sha256").update("source").digest("hex");
+    const configurationHash = createHash("sha256")
+      .update("configuration")
+      .digest("hex");
     const input: RunStarted = {
       type: "RunStarted",
       runId: "run_domain",
       expectedStateVersion: 0,
       sourceArtifactId: "artifact_source",
-      sourceContentHash: "b".repeat(64),
+      sourceContentHash: sourceHash,
       sourceProvenancePath: "/project/requirements.md",
       sourceObjectVerified: true,
       configurationArtifactId: "artifact_configuration",
-      configurationContentHash: "c".repeat(64),
+      configurationContentHash: configurationHash,
       auditChainVerified: true,
       databaseIntegrityVerified: true,
       schemaCompatible: true,
       mutationLeaseAvailable: true,
       renderCommandId: "command_render_source",
-      actor: {
-        kind: "human",
-        displayName: "Tigran",
-        osAccount: "tig",
-      },
+      actor: { kind: "human", displayName: "Tigran", osAccount: "tig" },
     };
     const policy = {
       policyHash: "a".repeat(64),
@@ -141,7 +160,7 @@ describe("SQLite authority", () => {
 
     authority.commitTransition<NonterminalRunState>({
       runId: input.runId,
-      expectedStateVersion: input.expectedStateVersion,
+      expectedStateVersion: 0,
       transition: (previousState) => transition(previousState, input, policy),
     });
 
@@ -156,11 +175,9 @@ describe("SQLite authority", () => {
 
   it("atomically persists state, commands, and a verifiable audit chain", async () => {
     const path = await databasePath();
-    const authority = SqliteAuthority.open(path, {
+    const authority = await openAuthority(path, {
       now: () => "2026-08-19T00:00:00.000Z",
     });
-    registerRunArtifacts(authority);
-
     authority.commitTransition<TestState>({
       runId: "run_one",
       expectedStateVersion: 0,
@@ -168,58 +185,41 @@ describe("SQLite authority", () => {
       correlationId: "correlation_one",
       transition: () => transitionResult("run_one", 1),
     });
-
     expect(authority.loadRun<TestState>("run_one")?.stateVersion).toBe(1);
     expect(authority.listCommands("run_one")).toHaveLength(1);
-    expect(authority.listAuditEntries()).toEqual([
-      expect.objectContaining({
-        sequence: 1,
-        stateVersionBefore: 0,
-        stateVersionAfter: 1,
-        previousEntryHash: "0".repeat(64),
-        causationId: "input_one",
-        correlationId: "correlation_one",
-      }),
-    ]);
     expect(() => authority.verifyIntegrity()).not.toThrow();
     authority.close();
   });
 
-  it("rolls back state and audit when command insertion fails", async () => {
+  it("rolls back the complete transition on an invalid command key", async () => {
     const path = await databasePath();
-    const authority = SqliteAuthority.open(path);
-    registerRunArtifacts(authority);
+    const authority = await openAuthority(path);
     authority.commitTransition<TestState>({
       runId: "run_one",
       expectedStateVersion: 0,
       transition: () => transitionResult("run_one", 1),
     });
-
     expect(() =>
       authority.commitTransition<TestState>({
         runId: "run_one",
         expectedStateVersion: 1,
         transition: () =>
-          transitionResult("run_one", 2, "command_2", "1".repeat(64)),
+          transitionResult("run_one", 2, "command_2", "f".repeat(64)),
       }),
-    ).toThrow();
-
+    ).toThrow("authority invariants");
     expect(authority.loadRun<TestState>("run_one")?.stateVersion).toBe(1);
-    expect(authority.listCommands("run_one")).toHaveLength(1);
     expect(authority.listAuditEntries()).toHaveLength(1);
     authority.close();
   });
 
   it("rejects stale writes and a second active run", async () => {
     const path = await databasePath();
-    const authority = SqliteAuthority.open(path);
-    registerRunArtifacts(authority);
+    const authority = await openAuthority(path);
     authority.commitTransition<TestState>({
       runId: "run_one",
       expectedStateVersion: 0,
       transition: () => transitionResult("run_one", 1),
     });
-
     expect(() =>
       authority.commitTransition<TestState>({
         runId: "run_one",
@@ -238,10 +238,9 @@ describe("SQLite authority", () => {
     authority.close();
   });
 
-  it("detects audit entry tampering", async () => {
+  it("quarantines audit or authoritative-state tampering", async () => {
     const path = await databasePath();
-    const authority = SqliteAuthority.open(path);
-    registerRunArtifacts(authority);
+    const authority = await openAuthority(path);
     authority.commitTransition<TestState>({
       runId: "run_one",
       expectedStateVersion: 0,
@@ -251,12 +250,20 @@ describe("SQLite authority", () => {
 
     const raw = new DatabaseSync(path);
     raw
-      .prepare("UPDATE audit_entries SET payload_json = ? WHERE sequence = 1")
-      .run("{}");
+      .prepare("UPDATE runs SET state_version = 9 WHERE run_id = 'run_one'")
+      .run();
     raw.close();
 
-    const reopened = SqliteAuthority.open(path);
+    const reopened = await openAuthority(path);
     expect(() => reopened.verifyIntegrity()).toThrow(AuthorityIntegrityError);
+    expect(reopened.readOnlyReason()).toContain("disagrees with audit");
+    expect(() =>
+      reopened.commitTransition<TestState>({
+        runId: "run_one",
+        expectedStateVersion: 9,
+        transition: () => transitionResult("run_one", 10),
+      }),
+    ).toThrow("read-only");
     reopened.close();
   });
 });

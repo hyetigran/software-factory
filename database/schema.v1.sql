@@ -40,8 +40,7 @@ CREATE TABLE runs (
   policy_locked_at TEXT,
   created_at TEXT NOT NULL,
   terminal_at TEXT,
-  terminal_manifest_artifact_id TEXT REFERENCES artifacts(artifact_id),
-  state_json TEXT NOT NULL CHECK (json_valid(state_json))
+  terminal_manifest_artifact_id TEXT REFERENCES artifacts(artifact_id)
 );
 
 CREATE UNIQUE INDEX one_nonterminal_run
