@@ -255,12 +255,21 @@ export function createWorkspaceOperations(): WorkspaceOperations {
         );
       }
       try {
-        const bytes = await store.readVerified(
-          identity.configurationContentHash,
-        );
-        const configuration = JSON.parse(
-          bytes.toString("utf8"),
-        ) as ResolvedConfigurationSnapshot;
+        let configuration: ResolvedConfigurationSnapshot;
+        try {
+          const bytes = await store.readVerified(
+            identity.configurationContentHash,
+          );
+          configuration = JSON.parse(
+            bytes.toString("utf8"),
+          ) as ResolvedConfigurationSnapshot;
+        } catch (error) {
+          throw new WorkspaceOperationError(
+            "INTEGRITY_ERROR",
+            `Run configuration is missing or corrupt: ${runId}`,
+            { cause: error instanceof Error ? error.message : String(error) },
+          );
+        }
         if (
           !resolvedConfigurationIsValid(configuration) ||
           configuration.policyHash !==
