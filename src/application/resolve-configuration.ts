@@ -23,6 +23,31 @@ export type PackagedControl = {
   schemaId?: string;
 };
 
+export const packagedControlPaths: Record<keyof ResolvedArtifactPins, string> =
+  {
+    projectConfigurationSchema: "schemas/project-config.v1.schema.json",
+    resolvedConfigurationSchema:
+      "schemas/resolved-configuration.v1.schema.json",
+    runConfigurationSchema: "schemas/run-config.v1.schema.json",
+    requirementsSchema: "schemas/requirements-ledger.v1.schema.json",
+    artifactSchema: "schemas/artifact.v1.schema.json",
+    planSchema: "schemas/plan.v1.schema.json",
+    reviewSchema: "schemas/review.v1.schema.json",
+    terminalManifestSchema: "schemas/terminal-manifest.v1.schema.json",
+    taxonomy: "config/review-taxonomy.v1.json",
+    componentRegistry: "config/component-registry.v1.json",
+    plannerPrompt: "config/prompts/planner.v1.md",
+    reviewerPrompt: "config/prompts/reviewer.v1.md",
+    remediationPrompt: "config/prompts/remediation.v1.md",
+    remediationSchema: "schemas/plan.v1.schema.json",
+    schemaRepairPrompt: "config/prompts/schema-repair.v1.md",
+    reviewPolicy: "config/review-rubric.v1.md",
+    frontierAllowlist: "config/frontier-models.v1.json",
+    budgetDefaults: "config/default-budgets.v1.json",
+    productDefaults: "config/product.v1.json",
+    providerSettingsDefaults: "config/default-provider-settings.v1.json",
+  };
+
 type Worker = { provider: "openai" | "anthropic"; model_id: string };
 type Settings = { timeout_ms: number; reasoning: string | null };
 type PartialConfiguration = {

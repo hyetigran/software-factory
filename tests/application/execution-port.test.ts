@@ -47,7 +47,7 @@ const configuration: ResolvedConfigurationSnapshot = {
   recordingMode: "record",
   humanActorDisplayName: "Test User",
   providerStorage: "minimize",
-  budgetAcceptanceRequired: true,
+  budgetAcceptanceRequired: false,
   hardCeilings: {
     calls: 8,
     physicalAttempts: 12,

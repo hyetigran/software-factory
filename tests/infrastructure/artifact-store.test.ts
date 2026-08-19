@@ -200,7 +200,7 @@ describe("workspace and content-addressed artifact store", () => {
       recordingMode: "record" as const,
       humanActorDisplayName: "Test User",
       providerStorage: "minimize" as const,
-      budgetAcceptanceRequired: true,
+      budgetAcceptanceRequired: false,
       hardCeilings: {
         calls: 4,
         physicalAttempts: 6,

@@ -110,6 +110,26 @@ describe("factory executable", () => {
     expect(started.command).toBe("run start");
     expect(started.data.runId).toMatch(/^run_/u);
     expect(started.data.state.state).toBe("draft");
+
+    const conflictLines: string[] = [];
+    const conflictExit = await runCliAsync(
+      [
+        "run",
+        "start",
+        "requirements.md",
+        configured.data.configurationArtifactId,
+        "--json",
+      ],
+      (line) => conflictLines.push(line),
+      operations,
+      projectRoot,
+    );
+    expect(conflictExit).toBe(CliExit.conflict);
+    expect(JSON.parse(conflictLines[0] ?? "null")).toMatchObject({
+      ok: false,
+      command: "run start",
+      error: { code: "CONFLICT" },
+    });
   });
 
   it("merges defaults, project configuration, and explicit overrides", async () => {

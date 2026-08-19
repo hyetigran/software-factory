@@ -998,6 +998,9 @@ export type PlanningRequestedFact = {
     plannerAssignment: ProviderModelAssignment;
     policyHash: string;
     budgetReservation: BudgetReservation;
+    policyAccepted: true;
+    budgetsAccepted: true;
+    providerBoundaryAcknowledged: true;
   };
 };
 
@@ -2253,6 +2256,9 @@ function requestPlanning(
           plannerAssignment: input.plannerAssignment,
           policyHash: policy.policyHash,
           budgetReservation: input.budgetReservation,
+          policyAccepted: true,
+          budgetsAccepted: true,
+          providerBoundaryAcknowledged: true,
         },
       },
       commandPlannedFact(

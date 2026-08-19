@@ -930,6 +930,26 @@ export class SqliteAuthority
         );
       }
       if (
+        request.attemptKind !== "strict_replay" &&
+        typeof command.provider === "string" &&
+        request.policy.configuration.budgetAcceptanceRequired &&
+        this.database
+          .prepare(
+            `SELECT 1 FROM audit_entries
+              WHERE run_id = ? AND fact_type = 'planning_requested'
+                AND json_extract(actor_json, '$.kind') = 'human'
+                AND json_extract(payload_json, '$.budgetsAccepted') = 1
+                AND json_extract(payload_json, '$.policyAccepted') = 1
+                AND json_extract(payload_json, '$.providerBoundaryAcknowledged') = 1
+              LIMIT 1`,
+          )
+          .get(request.runId) === undefined
+      ) {
+        throw new TypeError(
+          "Live execution requires an authoritative human budget acceptance",
+        );
+      }
+      if (
         row.accepted_attempt_id !== null &&
         request.attemptKind !== "human_rerun"
       ) {

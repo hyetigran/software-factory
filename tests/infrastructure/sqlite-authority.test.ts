@@ -91,7 +91,7 @@ const executionConfiguration: ResolvedConfigurationSnapshot = {
   recordingMode: "record",
   humanActorDisplayName: "Test User",
   providerStorage: "minimize",
-  budgetAcceptanceRequired: true,
+  budgetAcceptanceRequired: false,
   hardCeilings: {
     calls: 4,
     physicalAttempts: 4,

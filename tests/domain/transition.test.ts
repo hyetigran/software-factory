@@ -2176,6 +2176,9 @@ describe("transition", () => {
         },
         policyHash,
         budgetReservation: planningRequestedInput().budgetReservation,
+        policyAccepted: true,
+        budgetsAccepted: true,
+        providerBoundaryAcknowledged: true,
       },
     });
     const command = result.commands[0];
