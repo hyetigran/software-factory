@@ -12,6 +12,7 @@ import type {
 import type { StagedArtifactRegistration } from "../../application/artifact-port.js";
 import { appendAuditEntries } from "./audit-journal.js";
 import { AuthorityIntegrityError } from "./errors.js";
+import { localCommandSpecification } from "../../application/local-command-specification.js";
 import { LocalCompletionEvidence } from "./local-completion-evidence.js";
 
 type OperationalCompletionDependencies = {
@@ -148,34 +149,19 @@ export class SqliteOperationalCompletion {
           "Logical command envelope is invalid during completion",
         );
       }
-      if (
-        ![
-          "render_source_registration_report",
-          "validate_ledger",
-          "render_ledger",
-          "render_ledger_approval",
-        ].includes(command.commandType) ||
-        command.provider !== "local"
-      ) {
+      const specification = localCommandSpecification(command);
+      if (specification === null || command.provider !== "local") {
         throw new TypeError(
           "State-changing command outcomes require an atomic domain transition",
         );
       }
-      if (
-        ["validate_ledger", "render_ledger"].includes(command.commandType) !==
-        (domain !== undefined)
-      ) {
+      if (specification.stateChanging !== (domain !== undefined)) {
         throw new TypeError(
           "State-changing local completion requires its exact domain outcome",
         );
       }
       this.evidence.assertProvenance(request, command);
       this.evidence.assertUsage(request);
-      if (domain !== undefined) {
-        if (command.commandType === "validate_ledger")
-          this.evidence.assertValidationDomain(request, domain);
-        else this.evidence.assertLedgerRenderDomain(request, domain);
-      }
       const reservation = this.loadReservation(request.attemptId);
       const actual = request.actualUsage;
       if (
@@ -203,6 +189,11 @@ export class SqliteOperationalCompletion {
         row.accepted_attempt_id === null &&
         (row.state_version === row.triggering_state_version ||
           explicitlyExpected);
+      if (domain !== undefined && accepted) {
+        if (command.commandType === "validate_ledger")
+          this.evidence.assertValidationDomain(request, command, domain);
+        else this.evidence.assertLedgerRenderDomain(request, domain);
+      }
       database
         .prepare(
           `UPDATE command_attempts
@@ -238,11 +229,6 @@ export class SqliteOperationalCompletion {
             "UPDATE logical_commands SET status = 'cancelled' WHERE command_id = ?",
           )
           .run(request.commandId);
-      }
-      if (domain !== undefined && !accepted) {
-        throw new TypeError(
-          "State-changing local completion was not accepted as the logical result",
-        );
       }
       this.reconcileUsage(request, reservation, completedAt);
       this.appendCompletionAudit(

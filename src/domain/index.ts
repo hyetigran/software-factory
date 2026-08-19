@@ -2036,7 +2036,16 @@ function approveSourceExclusion(
       policyHash: policy.policyHash,
       sourceExclusions,
       currentLedger: {
-        ...previousState.currentLedger,
+        ...(() => {
+          const {
+            renderedProjection: _invalidated,
+            validation: _validation,
+            ...ledger
+          } = previousState.currentLedger;
+          void _invalidated;
+          void _validation;
+          return ledger;
+        })(),
         validationStatus: "pending",
       },
     },
@@ -2058,10 +2067,10 @@ function approveSourceExclusion(
   };
 }
 
-function completeLedgerValidation(
+export function completeLedgerValidation(
   previousState: NonterminalRunState | null,
   input: LedgerValidationCompleted,
-  policy: PinnedRunPolicy,
+  policy: Pick<PinnedRunPolicy, "policyHash">,
 ): TransitionResult {
   if (
     previousState === null ||
@@ -2151,10 +2160,10 @@ function completeLedgerValidation(
   };
 }
 
-function completeLedgerRender(
+export function completeLedgerRender(
   previousState: NonterminalRunState | null,
   input: LedgerRendered,
-  policy: PinnedRunPolicy,
+  policy: Pick<PinnedRunPolicy, "policyHash">,
 ): TransitionResult {
   if (
     previousState === null ||

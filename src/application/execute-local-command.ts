@@ -16,6 +16,7 @@ import {
 } from "./execution-port.js";
 import type { ResolvedConfigurationSnapshot } from "./stage-configuration.js";
 import { WorkspaceOperationError } from "./workspace-operations.js";
+import { localCommandSpecification } from "./local-command-specification.js";
 
 export interface LocalCommandPort extends CommandExecutionPort {
   listCommands(runId: string): PersistableCommand[];
@@ -62,11 +63,8 @@ export async function executeNextLocalCommand(input: {
     if (command.provider !== "local") continue;
     if (command.triggeringStateVersion !== input.currentState.stateVersion)
       continue;
-    if (
-      command.commandType !== "validate_ledger" &&
-      command.commandType !== "render_ledger"
-    )
-      continue;
+    const specification = localCommandSpecification(command);
+    if (specification?.executable !== true) continue;
     const payload = command.payload as Record<string, unknown>;
     const attemptId = `attempt_${randomUUID().replaceAll("-", "")}`;
     const correlationId = `correlation_${randomUUID().replaceAll("-", "")}`;
@@ -82,10 +80,9 @@ export async function executeNextLocalCommand(input: {
     });
     if (begun.status === "already_succeeded") continue;
     try {
-      const payloadIds =
-        command.commandType === "validate_ledger"
-          ? [payload.ledgerArtifactId, payload.sourceArtifactId]
-          : [payload.ledgerArtifactId];
+      const payloadIds = specification.controlledArtifactFields.map(
+        (field) => payload[field],
+      );
       if (
         payloadIds.some((value) => typeof value !== "string") ||
         new Set(payloadIds).size !== payloadIds.length
@@ -156,22 +153,13 @@ export async function executeNextLocalCommand(input: {
         resultBytes = renderLedger(ledgerBytes).bytes;
       }
       const result = await input.staging.stageArtifact(resultBytes, {
-        artifactId: `${command.commandType === "validate_ledger" ? "coverage_report" : "rendered_ledger"}_${randomUUID().replaceAll("-", "")}`,
-        kind:
-          command.commandType === "validate_ledger"
-            ? "coverage_report"
-            : "rendered_ledger",
-        mediaType:
-          command.commandType === "validate_ledger"
-            ? "application/json"
-            : "text/markdown; charset=utf-8",
+        artifactId: `${specification.resultKind}_${randomUUID().replaceAll("-", "")}`,
+        kind: specification.resultKind,
+        mediaType: specification.resultMediaType,
         createdBy: "system:deterministic-local-executor",
         provenance: {
           method: "application_generated",
-          purpose:
-            command.commandType === "validate_ledger"
-              ? "ledger_validation"
-              : "ledger_render",
+          purpose: specification.resultPurpose,
           sourceArtifactIds: sourceIds,
           commandId: command.commandId,
           attemptId,

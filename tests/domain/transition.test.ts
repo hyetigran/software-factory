@@ -1891,6 +1891,81 @@ describe("transition", () => {
     });
   });
 
+  it("invalidates an old render when a new source exclusion is approved", () => {
+    const rendered = approvalReadyDraft();
+    const excluded = transition(
+      rendered,
+      {
+        ...sourceExclusionApprovedInput(),
+        expectedStateVersion: rendered.stateVersion,
+        exclusionId: "exclusion_02JTEST",
+        sourceRange: { startOffset: 170, endOffset: 180 },
+        validateCommandId: "command_validate_exclusion_02JTEST",
+      },
+      pinnedPolicy,
+    ).nextState;
+
+    if (excluded.currentLedger === undefined)
+      throw new Error("Expected current ledger after exclusion");
+
+    expect(excluded.currentLedger).toEqual(
+      expect.objectContaining({ validationStatus: "pending" }),
+    );
+    expect(excluded.currentLedger).not.toHaveProperty("validation");
+    expect(excluded.currentLedger).not.toHaveProperty("renderedProjection");
+
+    const validated = transition(
+      excluded,
+      {
+        type: "LedgerValidationCompleted",
+        runId: excluded.runId,
+        expectedStateVersion: excluded.stateVersion,
+        commandId: "command_validate_exclusion_02JTEST",
+        ledgerVersionId: excluded.currentLedger.versionId,
+        ledgerContentHash: excluded.currentLedger.contentHash,
+        sourceContentHash: excluded.sourceContentHash,
+        coverageReportArtifactId: "artifact_coverage_02JTEST",
+        coverageReportContentHash: "2".repeat(64),
+        schemaValid: true,
+        identityValid: true,
+        lineageValid: true,
+        coverageComplete: true,
+        uncoveredRangeCount: 0,
+        renderCommandId: "command_render_ledger_02JTEST",
+        actor: {
+          kind: "system",
+          component: "deterministic-local-executor",
+          version: "0.0.0",
+        },
+      },
+      pinnedPolicy,
+    ).nextState;
+    if (validated.currentLedger === undefined)
+      throw new Error("Expected current ledger after validation");
+    const validatedLedger = validated.currentLedger;
+    expect(() =>
+      transition(
+        validated,
+        {
+          type: "LedgerRendered",
+          runId: validated.runId,
+          expectedStateVersion: validated.stateVersion,
+          commandId: "command_render_ledger_02JTEST",
+          ledgerVersionId: validatedLedger.versionId,
+          ledgerContentHash: validatedLedger.contentHash,
+          renderedArtifactId: "artifact_rendered_ledger_02JTEST",
+          renderedContentHash: "3".repeat(64),
+          actor: {
+            kind: "system",
+            component: "deterministic-local-executor",
+            version: "0.0.0",
+          },
+        },
+        pinnedPolicy,
+      ),
+    ).not.toThrow();
+  });
+
   it.each<
     [string, (validInput: LedgerApprovalRequested) => LedgerApprovalRequested]
   >([
