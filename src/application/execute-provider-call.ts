@@ -1,4 +1,5 @@
 import type {
+  ArtifactRegistration,
   ArtifactStagingPort,
   StagedArtifactRegistration,
 } from "./artifact-port.js";
@@ -8,6 +9,7 @@ import type {
   ProviderExecution,
   ProviderRequest,
 } from "./provider-port.js";
+import { canonicalJson } from "../domain/canonical-json.js";
 
 export type ExecuteProviderCallRequest = {
   adapter: ProviderAdapter;
@@ -47,7 +49,7 @@ export async function executeProviderCall(
   }
 
   const prepared = input.adapter.prepare(input.providerRequest);
-  const registration = {
+  const registration: ArtifactRegistration = {
     artifactId: input.requestArtifactId,
     kind: "provider_request",
     mediaType: "application/json",
@@ -56,13 +58,17 @@ export async function executeProviderCall(
     provenance: {
       method: "application_generated",
       purpose: "provider_request",
-      sourceArtifactIds: input.providerRequest.inputArtifacts.map(
-        ({ artifactId }) => artifactId,
-      ),
+      sourceArtifactIds: [
+        input.providerRequest.systemPromptArtifactId,
+        input.providerRequest.outputSchemaArtifactId,
+        ...input.providerRequest.inputArtifacts.map(
+          ({ artifactId }) => artifactId,
+        ),
+      ],
       commandId: input.attempt.commandId,
       attemptId: input.attempt.attemptId,
     },
-  } as const;
+  };
   const requestArtifact = await input.artifactStaging.stageArtifact(
     prepared.redactedRequestBytes,
     registration,
@@ -76,8 +82,8 @@ export async function executeProviderCall(
     requestArtifact.mediaType !== registration.mediaType ||
     requestArtifact.schemaId !== registration.schemaId ||
     requestArtifact.createdBy !== registration.createdBy ||
-    JSON.stringify(requestArtifact.provenance) !==
-      JSON.stringify(registration.provenance)
+    canonicalJson(requestArtifact.provenance) !==
+      canonicalJson(registration.provenance)
   ) {
     throw new TypeError(
       "Staged provider request does not match its requested identity",

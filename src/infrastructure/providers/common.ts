@@ -23,6 +23,9 @@ export function assertProviderRequest(
     request.modelId.trim().length === 0 ||
     !/^[a-f0-9]{64}$/u.test(request.logicalCommandKey) ||
     request.correlationId.trim().length === 0 ||
+    request.systemPromptArtifactId.trim().length === 0 ||
+    createHash("sha256").update(request.systemPrompt).digest("hex") !==
+      request.systemPromptContentHash ||
     request.systemPrompt.trim().length === 0 ||
     request.inputArtifacts.length === 0 ||
     !Number.isInteger(request.maxOutputTokens) ||
@@ -35,6 +38,10 @@ export function assertProviderRequest(
         kind.trim().length === 0 ||
         createHash("sha256").update(content).digest("hex") !== contentHash,
     ) ||
+    request.outputSchemaArtifactId.trim().length === 0 ||
+    createHash("sha256")
+      .update(canonicalJson(request.outputSchema))
+      .digest("hex") !== request.outputSchemaContentHash ||
     capability === null ||
     capability.canonicalModelId.trim().length === 0 ||
     !Number.isInteger(capability.contextWindowTokens) ||

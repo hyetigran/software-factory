@@ -66,7 +66,7 @@ describe("executeProviderCall", () => {
       provenance: {
         method: "application_generated" as const,
         purpose: "provider_request" as const,
-        sourceArtifactIds: ["ledger_1"],
+        sourceArtifactIds: ["prompt_1", "schema_1", "ledger_1"],
         commandId: "command_1",
         attemptId: "attempt_1",
       },
@@ -94,6 +94,10 @@ describe("executeProviderCall", () => {
         modelId: "model-pinned",
         logicalCommandKey: "a".repeat(64),
         correlationId: "correlation_1",
+        systemPromptArtifactId: "prompt_1",
+        systemPromptContentHash: createHash("sha256")
+          .update("plan")
+          .digest("hex"),
         systemPrompt: "plan",
         inputArtifacts: [
           {
@@ -104,6 +108,10 @@ describe("executeProviderCall", () => {
           },
         ],
         outputSchema: {},
+        outputSchemaArtifactId: "schema_1",
+        outputSchemaContentHash: createHash("sha256")
+          .update("{}")
+          .digest("hex"),
         maxOutputTokens: 1_000,
         timeoutMs: 10_000,
         providerStorage: "minimize",
@@ -185,6 +193,10 @@ describe("executeProviderCall", () => {
           modelId: "model",
           logicalCommandKey: "a".repeat(64),
           correlationId: "correlation_1",
+          systemPromptArtifactId: "prompt_1",
+          systemPromptContentHash: createHash("sha256")
+            .update("plan")
+            .digest("hex"),
           systemPrompt: "plan",
           inputArtifacts: [
             {
@@ -195,12 +207,17 @@ describe("executeProviderCall", () => {
             },
           ],
           outputSchema: {},
+          outputSchemaArtifactId: "schema_1",
+          outputSchemaContentHash: createHash("sha256")
+            .update("{}")
+            .digest("hex"),
           maxOutputTokens: 1,
           timeoutMs: 1,
           providerStorage: "minimize",
         },
         requestArtifactId: "provider_request_1",
         attempt: {
+          commandId: "command_1",
           attemptId: "attempt_1",
           lease: { ownerProcess: "executor" },
         } as never,

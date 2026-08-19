@@ -116,6 +116,8 @@ async function openAuthority(
       "other",
       Buffer.from(canonicalJson(executionConfiguration)),
     ],
+    ["artifact_prompt", "other", Buffer.from("plan")],
+    ["artifact_schema", "other", Buffer.from("{}")],
   ] as const) {
     const descriptor = await store.stageArtifact(bytes, {
       artifactId,
@@ -186,13 +188,15 @@ function providerTransitionResult(
   stateVersion: number,
 ): PersistableTransition<TestState> {
   const inputHash = createHash("sha256").update("source").digest("hex");
+  const promptHash = createHash("sha256").update("plan").digest("hex");
+  const schemaHash = createHash("sha256").update("{}").digest("hex");
   const commandWithoutIdentity = {
     commandType: "generate_plan",
     schemaVersion: 1,
     runId,
     triggeringStateVersion: stateVersion,
     purposeId: "planning",
-    inputArtifactHashes: [inputHash],
+    inputArtifactHashes: [inputHash, promptHash, schemaHash],
     policyHash: "a".repeat(64),
     provider: "openai" as const,
     modelId: "planner",
@@ -205,8 +209,8 @@ function providerTransitionResult(
     payload: {
       ledgerVersionId: "ledger_1",
       ledgerArtifactId: "artifact_source",
-      promptArtifactId: "artifact_source",
-      outputSchemaArtifactId: "artifact_source",
+      promptArtifactId: "artifact_prompt",
+      outputSchemaArtifactId: "artifact_schema",
       providerStorage: "minimize" as const,
     },
   };
@@ -265,7 +269,11 @@ describe("SQLite authority", () => {
       provenance: {
         method: "application_generated",
         purpose: "provider_request",
-        sourceArtifactIds: ["artifact_source"],
+        sourceArtifactIds: [
+          "artifact_prompt",
+          "artifact_schema",
+          "artifact_source",
+        ],
         commandId: "command_provider",
         attemptId: "attempt_provider_1",
       },
@@ -280,6 +288,10 @@ describe("SQLite authority", () => {
       modelId: "planner",
       logicalCommandKey: command?.commandKey ?? "",
       correlationId: "correlation_provider_1",
+      systemPromptArtifactId: "artifact_prompt",
+      systemPromptContentHash: createHash("sha256")
+        .update("plan")
+        .digest("hex"),
       systemPrompt: "plan",
       inputArtifacts: [
         {
@@ -290,6 +302,8 @@ describe("SQLite authority", () => {
         },
       ],
       outputSchema: {},
+      outputSchemaArtifactId: "artifact_schema",
+      outputSchemaContentHash: createHash("sha256").update("{}").digest("hex"),
       maxOutputTokens: 100,
       timeoutMs: 1_000,
       providerStorage: "minimize" as const,

@@ -17,12 +17,23 @@ import type {
 } from "../../src/infrastructure/providers/transport.js";
 
 const inputContent = '{"requirements":["traceability"]}';
+const systemPrompt = "Produce a plan.";
+const outputSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["plan"],
+  properties: { plan: { type: "string" } },
+};
 const baseRequest: Omit<ProviderRequest, "provider"> = {
   role: "planner",
   modelId: "frontier-pinned",
   logicalCommandKey: "a".repeat(64),
   correlationId: "correlation_1",
-  systemPrompt: "Produce a plan.",
+  systemPromptArtifactId: "prompt_1",
+  systemPromptContentHash: createHash("sha256")
+    .update(systemPrompt)
+    .digest("hex"),
+  systemPrompt,
   inputArtifacts: [
     {
       artifactId: "ledger_1",
@@ -31,12 +42,11 @@ const baseRequest: Omit<ProviderRequest, "provider"> = {
       contentHash: createHash("sha256").update(inputContent).digest("hex"),
     },
   ],
-  outputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["plan"],
-    properties: { plan: { type: "string" } },
-  },
+  outputSchema,
+  outputSchemaArtifactId: "schema_1",
+  outputSchemaContentHash: createHash("sha256")
+    .update(canonicalJson(outputSchema))
+    .digest("hex"),
   maxOutputTokens: 2048,
   timeoutMs: 30_000,
   providerStorage: "minimize",

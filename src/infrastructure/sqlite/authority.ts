@@ -44,6 +44,7 @@ import { decodeAuditEntry, type AuditRow } from "./audit-codec.js";
 import { appendAuditEntries } from "./audit-journal.js";
 import { AuthorityIntegrityError, StaleStateError } from "./errors.js";
 import { SqliteOperationalCompletion } from "./operational-completion.js";
+import { SqlitePreparedRequestRegistration } from "./prepared-request-registration.js";
 
 export { AuthorityIntegrityError, StaleStateError } from "./errors.js";
 
@@ -128,6 +129,7 @@ export class SqliteAuthority
     PreparedProviderRequestRegistrationPort
 {
   private readonly operationalCompletion: SqliteOperationalCompletion;
+  private readonly preparedRequestRegistration?: SqlitePreparedRequestRegistration;
 
   private constructor(
     private readonly database: DatabaseSync,
@@ -147,6 +149,17 @@ export class SqliteAuthority
         this.persistArtifactMetadata(artifact),
       quarantine: (reason) => this.quarantine(reason),
     });
+    if (artifactStore !== undefined) {
+      this.preparedRequestRegistration = new SqlitePreparedRequestRegistration({
+        database,
+        artifactStore,
+        assertWritable: () => this.assertWritable(),
+        verifyAuditChain: () => this.verifyAuditChain(),
+        persistArtifactMetadata: (artifact) =>
+          this.persistArtifactMetadata(artifact),
+        quarantine: (reason) => this.quarantine(reason),
+      });
+    }
   }
 
   static open(
@@ -221,122 +234,12 @@ export class SqliteAuthority
     normalizedRequestHash: string;
     artifact: StagedArtifactRegistration;
   }): Promise<void> {
-    this.assertWritable();
-    if (this.artifactStore === undefined) {
+    if (this.preparedRequestRegistration === undefined) {
       throw new TypeError(
         "Provider request registration requires a bound object store",
       );
     }
-    const bytes = await this.artifactStore.readVerified(
-      input.artifact.contentHash,
-    );
-    if (bytes.byteLength !== input.artifact.byteLength) {
-      throw new AuthorityIntegrityError(
-        "Provider request artifact byte length is invalid",
-      );
-    }
-    this.database.exec("BEGIN IMMEDIATE");
-    try {
-      this.assertWritable();
-      this.verifyAuditChain();
-      const row = this.database
-        .prepare(
-          `SELECT c.run_id, c.command_key, c.specification_json,
-                  a.status AS attempt_status, a.correlation_id,
-                  l.command_id AS lease_command_id,
-                  l.attempt_id AS lease_attempt_id,
-                  l.owner_process
-             FROM logical_commands c
-             JOIN command_attempts a ON a.command_id = c.command_id
-             LEFT JOIN mutation_lease l ON l.singleton = 1
-            WHERE c.command_id = ? AND a.attempt_id = ?`,
-        )
-        .get(input.attempt.commandId, input.attempt.attemptId) as
-        | {
-            run_id: string;
-            command_key: string;
-            specification_json: string;
-            attempt_status: string;
-            correlation_id: string;
-            lease_command_id: string | null;
-            lease_attempt_id: string | null;
-            owner_process: string | null;
-          }
-        | undefined;
-      const command =
-        row === undefined
-          ? null
-          : (parseObject(row.specification_json) as PersistableCommand);
-      if (
-        row === undefined ||
-        command === null ||
-        !commandIsValid(command) ||
-        row.run_id !== input.attempt.runId ||
-        row.command_key !== input.providerRequest.logicalCommandKey ||
-        row.attempt_status !== "started" ||
-        row.correlation_id !== input.attempt.correlationId ||
-        row.lease_command_id !== input.attempt.commandId ||
-        row.lease_attempt_id !== input.attempt.attemptId ||
-        row.owner_process !== input.attempt.lease.ownerProcess ||
-        command.provider !== input.providerRequest.provider ||
-        command.modelId !== input.providerRequest.modelId ||
-        input.normalizedRequestHash !== input.artifact.contentHash ||
-        input.artifact.kind !== "provider_request" ||
-        input.artifact.provenance.method !== "application_generated" ||
-        input.artifact.provenance.purpose !== "provider_request" ||
-        input.artifact.provenance.commandId !== input.attempt.commandId ||
-        input.artifact.provenance.attemptId !== input.attempt.attemptId
-      ) {
-        throw new TypeError(
-          "Provider request is not bound to the active command attempt",
-        );
-      }
-      const requestHashes = input.providerRequest.inputArtifacts.map(
-        ({ contentHash }) => contentHash,
-      );
-      if (
-        new Set(requestHashes).size !== requestHashes.length ||
-        canonicalJson([...requestHashes].sort()) !==
-          canonicalJson([...command.inputArtifactHashes].sort())
-      ) {
-        throw new TypeError(
-          "Provider request inputs do not match the logical command",
-        );
-      }
-      for (const artifact of input.providerRequest.inputArtifacts) {
-        const registered = this.database
-          .prepare("SELECT content_hash FROM artifacts WHERE artifact_id = ?")
-          .get(artifact.artifactId) as { content_hash: string } | undefined;
-        if (registered?.content_hash !== artifact.contentHash) {
-          throw new TypeError(
-            "Provider request input is not an authoritative artifact",
-          );
-        }
-      }
-      const existing = this.database
-        .prepare(
-          `SELECT artifact_id FROM artifacts
-            WHERE kind = 'provider_request'
-              AND json_extract(metadata_json, '$.provenance.attemptId') = ?`,
-        )
-        .get(input.attempt.attemptId) as { artifact_id: string } | undefined;
-      if (
-        existing !== undefined &&
-        existing.artifact_id !== input.artifact.artifactId
-      ) {
-        throw new TypeError(
-          "Command attempt already has a different provider request",
-        );
-      }
-      this.persistArtifactMetadata(input.artifact);
-      this.database.exec("COMMIT");
-    } catch (error) {
-      this.database.exec("ROLLBACK");
-      if (error instanceof AuthorityIntegrityError) {
-        this.quarantine(error.message);
-      }
-      throw error;
-    }
+    return this.preparedRequestRegistration.register(input);
   }
 
   async verifyIntegrity(): Promise<void> {

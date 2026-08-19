@@ -4,6 +4,8 @@ export type ProviderRequest = {
   modelId: string;
   logicalCommandKey: string;
   correlationId: string;
+  systemPromptArtifactId: string;
+  systemPromptContentHash: string;
   systemPrompt: string;
   inputArtifacts: Array<{
     artifactId: string;
@@ -12,6 +14,8 @@ export type ProviderRequest = {
     contentHash: string;
   }>;
   outputSchema: object;
+  outputSchemaArtifactId: string;
+  outputSchemaContentHash: string;
   maxOutputTokens: number;
   reasoning?: string;
   timeoutMs: number;
