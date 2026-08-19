@@ -31,7 +31,6 @@ import type {
 import { commandIsValid } from "../../application/command-validation.js";
 import { artifactRegistrationIsValid } from "../../application/artifact-port.js";
 import { decideAttemptPolicy } from "../../application/attempt-policy.js";
-import type { StagedArtifactDescriptor } from "../artifacts/object-store.js";
 import type { ContentAddressedArtifactStore } from "../artifacts/object-store.js";
 import {
   persistValidatedProjection,
@@ -182,7 +181,9 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
     this.database.close();
   }
 
-  async registerArtifact(descriptor: StagedArtifactDescriptor): Promise<void> {
+  async registerArtifact(
+    descriptor: StagedArtifactRegistration,
+  ): Promise<void> {
     this.assertWritable();
     if (this.artifactStore === undefined) {
       throw new TypeError(

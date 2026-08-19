@@ -60,6 +60,10 @@ export interface ArtifactStagingPort {
   ): Promise<StagedArtifactRegistration>;
 }
 
+export interface ArtifactRegistrationPort {
+  registerArtifact(descriptor: StagedArtifactRegistration): Promise<void>;
+}
+
 function exactKeys(value: object, keys: string[]): boolean {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
