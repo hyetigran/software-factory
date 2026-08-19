@@ -93,6 +93,12 @@ export type ActiveReview = {
   cycle: number;
   reviewerAssignment: PlannerAssignment;
   reviewPurposeId: string;
+  independence:
+    | { reduced: false }
+    | {
+        reduced: true;
+        overrideEvidence: Omit<ArtifactEvidenceReference, "kind">;
+      };
 };
 
 export type AdvancedRunState = AdvancedStateBase &
@@ -243,7 +249,17 @@ export type PlanGenerated = {
   reviewerAssignment: PlannerAssignment;
   reviewerModelAllowed: boolean;
   reviewerModelIdentityPinned: boolean;
-  reviewerIndependenceSatisfied: boolean;
+  reviewerAssignmentAuthorized: boolean;
+  reviewPolicyArtifactId: string;
+  reviewPolicyContentHash: string;
+  reviewPolicyVerified: boolean;
+  independenceOverride?: {
+    artifactId: string;
+    contentHash: string;
+    verified: boolean;
+    reason: string;
+    actor: HumanActor;
+  };
   reviewerPromptArtifactId: string;
   reviewerPromptContentHash: string;
   reviewerPromptVerified: boolean;
@@ -397,6 +413,7 @@ export type BaselineReview = {
   schemaVersion: 1;
   runId: string;
   triggeringStateVersion: number;
+  prerequisiteCommandIds: string[];
   purposeId: string;
   inputArtifactHashes: string[];
   policyHash: string;
@@ -412,6 +429,9 @@ export type BaselineReview = {
     reviewerPromptArtifactId: string;
     reviewSchemaArtifactId: string;
     componentRegistryArtifactId: string;
+    reviewPolicyArtifactId: string;
+    evidenceArtifactIds: string[];
+    independence: ActiveReview["independence"];
     providerStorage: "minimize";
   };
 };
@@ -582,6 +602,29 @@ function zeroBudgetReservation(): BudgetReservation {
     outputTokens: 0,
     costUsdMicros: 0,
   };
+}
+
+function providerBudgetIsEligible(
+  maximum: BudgetReservation,
+  available: BudgetReservation,
+): boolean {
+  return (
+    maximum.calls === 1 &&
+    Number.isInteger(maximum.inputTokens) &&
+    maximum.inputTokens > 0 &&
+    Number.isInteger(maximum.outputTokens) &&
+    maximum.outputTokens > 0 &&
+    Number.isInteger(maximum.costUsdMicros) &&
+    maximum.costUsdMicros > 0 &&
+    Number.isInteger(available.calls) &&
+    Number.isInteger(available.inputTokens) &&
+    Number.isInteger(available.outputTokens) &&
+    Number.isInteger(available.costUsdMicros) &&
+    available.calls >= maximum.calls &&
+    available.inputTokens >= maximum.inputTokens &&
+    available.outputTokens >= maximum.outputTokens &&
+    available.costUsdMicros >= maximum.costUsdMicros
+  );
 }
 
 function planCommand<T extends PlannedCommand>(
@@ -1225,25 +1268,10 @@ function requestPlanning(
     );
   }
 
-  const reservation = input.budgetReservation;
-  const available = input.availableBudget;
-  const reservationValid =
-    reservation.calls === 1 &&
-    Number.isInteger(reservation.inputTokens) &&
-    reservation.inputTokens > 0 &&
-    Number.isInteger(reservation.outputTokens) &&
-    reservation.outputTokens > 0 &&
-    Number.isInteger(reservation.costUsdMicros) &&
-    reservation.costUsdMicros > 0;
-  const capacityValid =
-    Number.isInteger(available.calls) &&
-    Number.isInteger(available.inputTokens) &&
-    Number.isInteger(available.outputTokens) &&
-    Number.isInteger(available.costUsdMicros) &&
-    available.calls >= reservation.calls &&
-    available.inputTokens >= reservation.inputTokens &&
-    available.outputTokens >= reservation.outputTokens &&
-    available.costUsdMicros >= reservation.costUsdMicros;
+  const budgetEligible = providerBudgetIsEligible(
+    input.budgetReservation,
+    input.availableBudget,
+  );
   const sha256 = /^[a-f0-9]{64}$/;
   const actor = input.actor;
   const actorAuthorized =
@@ -1276,8 +1304,7 @@ function requestPlanning(
     !input.schemaCompatible ||
     !input.mutationLeaseAvailable ||
     !actorAuthorized ||
-    !reservationValid ||
-    !capacityValid
+    !budgetEligible
   ) {
     throw new DomainTransitionError(
       "PRECONDITION_FAILED",
@@ -1386,6 +1413,7 @@ function acceptGeneratedPlan(
     [input.reviewerPromptArtifactId, input.reviewerPromptContentHash],
     [input.reviewSchemaArtifactId, input.reviewSchemaContentHash],
     [input.componentRegistryArtifactId, input.componentRegistryContentHash],
+    [input.reviewPolicyArtifactId, input.reviewPolicyContentHash],
   ].every(
     ([artifactId, contentHash]) =>
       artifactId !== undefined &&
@@ -1393,25 +1421,10 @@ function acceptGeneratedPlan(
       contentHash !== undefined &&
       sha256.test(contentHash),
   );
-  const maximum = input.reviewBudgetMaximum;
-  const available = input.availableBudget;
-  const maximumValid =
-    maximum.calls === 1 &&
-    Number.isInteger(maximum.inputTokens) &&
-    maximum.inputTokens > 0 &&
-    Number.isInteger(maximum.outputTokens) &&
-    maximum.outputTokens > 0 &&
-    Number.isInteger(maximum.costUsdMicros) &&
-    maximum.costUsdMicros > 0;
-  const capacityValid =
-    Number.isInteger(available.calls) &&
-    Number.isInteger(available.inputTokens) &&
-    Number.isInteger(available.outputTokens) &&
-    Number.isInteger(available.costUsdMicros) &&
-    available.calls >= maximum.calls &&
-    available.inputTokens >= maximum.inputTokens &&
-    available.outputTokens >= maximum.outputTokens &&
-    available.costUsdMicros >= maximum.costUsdMicros;
+  const budgetEligible = providerBudgetIsEligible(
+    input.reviewBudgetMaximum,
+    input.availableBudget,
+  );
   const plannerMatches =
     input.actor.kind === "planner" &&
     input.actor.provider ===
@@ -1421,9 +1434,21 @@ function acceptGeneratedPlan(
   const reviewerValid =
     (input.reviewerAssignment.provider === "openai" ||
       input.reviewerAssignment.provider === "anthropic") &&
-    input.reviewerAssignment.provider !==
-      previousState.activePlanning.plannerAssignment.provider &&
     input.reviewerAssignment.modelId.length > 0;
+  const reducedIndependence =
+    input.reviewerAssignment.provider ===
+    previousState.activePlanning.plannerAssignment.provider;
+  const override = input.independenceOverride;
+  const overrideValid =
+    !reducedIndependence ||
+    (override !== undefined &&
+      override.verified &&
+      override.artifactId.length > 0 &&
+      sha256.test(override.contentHash) &&
+      override.reason.trim().length > 0 &&
+      override.actor.kind === "human" &&
+      override.actor.displayName.length > 0 &&
+      override.actor.osAccount.length > 0);
 
   if (
     input.expectedStateVersion !== previousState.stateVersion ||
@@ -1438,8 +1463,11 @@ function acceptGeneratedPlan(
     !input.provenanceVerified ||
     !input.reviewerModelAllowed ||
     !input.reviewerModelIdentityPinned ||
-    !input.reviewerIndependenceSatisfied ||
+    !input.reviewerAssignmentAuthorized ||
     !reviewerValid ||
+    !overrideValid ||
+    !input.reviewPolicyVerified ||
+    input.reviewPolicyContentHash !== policy.policyHash ||
     !input.reviewerPromptVerified ||
     !input.reviewSchemaVerified ||
     !input.componentRegistryVerified ||
@@ -1449,8 +1477,7 @@ function acceptGeneratedPlan(
     !input.schemaCompatible ||
     !input.mutationLeaseAvailable ||
     !plannerMatches ||
-    !maximumValid ||
-    !capacityValid ||
+    !budgetEligible ||
     input.renderCommandId.length === 0 ||
     input.reviewCommandId.length === 0 ||
     input.renderCommandId === input.reviewCommandId
@@ -1463,6 +1490,16 @@ function acceptGeneratedPlan(
 
   const nextStateVersion = previousState.stateVersion + 1;
   const reviewPurposeId = `${input.runId}:plan:${input.planVersionId}:baseline:1`;
+  const independence: ActiveReview["independence"] =
+    reducedIndependence && override !== undefined
+      ? {
+          reduced: true,
+          overrideEvidence: {
+            artifactId: override.artifactId,
+            contentHash: override.contentHash,
+          },
+        }
+      : { reduced: false };
   const renderCommand = planCommand<RenderPlan>(input.renderCommandId, {
     commandType: "render_plan",
     schemaVersion: 1,
@@ -1483,6 +1520,7 @@ function acceptGeneratedPlan(
     schemaVersion: 1,
     runId: input.runId,
     triggeringStateVersion: nextStateVersion,
+    prerequisiteCommandIds: [input.renderCommandId],
     purposeId: reviewPurposeId,
     inputArtifactHashes: [
       previousState.currentLedger.contentHash,
@@ -1492,6 +1530,10 @@ function acceptGeneratedPlan(
       input.reviewerPromptContentHash,
       input.reviewSchemaContentHash,
       input.componentRegistryContentHash,
+      input.reviewPolicyContentHash,
+      ...previousState.downstreamQualification.artifacts.map(
+        ({ contentHash }) => contentHash,
+      ),
     ],
     policyHash: policy.policyHash,
     provider: input.reviewerAssignment.provider,
@@ -1506,6 +1548,15 @@ function acceptGeneratedPlan(
       reviewerPromptArtifactId: input.reviewerPromptArtifactId,
       reviewSchemaArtifactId: input.reviewSchemaArtifactId,
       componentRegistryArtifactId: input.componentRegistryArtifactId,
+      reviewPolicyArtifactId: input.reviewPolicyArtifactId,
+      evidenceArtifactIds: [
+        input.sectionTransitionMapArtifactId,
+        input.provenanceArtifactId,
+        ...previousState.downstreamQualification.artifacts.map(
+          ({ artifactId }) => artifactId,
+        ),
+      ],
+      independence,
       providerStorage: "minimize",
     },
   });
@@ -1541,7 +1592,20 @@ function acceptGeneratedPlan(
       input.componentRegistryArtifactId,
       input.componentRegistryContentHash,
     ),
+    artifactEvidence(
+      input.reviewPolicyArtifactId,
+      input.reviewPolicyContentHash,
+    ),
+    ...previousState.downstreamQualification.artifacts,
   ];
+  if (independence.reduced) {
+    reviewEvidence.push(
+      artifactEvidence(
+        independence.overrideEvidence.artifactId,
+        independence.overrideEvidence.contentHash,
+      ),
+    );
+  }
 
   return {
     nextState: {
@@ -1565,6 +1629,7 @@ function acceptGeneratedPlan(
         cycle: 1,
         reviewerAssignment: input.reviewerAssignment,
         reviewPurposeId,
+        independence,
       },
     },
     commands: [renderCommand, reviewCommand],

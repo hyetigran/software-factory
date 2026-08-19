@@ -211,7 +211,10 @@ function planGeneratedInput(): PlanGenerated {
     },
     reviewerModelAllowed: true,
     reviewerModelIdentityPinned: true,
-    reviewerIndependenceSatisfied: true,
+    reviewerAssignmentAuthorized: true,
+    reviewPolicyArtifactId: "artifact_review_policy_01JTEST",
+    reviewPolicyContentHash: policyHash,
+    reviewPolicyVerified: true,
     reviewerPromptArtifactId: "artifact_reviewer_prompt_01JTEST",
     reviewerPromptContentHash,
     reviewerPromptVerified: true,
@@ -314,6 +317,7 @@ function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
         },
         reviewPurposeId:
           "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
+        independence: { reduced: false },
       },
     };
   }
@@ -1929,6 +1933,7 @@ describe("transition", () => {
         reviewerAssignment: planGeneratedInput().reviewerAssignment,
         reviewPurposeId:
           "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
+        independence: { reduced: false },
       },
     });
     expect(result.commands).toEqual([
@@ -1952,6 +1957,7 @@ describe("transition", () => {
         commandId: "command_baseline_review_01JTEST",
         commandType: "baseline_review",
         triggeringStateVersion: 6,
+        prerequisiteCommandIds: ["command_render_plan_01JTEST"],
         provider: "anthropic",
         modelId: "claude-frontier-pinned-20260801",
         budgetReservation: planGeneratedInput().reviewBudgetMaximum,
@@ -1964,6 +1970,13 @@ describe("transition", () => {
           reviewerPromptArtifactId: "artifact_reviewer_prompt_01JTEST",
           reviewSchemaArtifactId: "artifact_review_schema_01JTEST",
           componentRegistryArtifactId: "artifact_component_registry_01JTEST",
+          reviewPolicyArtifactId: "artifact_review_policy_01JTEST",
+          evidenceArtifactIds: [
+            "artifact_section_map_01JTEST",
+            "artifact_plan_provenance_01JTEST",
+            "artifact_coverage_01JTEST",
+          ],
+          independence: { reduced: false },
           providerStorage: "minimize",
         },
       }),
@@ -2012,16 +2025,11 @@ describe("transition", () => {
     ["unverified provenance", { provenanceVerified: false }],
     ["an unallowlisted Reviewer", { reviewerModelAllowed: false }],
     ["a floating Reviewer identity", { reviewerModelIdentityPinned: false }],
-    ["reduced Reviewer independence", { reviewerIndependenceSatisfied: false }],
     [
-      "the Planner provider as Reviewer",
-      {
-        reviewerAssignment: {
-          provider: "openai",
-          modelId: "gpt-reviewer-pinned",
-        },
-      },
+      "an unauthorized Reviewer assignment",
+      { reviewerAssignmentAuthorized: false },
     ],
+    ["an unverified review policy", { reviewPolicyVerified: false }],
     ["an unverified Reviewer prompt", { reviewerPromptVerified: false }],
     ["an unverified review schema", { reviewSchemaVerified: false }],
     ["an unverified component registry", { componentRegistryVerified: false }],
@@ -2128,5 +2136,40 @@ describe("transition", () => {
         policyHash: "9".repeat(64),
       }),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("accepts a policy-authorized reduced-independence review assignment", () => {
+    const input = {
+      ...planGeneratedInput(),
+      reviewerAssignment: {
+        provider: "openai" as const,
+        modelId: "gpt-reviewer-pinned",
+      },
+      independenceOverride: {
+        artifactId: "artifact_independence_override_01JTEST",
+        contentHash: "9".repeat(64),
+        verified: true,
+        reason: "Anthropic Reviewer unavailable under the pinned policy",
+        actor: {
+          kind: "human" as const,
+          displayName: "Tigran",
+          osAccount: "tig",
+        },
+      },
+    };
+
+    const result = transition(planningState(), input, { policyHash });
+
+    expect(result.nextState.state).toBe("baseline_review");
+    if (result.nextState.state !== "baseline_review") {
+      throw new Error("Expected baseline review state");
+    }
+    expect(result.nextState.activeReview.independence).toEqual({
+      reduced: true,
+      overrideEvidence: {
+        artifactId: "artifact_independence_override_01JTEST",
+        contentHash: "9".repeat(64),
+      },
+    });
   });
 });

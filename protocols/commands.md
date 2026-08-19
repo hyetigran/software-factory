@@ -12,6 +12,7 @@ interface PlannedCommand<T> {
   schemaVersion: 1;
   runId: string;
   triggeringStateVersion: number;
+  prerequisiteCommandIds?: string[];
   purposeId: string;
   inputArtifactHashes: string[];
   policyHash: string;
@@ -23,6 +24,8 @@ interface PlannedCommand<T> {
 ```
 
 `commandKey` is the SHA-256 hash of canonical JSON containing every field above except `commandId` and `budgetReservation`'s mutable reconciliation fields. A database uniqueness constraint on `(run_id, command_key)` prevents duplicate logical planning.
+
+A command with `prerequisiteCommandIds` is ineligible until every referenced logical command has one accepted successful result. Before dispatch, the executor resolves any prerequisite-produced artifact references, verifies their hashes, and includes them in the exact recorded request. `baseline_review` uses this mechanism to consume the verified Markdown produced by its `render_plan` prerequisite; a command ID alone is never treated as the rendered artifact.
 
 ## Command types
 
@@ -69,7 +72,7 @@ There may be many physical attempts but at most one accepted logical result. Acc
 
 ## Execution protocol
 
-1. Verify workspace integrity and command eligibility.
+1. Verify workspace integrity, prerequisite completion, resolved artifact hashes, and command eligibility.
 2. Atomically acquire the mutation lease and reserve maximum permitted usage.
 3. Insert a `started` physical attempt and commit.
 4. Build the exact request and persist its redacted recording artifact.
