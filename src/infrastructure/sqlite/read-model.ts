@@ -49,21 +49,32 @@ export class SqliteReadModel {
         return new DatabaseSync(location, { readOnly: true });
       };
       database = openDatabase(!walExists);
+      database.exec("PRAGMA query_only = ON");
+      database.exec("BEGIN");
+      const readVersion = () =>
+        database
+          ?.prepare(
+            "SELECT schema_version FROM schema_metadata WHERE singleton = 1",
+          )
+          .get() as { schema_version: number } | undefined;
+      let version = readVersion();
       if (!walExists) {
+        let walAppeared = false;
         try {
           await access(`${databasePath}-wal`);
+          walAppeared = true;
+        } catch {
+          // The immutable snapshot was pinned while no WAL existed.
+        }
+        if (walAppeared) {
+          database.exec("ROLLBACK");
           database.close();
           database = openDatabase(false);
-        } catch {
-          // The immutable snapshot was opened while no WAL existed.
+          database.exec("PRAGMA query_only = ON");
+          database.exec("BEGIN");
+          version = readVersion();
         }
       }
-      database.exec("PRAGMA query_only = ON");
-      const version = database
-        .prepare(
-          "SELECT schema_version FROM schema_metadata WHERE singleton = 1",
-        )
-        .get() as { schema_version: number } | undefined;
       if (version?.schema_version !== 2) {
         throw new WorkspaceOperationError(
           "SCHEMA_INCOMPATIBLE",
@@ -99,6 +110,7 @@ export class SqliteReadModel {
   }
 
   close(): void {
+    if (this.database.isTransaction) this.database.exec("ROLLBACK");
     this.database.close();
   }
 
