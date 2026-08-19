@@ -30,6 +30,16 @@ const configuredReviewerAssignment = {
   provider: "anthropic" as const,
   modelId: "claude-frontier-pinned-20260801",
 };
+const pinnedPolicy = {
+  policyHash,
+  reviewerAssignment: configuredReviewerAssignment,
+};
+function policyWithHash(nextPolicyHash: string) {
+  return {
+    policyHash: nextPolicyHash,
+    reviewerAssignment: configuredReviewerAssignment,
+  };
+}
 
 function runStartedInput(): RunStarted {
   return {
@@ -213,7 +223,7 @@ function planningState(): AdvancedRunState & { state: "planning" } {
   const result = transition(
     requirementsApprovedState(),
     planningRequestedInput(),
-    { policyHash },
+    pinnedPolicy,
   ).nextState;
   if (result.state !== "planning") {
     throw new Error("Expected planning state fixture");
@@ -300,7 +310,7 @@ function planGeneratedInput(): PlanGenerated {
 }
 
 function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
-  const draft = transition(null, runStartedInput(), { policyHash }).nextState;
+  const draft = transition(null, runStartedInput(), pinnedPolicy).nextState;
   const base = {
     ...draft,
     stateVersion: 7,
@@ -374,13 +384,17 @@ function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
 }
 
 function approvalReadyDraft(): DraftRunState {
-  const draft = transition(null, runStartedInput(), { policyHash }).nextState;
-  const ledgerDraft = transition(draft, ledgerSubmittedInput(), {
-    policyHash,
-  }).nextState;
-  const result = transition(ledgerDraft, sourceExclusionApprovedInput(), {
-    policyHash,
-  }).nextState;
+  const draft = transition(null, runStartedInput(), pinnedPolicy).nextState;
+  const ledgerDraft = transition(
+    draft,
+    ledgerSubmittedInput(),
+    pinnedPolicy,
+  ).nextState;
+  const result = transition(
+    ledgerDraft,
+    sourceExclusionApprovedInput(),
+    pinnedPolicy,
+  ).nextState;
   if (result.state !== "draft") {
     throw new Error("expected draft state");
   }
@@ -391,7 +405,7 @@ function requirementsApprovedState(): AdvancedRunState {
   const result = transition(
     approvalReadyDraft(),
     ledgerApprovalRequestedInput(),
-    { policyHash },
+    pinnedPolicy,
   ).nextState;
   if (result.state !== "requirements_approved") {
     throw new Error("expected requirements_approved state");
@@ -401,7 +415,7 @@ function requirementsApprovedState(): AdvancedRunState {
 
 describe("transition", () => {
   it("starts a draft run from verified immutable source", () => {
-    const result = transition(null, runStartedInput(), { policyHash });
+    const result = transition(null, runStartedInput(), pinnedPolicy);
 
     expect(result).toEqual({
       nextState: {
@@ -523,9 +537,9 @@ describe("transition", () => {
 
   it("rejects RunStarted when a run already exists", () => {
     const input = runStartedInput();
-    const existingState = transition(null, input, { policyHash }).nextState;
+    const existingState = transition(null, input, pinnedPolicy).nextState;
 
-    expect(() => transition(existingState, input, { policyHash })).toThrowError(
+    expect(() => transition(existingState, input, pinnedPolicy)).toThrowError(
       expect.objectContaining({
         code: "INVALID_TRANSITION",
         message: "RunStarted requires no existing run",
@@ -536,7 +550,7 @@ describe("transition", () => {
   it("rejects RunStarted when source verification is missing", () => {
     const input = { ...runStartedInput(), sourceObjectVerified: false };
 
-    expect(() => transition(null, input, { policyHash })).toThrowError(
+    expect(() => transition(null, input, pinnedPolicy)).toThrowError(
       expect.objectContaining({
         code: "PRECONDITION_FAILED",
         message: "RunStarted requires verified source and workspace integrity",
@@ -552,7 +566,7 @@ describe("transition", () => {
   ])("rejects RunStarted without %s verification", (_name, override) => {
     const input = { ...runStartedInput(), ...override };
 
-    expect(() => transition(null, input, { policyHash })).toThrowError(
+    expect(() => transition(null, input, pinnedPolicy)).toThrowError(
       expect.objectContaining({ code: "PRECONDITION_FAILED" }),
     );
   });
@@ -563,7 +577,7 @@ describe("transition", () => {
       actor: { kind: "human" as const, displayName: "", osAccount: "" },
     };
 
-    expect(() => transition(null, input, { policyHash })).toThrowError(
+    expect(() => transition(null, input, pinnedPolicy)).toThrowError(
       expect.objectContaining({ code: "PRECONDITION_FAILED" }),
     );
   });
@@ -574,7 +588,7 @@ describe("transition", () => {
       type: "UnsupportedTransition",
     } as unknown as RunStarted;
 
-    expect(() => transition(null, input, { policyHash })).toThrowError(
+    expect(() => transition(null, input, pinnedPolicy)).toThrowError(
       expect.objectContaining({
         code: "INVALID_TRANSITION",
         message: "Unsupported transition: UnsupportedTransition",
@@ -583,9 +597,9 @@ describe("transition", () => {
   });
 
   it("submits a ledger for validation and rendering", () => {
-    const draft = transition(null, runStartedInput(), { policyHash }).nextState;
+    const draft = transition(null, runStartedInput(), pinnedPolicy).nextState;
 
-    const result = transition(draft, ledgerSubmittedInput(), { policyHash });
+    const result = transition(draft, ledgerSubmittedInput(), pinnedPolicy);
 
     expect(result.nextState).toEqual({
       ...draft,
@@ -782,10 +796,10 @@ describe("transition", () => {
       (input) => ({ ...input, actor: { ...input.actor, osAccount: "" } }),
     ],
   ])("rejects a ledger submission with %s", (_caseName, makeInvalid) => {
-    const draft = transition(null, runStartedInput(), { policyHash }).nextState;
+    const draft = transition(null, runStartedInput(), pinnedPolicy).nextState;
     const input = makeInvalid(ledgerSubmittedInput());
 
-    expect(() => transition(draft, input, { policyHash })).toThrowError(
+    expect(() => transition(draft, input, pinnedPolicy)).toThrowError(
       expect.objectContaining({ code: "PRECONDITION_FAILED" }),
     );
   });
@@ -795,29 +809,33 @@ describe("transition", () => {
   >([
     [
       "without an active draft run",
-      () => transition(null, ledgerSubmittedInput(), { policyHash }),
+      () => transition(null, ledgerSubmittedInput(), pinnedPolicy),
       "INVALID_TRANSITION",
     ],
     [
       "for another run",
       () => {
-        const draft = transition(null, runStartedInput(), {
-          policyHash,
-        }).nextState;
+        const draft = transition(
+          null,
+          runStartedInput(),
+          pinnedPolicy,
+        ).nextState;
         const input = { ...ledgerSubmittedInput(), runId: "run_other" };
-        return transition(draft, input, { policyHash });
+        return transition(draft, input, pinnedPolicy);
       },
       "INVALID_TRANSITION",
     ],
     [
       "for the current ledger version",
       () => {
-        const draft = transition(null, runStartedInput(), {
-          policyHash,
-        }).nextState;
-        const first = transition(draft, ledgerSubmittedInput(), { policyHash });
+        const draft = transition(
+          null,
+          runStartedInput(),
+          pinnedPolicy,
+        ).nextState;
+        const first = transition(draft, ledgerSubmittedInput(), pinnedPolicy);
         const replay = { ...ledgerSubmittedInput(), expectedStateVersion: 2 };
-        return transition(first.nextState, replay, { policyHash });
+        return transition(first.nextState, replay, pinnedPolicy);
       },
       "PRECONDITION_FAILED",
     ],
@@ -828,7 +846,7 @@ describe("transition", () => {
           ...advancedRunState("qualified"),
           state: "approved",
         } as unknown as AdvancedRunState;
-        return transition(terminal, ledgerSubmittedInput(), { policyHash });
+        return transition(terminal, ledgerSubmittedInput(), pinnedPolicy);
       },
       "INVALID_TRANSITION",
     ],
@@ -839,8 +857,8 @@ describe("transition", () => {
   });
 
   it("advances the authoritative version for a revised ledger", () => {
-    const draft = transition(null, runStartedInput(), { policyHash }).nextState;
-    const first = transition(draft, ledgerSubmittedInput(), { policyHash });
+    const draft = transition(null, runStartedInput(), pinnedPolicy).nextState;
+    const first = transition(draft, ledgerSubmittedInput(), pinnedPolicy);
     const revision = {
       ...ledgerSubmittedInput(),
       expectedStateVersion: 2,
@@ -850,7 +868,7 @@ describe("transition", () => {
       renderCommandId: "command_render_ledger_02JTEST",
     };
 
-    const second = transition(first.nextState, revision, { policyHash });
+    const second = transition(first.nextState, revision, pinnedPolicy);
 
     expect(second.nextState.stateVersion).toBe(3);
     expect(second.commands).toEqual([
@@ -860,7 +878,7 @@ describe("transition", () => {
   });
 
   it("invalidates downstream qualification when revising an advanced run", () => {
-    const draft = transition(null, runStartedInput(), { policyHash }).nextState;
+    const draft = transition(null, runStartedInput(), pinnedPolicy).nextState;
     const qualified = advancedRunState("qualified");
     const revision = {
       ...ledgerSubmittedInput(),
@@ -871,7 +889,7 @@ describe("transition", () => {
       renderCommandId: "command_render_ledger_02JTEST",
     };
 
-    const result = transition(qualified, revision, { policyHash });
+    const result = transition(qualified, revision, pinnedPolicy);
 
     expect(result.nextState).toEqual({
       runId: draft.runId,
@@ -951,7 +969,7 @@ describe("transition", () => {
       ledgerVersionId: "ledger_02JTEST",
     };
 
-    const result = transition(previousState, revision, { policyHash });
+    const result = transition(previousState, revision, pinnedPolicy);
 
     expect(result.nextState).toEqual(
       expect.objectContaining({
@@ -974,7 +992,7 @@ describe("transition", () => {
     };
 
     expect(() =>
-      transition(qualified, revision, { policyHash: "f".repeat(64) }),
+      transition(qualified, revision, policyWithHash("f".repeat(64))),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 
@@ -991,9 +1009,11 @@ describe("transition", () => {
       ledgerVersionId: "ledger_02JTEST",
     };
 
-    const result = transition(requirementsApproved, revision, {
-      policyHash: revisedPolicyHash,
-    });
+    const result = transition(
+      requirementsApproved,
+      revision,
+      policyWithHash(revisedPolicyHash),
+    );
 
     expect(result.nextState).toEqual(
       expect.objectContaining({
@@ -1008,14 +1028,18 @@ describe("transition", () => {
   });
 
   it("approves a source exclusion and recomputes ledger coverage", () => {
-    const draft = transition(null, runStartedInput(), { policyHash }).nextState;
-    const ledgerDraft = transition(draft, ledgerSubmittedInput(), {
-      policyHash,
-    }).nextState;
+    const draft = transition(null, runStartedInput(), pinnedPolicy).nextState;
+    const ledgerDraft = transition(
+      draft,
+      ledgerSubmittedInput(),
+      pinnedPolicy,
+    ).nextState;
 
-    const result = transition(ledgerDraft, sourceExclusionApprovedInput(), {
-      policyHash,
-    });
+    const result = transition(
+      ledgerDraft,
+      sourceExclusionApprovedInput(),
+      pinnedPolicy,
+    );
 
     expect(result.nextState).toEqual({
       ...ledgerDraft,
@@ -1193,15 +1217,19 @@ describe("transition", () => {
       (input) => ({ ...input, actor: { ...input.actor, osAccount: "" } }),
     ],
   ])("rejects source exclusion approval with %s", (_name, makeInvalid) => {
-    const draft = transition(null, runStartedInput(), { policyHash }).nextState;
-    const ledgerDraft = transition(draft, ledgerSubmittedInput(), {
-      policyHash,
-    }).nextState;
+    const draft = transition(null, runStartedInput(), pinnedPolicy).nextState;
+    const ledgerDraft = transition(
+      draft,
+      ledgerSubmittedInput(),
+      pinnedPolicy,
+    ).nextState;
 
     expect(() =>
-      transition(ledgerDraft, makeInvalid(sourceExclusionApprovedInput()), {
-        policyHash,
-      }),
+      transition(
+        ledgerDraft,
+        makeInvalid(sourceExclusionApprovedInput()),
+        pinnedPolicy,
+      ),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 
@@ -1210,40 +1238,43 @@ describe("transition", () => {
   >([
     [
       "without an active run",
-      () =>
-        transition(null, sourceExclusionApprovedInput(), {
-          policyHash,
-        }),
+      () => transition(null, sourceExclusionApprovedInput(), pinnedPolicy),
       "INVALID_TRANSITION",
     ],
     [
       "without a current ledger",
       () => {
-        const draft = transition(null, runStartedInput(), {
-          policyHash,
-        }).nextState;
+        const draft = transition(
+          null,
+          runStartedInput(),
+          pinnedPolicy,
+        ).nextState;
         const input = {
           ...sourceExclusionApprovedInput(),
           expectedStateVersion: 1,
         };
-        return transition(draft, input, { policyHash });
+        return transition(draft, input, pinnedPolicy);
       },
       "PRECONDITION_FAILED",
     ],
     [
       "for another run",
       () => {
-        const draft = transition(null, runStartedInput(), {
-          policyHash,
-        }).nextState;
-        const ledgerDraft = transition(draft, ledgerSubmittedInput(), {
-          policyHash,
-        }).nextState;
+        const draft = transition(
+          null,
+          runStartedInput(),
+          pinnedPolicy,
+        ).nextState;
+        const ledgerDraft = transition(
+          draft,
+          ledgerSubmittedInput(),
+          pinnedPolicy,
+        ).nextState;
         const input = {
           ...sourceExclusionApprovedInput(),
           runId: "run_other",
         };
-        return transition(ledgerDraft, input, { policyHash });
+        return transition(ledgerDraft, input, pinnedPolicy);
       },
       "INVALID_TRANSITION",
     ],
@@ -1253,23 +1284,27 @@ describe("transition", () => {
         transition(
           advancedRunState("requirements_approved"),
           { ...sourceExclusionApprovedInput(), expectedStateVersion: 7 },
-          { policyHash },
+          pinnedPolicy,
         ),
       "INVALID_TRANSITION",
     ],
     [
       "with a changed locked policy",
       () => {
-        const draft = transition(null, runStartedInput(), {
-          policyHash,
-        }).nextState;
-        const ledgerDraft = transition(draft, ledgerSubmittedInput(), {
-          policyHash,
-        }).nextState;
+        const draft = transition(
+          null,
+          runStartedInput(),
+          pinnedPolicy,
+        ).nextState;
+        const ledgerDraft = transition(
+          draft,
+          ledgerSubmittedInput(),
+          pinnedPolicy,
+        ).nextState;
         return transition(
           { ...ledgerDraft, policyLocked: true },
           sourceExclusionApprovedInput(),
-          { policyHash: "0".repeat(64) },
+          policyWithHash("0".repeat(64)),
         );
       },
       "PRECONDITION_FAILED",
@@ -1277,19 +1312,25 @@ describe("transition", () => {
     [
       "with a duplicate exclusion ID",
       () => {
-        const draft = transition(null, runStartedInput(), {
-          policyHash,
-        }).nextState;
-        const ledgerDraft = transition(draft, ledgerSubmittedInput(), {
-          policyHash,
-        }).nextState;
-        const first = transition(ledgerDraft, sourceExclusionApprovedInput(), {
-          policyHash,
-        });
+        const draft = transition(
+          null,
+          runStartedInput(),
+          pinnedPolicy,
+        ).nextState;
+        const ledgerDraft = transition(
+          draft,
+          ledgerSubmittedInput(),
+          pinnedPolicy,
+        ).nextState;
+        const first = transition(
+          ledgerDraft,
+          sourceExclusionApprovedInput(),
+          pinnedPolicy,
+        );
         return transition(
           first.nextState,
           { ...sourceExclusionApprovedInput(), expectedStateVersion: 3 },
-          { policyHash },
+          pinnedPolicy,
         );
       },
       "PRECONDITION_FAILED",
@@ -1301,13 +1342,17 @@ describe("transition", () => {
   });
 
   it("accumulates exclusions and carries them into revised ledger validation", () => {
-    const draft = transition(null, runStartedInput(), { policyHash }).nextState;
-    const ledgerDraft = transition(draft, ledgerSubmittedInput(), {
-      policyHash,
-    }).nextState;
-    const first = transition(ledgerDraft, sourceExclusionApprovedInput(), {
-      policyHash,
-    });
+    const draft = transition(null, runStartedInput(), pinnedPolicy).nextState;
+    const ledgerDraft = transition(
+      draft,
+      ledgerSubmittedInput(),
+      pinnedPolicy,
+    ).nextState;
+    const first = transition(
+      ledgerDraft,
+      sourceExclusionApprovedInput(),
+      pinnedPolicy,
+    );
     const secondInput = {
       ...sourceExclusionApprovedInput(),
       expectedStateVersion: 3,
@@ -1317,7 +1362,7 @@ describe("transition", () => {
       validateCommandId: "command_validate_exclusion_02JTEST",
     };
 
-    const second = transition(first.nextState, secondInput, { policyHash });
+    const second = transition(first.nextState, secondInput, pinnedPolicy);
 
     expect(second.nextState.sourceExclusions).toEqual([
       {
@@ -1349,9 +1394,7 @@ describe("transition", () => {
       validateCommandId: "command_validate_ledger_02JTEST",
       renderCommandId: "command_render_ledger_02JTEST",
     };
-    const revised = transition(second.nextState, ledgerRevision, {
-      policyHash,
-    });
+    const revised = transition(second.nextState, ledgerRevision, pinnedPolicy);
 
     expect(revised.nextState.sourceExclusions).toEqual(
       second.nextState.sourceExclusions,
@@ -1371,7 +1414,7 @@ describe("transition", () => {
     const result = transition(
       exclusionApproved,
       ledgerApprovalRequestedInput(),
-      { policyHash },
+      pinnedPolicy,
     );
 
     expect(result.nextState).toEqual({
@@ -1565,9 +1608,7 @@ describe("transition", () => {
       transition(
         approvalReadyDraft(),
         makeInvalid(ledgerApprovalRequestedInput()),
-        {
-          policyHash,
-        },
+        pinnedPolicy,
       ),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
@@ -1577,19 +1618,21 @@ describe("transition", () => {
   >([
     [
       "without an active run",
-      () => transition(null, ledgerApprovalRequestedInput(), { policyHash }),
+      () => transition(null, ledgerApprovalRequestedInput(), pinnedPolicy),
       "INVALID_TRANSITION",
     ],
     [
       "without a current ledger",
       () => {
-        const draft = transition(null, runStartedInput(), {
-          policyHash,
-        }).nextState;
+        const draft = transition(
+          null,
+          runStartedInput(),
+          pinnedPolicy,
+        ).nextState;
         return transition(
           draft,
           { ...ledgerApprovalRequestedInput(), expectedStateVersion: 1 },
-          { policyHash },
+          pinnedPolicy,
         );
       },
       "PRECONDITION_FAILED",
@@ -1600,7 +1643,7 @@ describe("transition", () => {
         transition(
           approvalReadyDraft(),
           { ...ledgerApprovalRequestedInput(), runId: "run_other" },
-          { policyHash },
+          pinnedPolicy,
         ),
       "INVALID_TRANSITION",
     ],
@@ -1610,7 +1653,7 @@ describe("transition", () => {
         transition(
           advancedRunState("requirements_approved"),
           { ...ledgerApprovalRequestedInput(), expectedStateVersion: 7 },
-          { policyHash },
+          pinnedPolicy,
         ),
       "INVALID_TRANSITION",
     ],
@@ -1620,7 +1663,7 @@ describe("transition", () => {
         transition(
           { ...approvalReadyDraft(), policyLocked: true },
           ledgerApprovalRequestedInput(),
-          { policyHash: "1".repeat(64) },
+          policyWithHash("1".repeat(64)),
         ),
       "PRECONDITION_FAILED",
     ],
@@ -1634,7 +1677,7 @@ describe("transition", () => {
     const approved = transition(
       approvalReadyDraft(),
       ledgerApprovalRequestedInput(),
-      { policyHash },
+      pinnedPolicy,
     );
     const revision = {
       ...ledgerSubmittedInput(),
@@ -1645,7 +1688,7 @@ describe("transition", () => {
       renderCommandId: "command_render_ledger_02JTEST",
     };
 
-    const revised = transition(approved.nextState, revision, { policyHash });
+    const revised = transition(approved.nextState, revision, pinnedPolicy);
 
     expect(revised.auditFacts[0]).toEqual(
       expect.objectContaining({
@@ -1670,9 +1713,11 @@ describe("transition", () => {
       validatedPolicyHash: revisedPolicyHash,
     };
 
-    const result = transition(approvalReadyDraft(), approval, {
-      policyHash: revisedPolicyHash,
-    });
+    const result = transition(
+      approvalReadyDraft(),
+      approval,
+      policyWithHash(revisedPolicyHash),
+    );
 
     expect(result.nextState).toEqual(
       expect.objectContaining({
@@ -1688,9 +1733,11 @@ describe("transition", () => {
 
   it("rejects coverage evidence validated under an earlier policy", () => {
     expect(() =>
-      transition(approvalReadyDraft(), ledgerApprovalRequestedInput(), {
-        policyHash: "2".repeat(64),
-      }),
+      transition(
+        approvalReadyDraft(),
+        ledgerApprovalRequestedInput(),
+        policyWithHash("2".repeat(64)),
+      ),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 
@@ -1703,25 +1750,21 @@ describe("transition", () => {
       validateCommandId: "command_validate_ledger_02JTEST",
       renderCommandId: "command_render_ledger_02JTEST",
     };
-    const revised = transition(approvalReadyDraft(), revision, {
-      policyHash,
-    });
+    const revised = transition(approvalReadyDraft(), revision, pinnedPolicy);
     const staleCoverageApproval = {
       ...ledgerApprovalRequestedInput(),
       expectedStateVersion: 4,
     };
 
     expect(() =>
-      transition(revised.nextState, staleCoverageApproval, { policyHash }),
+      transition(revised.nextState, staleCoverageApproval, pinnedPolicy),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 
   it("requests provider-backed planning with a maximum budget", () => {
     const approved = requirementsApprovedState();
 
-    const result = transition(approved, planningRequestedInput(), {
-      policyHash,
-    });
+    const result = transition(approved, planningRequestedInput(), pinnedPolicy);
 
     expect(result.nextState).toEqual({
       ...approved,
@@ -1795,7 +1838,7 @@ describe("transition", () => {
     const command = result.commands[0];
     expect(command?.commandKey).toMatch(/^[a-f0-9]{64}$/);
     expect(
-      transition(approved, planningRequestedInput(), { policyHash }).commands[0]
+      transition(approved, planningRequestedInput(), pinnedPolicy).commands[0]
         ?.commandKey,
     ).toBe(command?.commandKey);
     expect(result.auditFacts.slice(1)).toEqual([
@@ -1920,15 +1963,17 @@ describe("transition", () => {
     } as PlanningRequested;
 
     expect(() =>
-      transition(requirementsApprovedState(), input, { policyHash }),
+      transition(requirementsApprovedState(), input, pinnedPolicy),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 
   it("rejects PlanningRequested under a policy different from the approved policy", () => {
     expect(() =>
-      transition(requirementsApprovedState(), planningRequestedInput(), {
-        policyHash: "f".repeat(64),
-      }),
+      transition(
+        requirementsApprovedState(),
+        planningRequestedInput(),
+        policyWithHash("f".repeat(64)),
+      ),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 
@@ -1938,7 +1983,7 @@ describe("transition", () => {
     ["a later nonterminal state", advancedRunState("baseline_review")],
   ])("rejects PlanningRequested from %s", (_name, state) => {
     expect(() =>
-      transition(state, planningRequestedInput(), { policyHash }),
+      transition(state, planningRequestedInput(), pinnedPolicy),
     ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
   });
 
@@ -1950,7 +1995,7 @@ describe("transition", () => {
           ...planningRequestedInput(),
           runId: "run_other",
         },
-        { policyHash },
+        pinnedPolicy,
       ),
     ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
   });
@@ -1958,7 +2003,7 @@ describe("transition", () => {
   it("accepts a generated plan and schedules independent baseline review", () => {
     const planning = planningState();
 
-    const result = transition(planning, planGeneratedInput(), { policyHash });
+    const result = transition(planning, planGeneratedInput(), pinnedPolicy);
 
     expect(result.nextState).toEqual({
       ...planning,
@@ -2257,9 +2302,9 @@ describe("transition", () => {
   ])("rejects PlanGenerated with %s", (_name, override) => {
     const input = { ...planGeneratedInput(), ...override } as PlanGenerated;
 
-    expect(() =>
-      transition(planningState(), input, { policyHash }),
-    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+    expect(() => transition(planningState(), input, pinnedPolicy)).toThrowError(
+      expect.objectContaining({ code: "PRECONDITION_FAILED" }),
+    );
   });
 
   it.each([
@@ -2268,7 +2313,7 @@ describe("transition", () => {
     ["baseline review", advancedRunState("baseline_review")],
   ])("rejects PlanGenerated from %s", (_name, state) => {
     expect(() =>
-      transition(state, planGeneratedInput(), { policyHash }),
+      transition(state, planGeneratedInput(), pinnedPolicy),
     ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
   });
 
@@ -2277,16 +2322,18 @@ describe("transition", () => {
       transition(
         planningState(),
         { ...planGeneratedInput(), runId: "run_other" },
-        { policyHash },
+        pinnedPolicy,
       ),
     ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
   });
 
   it("rejects PlanGenerated under a different pinned policy", () => {
     expect(() =>
-      transition(planningState(), planGeneratedInput(), {
-        policyHash: "9".repeat(64),
-      }),
+      transition(
+        planningState(),
+        planGeneratedInput(),
+        policyWithHash("9".repeat(64)),
+      ),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 
@@ -2299,7 +2346,7 @@ describe("transition", () => {
     const planning = transition(
       override.nextState,
       { ...planningRequestedInput(), expectedStateVersion: 5 },
-      { policyHash },
+      pinnedPolicy,
     );
     const input: PlanGenerated = {
       ...planGeneratedInput(),
@@ -2310,7 +2357,7 @@ describe("transition", () => {
       },
     };
 
-    const result = transition(planning.nextState, input, { policyHash });
+    const result = transition(planning.nextState, input, pinnedPolicy);
 
     expect(result.nextState.state).toBe("baseline_review");
     if (result.nextState.state !== "baseline_review") {
@@ -2396,7 +2443,7 @@ describe("transition", () => {
 
   it("rejects IndependenceOverrideGranted without a run", () => {
     expect(() =>
-      transition(null, independenceOverrideGrantedInput(), { policyHash }),
+      transition(null, independenceOverrideGrantedInput(), pinnedPolicy),
     ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
   });
 

@@ -149,7 +149,7 @@ export type RunStarted = {
 
 export type PinnedRunPolicy = {
   policyHash: string;
-  reviewerAssignment?: ProviderModelAssignment;
+  reviewerAssignment: ProviderModelAssignment;
 };
 
 export type LedgerSubmitted = {
@@ -652,6 +652,22 @@ function providerBudgetIsEligible(
     available.outputTokens >= maximum.outputTokens &&
     available.costUsdMicros >= maximum.costUsdMicros
   );
+}
+
+function providerModelAssignmentIsValid(
+  assignment: ProviderModelAssignment,
+): boolean {
+  return (
+    (assignment.provider === "openai" || assignment.provider === "anthropic") &&
+    assignment.modelId.length > 0
+  );
+}
+
+function providerModelAssignmentsEqual(
+  left: ProviderModelAssignment,
+  right: ProviderModelAssignment,
+): boolean {
+  return left.provider === right.provider && left.modelId === right.modelId;
 }
 
 function planCommand<T extends PlannedCommand>(
@@ -1442,24 +1458,20 @@ function grantIndependenceOverride(
     );
   }
 
-  const assignmentValid = (assignment: ProviderModelAssignment): boolean =>
-    (assignment.provider === "openai" || assignment.provider === "anthropic") &&
-    assignment.modelId.length > 0;
   if (
     input.expectedStateVersion !== previousState.stateVersion ||
     policy.policyHash !== previousState.policyHash ||
-    policy.reviewerAssignment === undefined ||
-    input.normalReviewerAssignment.provider !==
-      policy.reviewerAssignment.provider ||
-    input.normalReviewerAssignment.modelId !==
-      policy.reviewerAssignment.modelId ||
+    !providerModelAssignmentsEqual(
+      input.normalReviewerAssignment,
+      policy.reviewerAssignment,
+    ) ||
     previousState.reviewIndependenceOverride !== undefined ||
-    !assignmentValid(input.normalReviewerAssignment) ||
-    !assignmentValid(input.overrideReviewerAssignment) ||
-    (input.normalReviewerAssignment.provider ===
-      input.overrideReviewerAssignment.provider &&
-      input.normalReviewerAssignment.modelId ===
-        input.overrideReviewerAssignment.modelId) ||
+    !providerModelAssignmentIsValid(input.normalReviewerAssignment) ||
+    !providerModelAssignmentIsValid(input.overrideReviewerAssignment) ||
+    providerModelAssignmentsEqual(
+      input.normalReviewerAssignment,
+      input.overrideReviewerAssignment,
+    ) ||
     !input.evidenceVerified ||
     !input.beforeProviderDispatchVerified ||
     input.evidenceArtifactId.length === 0 ||
@@ -1551,10 +1563,9 @@ function acceptGeneratedPlan(
       previousState.activePlanning.plannerAssignment.provider &&
     input.actor.modelId ===
       previousState.activePlanning.plannerAssignment.modelId;
-  const reviewerValid =
-    (input.reviewerAssignment.provider === "openai" ||
-      input.reviewerAssignment.provider === "anthropic") &&
-    input.reviewerAssignment.modelId.length > 0;
+  const reviewerValid = providerModelAssignmentIsValid(
+    input.reviewerAssignment,
+  );
   const reducedIndependence =
     input.reviewerAssignment.provider ===
     previousState.activePlanning.plannerAssignment.provider;
@@ -1562,10 +1573,10 @@ function acceptGeneratedPlan(
   const overrideValid =
     !reducedIndependence ||
     (override !== undefined &&
-      override.overrideReviewerAssignment.provider ===
-        input.reviewerAssignment.provider &&
-      override.overrideReviewerAssignment.modelId ===
-        input.reviewerAssignment.modelId);
+      providerModelAssignmentsEqual(
+        override.overrideReviewerAssignment,
+        input.reviewerAssignment,
+      ));
 
   if (
     input.expectedStateVersion !== previousState.stateVersion ||
