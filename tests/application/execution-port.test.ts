@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   beginEligibleCommandAttempt,
   ExecutionPolicy,
+  StrictReplayEvidence,
 } from "../../src/application/execution-port.js";
 import { canonicalJson } from "../../src/domain/canonical-json.js";
 import type { ResolvedConfigurationSnapshot } from "../../src/application/stage-configuration.js";
@@ -124,5 +125,39 @@ describe("execution policy and attempt boundary", () => {
         expectedContentHash: "f".repeat(64),
       }),
     ).toThrow("hash does not match");
+  });
+
+  it("mints replay evidence only from an exact matching recording manifest", () => {
+    const cassetteKey = "b".repeat(64);
+    const normalizedRequestHash = "c".repeat(64);
+    const commandKey = "d".repeat(64);
+    const bytes = Buffer.from(
+      canonicalJson({
+        schemaVersion: 1,
+        cassetteKey,
+        normalizedRequestHash,
+        commandKey,
+        responseArtifactId: "artifact_response",
+        responseContentHash: "e".repeat(64),
+      }),
+    );
+    expect(
+      StrictReplayEvidence.fromManifest({
+        recordingManifestArtifactId: "artifact_recording_manifest",
+        recordingManifestBytes: bytes,
+        expectedCassetteKey: cassetteKey,
+        expectedNormalizedRequestHash: normalizedRequestHash,
+        expectedCommandKey: commandKey,
+      }),
+    ).toMatchObject({ responseArtifactId: "artifact_response" });
+    expect(() =>
+      StrictReplayEvidence.fromManifest({
+        recordingManifestArtifactId: "artifact_recording_manifest",
+        recordingManifestBytes: bytes,
+        expectedCassetteKey: "f".repeat(64),
+        expectedNormalizedRequestHash: normalizedRequestHash,
+        expectedCommandKey: commandKey,
+      }),
+    ).toThrow("does not match");
   });
 });

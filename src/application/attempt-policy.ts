@@ -40,13 +40,6 @@ export function decideAttemptPolicy(
   policy: ExecutionPolicy,
 ): AttemptPolicyDecision {
   if (
-    snapshot.runAttempts >= policy.ceilings.physicalAttempts ||
-    (snapshot.triggeringStateVersion !== snapshot.currentStateVersion &&
-      request.attemptKind !== "human_rerun")
-  ) {
-    throw new TypeError("Logical command is not eligible for execution");
-  }
-  if (
     snapshot.acceptedAttemptId !== null &&
     request.attemptKind !== "human_rerun"
   ) {
@@ -55,6 +48,13 @@ export function decideAttemptPolicy(
       reservation: zeroReservation(),
       duplicateCallPossible: false,
     };
+  }
+  if (
+    snapshot.runAttempts >= policy.ceilings.physicalAttempts ||
+    (snapshot.triggeringStateVersion !== snapshot.currentStateVersion &&
+      request.attemptKind !== "human_rerun")
+  ) {
+    throw new TypeError("Logical command is not eligible for execution");
   }
   const last = snapshot.lastAttempt;
   const retryingUnknown =

@@ -144,4 +144,19 @@ describe("attempt recovery policy", () => {
       ).reservation,
     ).toEqual(reservation);
   });
+
+  it("returns an accepted-result no-op even after state advancement", () => {
+    expect(
+      decideAttemptPolicy(
+        { ...baseRequest, attemptKind: "initial" },
+        {
+          ...baseSnapshot,
+          logicalStatus: "succeeded",
+          acceptedAttemptId: "attempt_accepted",
+          currentStateVersion: 99,
+        },
+        policy,
+      ),
+    ).toMatchObject({ noOpAcceptedAttemptId: "attempt_accepted" });
+  });
 });

@@ -525,6 +525,18 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
           "Logical command relational identity disagrees with its envelope",
         );
       }
+      if (
+        row.accepted_attempt_id !== null &&
+        request.attemptKind !== "human_rerun"
+      ) {
+        this.database.exec("COMMIT");
+        return {
+          status: "already_succeeded",
+          runId: request.runId,
+          commandId: request.commandId,
+          acceptedAttemptId: row.accepted_attempt_id,
+        };
+      }
       const unresolvedInputHash = command.inputArtifactHashes.find(
         (hash) =>
           this.database
@@ -613,7 +625,20 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
             { evidence_json: string } | undefined;
           if (decision === undefined) return false;
           const evidence = parseObject(decision.evidence_json);
-          return evidence.commandId === request.commandId;
+          const alreadyUsed = this.database
+            .prepare(
+              `SELECT 1 FROM audit_entries
+                WHERE run_id = ? AND fact_type = 'command_attempt_started'
+                  AND json_extract(payload_json, '$.humanAuthorizationId') = ?
+                LIMIT 1`,
+            )
+            .get(request.runId, request.humanAuthorizationId);
+          return (
+            evidence.commandId === request.commandId &&
+            evidence.attemptId === request.attemptId &&
+            evidence.correlationId === request.correlationId &&
+            alreadyUsed === undefined
+          );
         })();
       const strictReplayVerified =
         request.strictReplay !== undefined &&
@@ -728,11 +753,13 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
           startedAt,
           startedAt,
         );
-      this.database
-        .prepare(
-          "UPDATE logical_commands SET status = 'running' WHERE command_id = ?",
-        )
-        .run(request.commandId);
+      if (row.accepted_attempt_id === null) {
+        this.database
+          .prepare(
+            "UPDATE logical_commands SET status = 'running' WHERE command_id = ?",
+          )
+          .run(request.commandId);
+      }
       appendAuditEntries({
         database: this.database,
         workspaceId: this.workspaceId,
@@ -1031,7 +1058,6 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
     replay: NonNullable<BeginAttemptRequest["strictReplay"]>,
     command: PersistableCommand,
   ): boolean {
-    if (this.artifactStore === undefined) return false;
     const artifact = this.database
       .prepare(
         `SELECT content_hash, schema_id FROM artifacts
@@ -1039,43 +1065,17 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
       )
       .get(replay.recordingManifestArtifactId) as
       { content_hash: string; schema_id: string | null } | undefined;
-    if (artifact?.schema_id !== "software-factory/provider-recording.v1") {
-      return false;
-    }
-    try {
-      const bytes = readFileSync(
-        join(this.artifactStore.workspace.objects, artifact.content_hash),
-      );
-      if (sha256(bytes) !== artifact.content_hash) return false;
-      const manifest = parseObject(bytes.toString("utf8"));
-      return (
-        Object.keys(manifest).sort().join(",") ===
-          [
-            "cassetteKey",
-            "commandKey",
-            "normalizedRequestHash",
-            "responseArtifactId",
-            "responseContentHash",
-            "schemaVersion",
-          ]
-            .sort()
-            .join(",") &&
-        manifest.schemaVersion === 1 &&
-        manifest.cassetteKey === replay.cassetteKey &&
-        manifest.commandKey === command.commandKey &&
-        manifest.normalizedRequestHash === replay.normalizedRequestHash &&
-        typeof manifest.responseArtifactId === "string" &&
-        typeof manifest.responseContentHash === "string" &&
-        this.database
-          .prepare(
-            `SELECT 1 FROM artifacts WHERE artifact_id = ? AND content_hash = ?`,
-          )
-          .get(manifest.responseArtifactId, manifest.responseContentHash) !==
-          undefined
-      );
-    } catch {
-      return false;
-    }
+    return (
+      artifact?.schema_id === "software-factory/provider-recording.v1" &&
+      artifact.content_hash === replay.recordingManifestContentHash &&
+      replay.commandKey === command.commandKey &&
+      this.database
+        .prepare(
+          `SELECT 1 FROM artifacts WHERE artifact_id = ? AND content_hash = ?`,
+        )
+        .get(replay.responseArtifactId, replay.responseContentHash) !==
+        undefined
+    );
   }
 
   private persistArtifactMetadata(

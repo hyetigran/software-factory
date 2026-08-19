@@ -43,6 +43,7 @@ export type BeginAttemptOutcome =
     };
 
 const executionPolicyBrand = Symbol("ExecutionPolicy");
+const strictReplayBrand = Symbol("StrictReplayEvidence");
 
 export class ExecutionPolicy {
   readonly [executionPolicyBrand] = true;
@@ -101,6 +102,77 @@ function immutableCopy<T>(value: T): Readonly<T> {
   return copy;
 }
 
+export class StrictReplayEvidence {
+  readonly [strictReplayBrand] = true;
+
+  private constructor(
+    readonly recordingManifestArtifactId: string,
+    readonly recordingManifestContentHash: string,
+    readonly cassetteKey: string,
+    readonly normalizedRequestHash: string,
+    readonly commandKey: string,
+    readonly responseArtifactId: string,
+    readonly responseContentHash: string,
+  ) {
+    Object.freeze(this);
+  }
+
+  static fromManifest(input: {
+    recordingManifestArtifactId: string;
+    recordingManifestBytes: Uint8Array;
+    expectedCassetteKey: string;
+    expectedNormalizedRequestHash: string;
+    expectedCommandKey: string;
+  }): StrictReplayEvidence {
+    const manifestHash = createHash("sha256")
+      .update(input.recordingManifestBytes)
+      .digest("hex");
+    const parsed: unknown = JSON.parse(
+      Buffer.from(input.recordingManifestBytes).toString("utf8"),
+    );
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed)
+    ) {
+      throw new TypeError("Strict replay manifest must be an object");
+    }
+    const manifest = parsed as Record<string, unknown>;
+    if (
+      Object.keys(manifest).sort().join(",") !==
+        [
+          "cassetteKey",
+          "commandKey",
+          "normalizedRequestHash",
+          "responseArtifactId",
+          "responseContentHash",
+          "schemaVersion",
+        ]
+          .sort()
+          .join(",") ||
+      manifest.schemaVersion !== 1 ||
+      manifest.cassetteKey !== input.expectedCassetteKey ||
+      manifest.normalizedRequestHash !== input.expectedNormalizedRequestHash ||
+      manifest.commandKey !== input.expectedCommandKey ||
+      typeof manifest.responseArtifactId !== "string" ||
+      manifest.responseArtifactId.trim().length === 0 ||
+      typeof manifest.responseContentHash !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(manifest.responseContentHash)
+    ) {
+      throw new TypeError("Strict replay manifest does not match the request");
+    }
+    return new StrictReplayEvidence(
+      input.recordingManifestArtifactId,
+      manifestHash,
+      input.expectedCassetteKey,
+      input.expectedNormalizedRequestHash,
+      input.expectedCommandKey,
+      manifest.responseArtifactId,
+      manifest.responseContentHash,
+    );
+  }
+}
+
 export type BeginAttemptRequest = {
   runId: string;
   commandId: string;
@@ -116,11 +188,7 @@ export type BeginAttemptRequest = {
     | "strict_replay"
     | "human_rerun";
   humanAuthorizationId?: string;
-  strictReplay?: {
-    recordingManifestArtifactId: string;
-    cassetteKey: string;
-    normalizedRequestHash: string;
-  };
+  strictReplay?: StrictReplayEvidence;
 };
 
 export interface CommandExecutionPort {
@@ -145,7 +213,8 @@ export function beginEligibleCommandAttempt(
       (request.strictReplay === undefined ||
         request.strictReplay.recordingManifestArtifactId.trim().length === 0 ||
         !/^[a-f0-9]{64}$/u.test(request.strictReplay.cassetteKey) ||
-        !/^[a-f0-9]{64}$/u.test(request.strictReplay.normalizedRequestHash))) ||
+        !/^[a-f0-9]{64}$/u.test(request.strictReplay.normalizedRequestHash) ||
+        request.strictReplay[strictReplayBrand] !== true)) ||
     (request.attemptKind !== "strict_replay" &&
       request.strictReplay !== undefined) ||
     (request.attemptKind !== "human_rerun" &&
