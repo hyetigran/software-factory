@@ -1621,7 +1621,9 @@ function acceptPlanForBaseline(
   );
   const override = previousState.reviewIndependenceOverride;
   const expectedReviewerAssignment =
-    override?.overrideReviewerAssignment ?? policy.reviewerAssignment;
+    input.type === "PlanGenerated" && override !== undefined
+      ? override.overrideReviewerAssignment
+      : policy.reviewerAssignment;
   const reviewerAssignmentMatchesPolicy = providerModelAssignmentsEqual(
     input.reviewerAssignment,
     expectedReviewerAssignment,
@@ -1630,7 +1632,8 @@ function acceptPlanForBaseline(
     input.type === "PlanSubmitted" ||
     input.reviewerAssignment.provider !== policy.plannerAssignment.provider ||
     override !== undefined;
-  const reducedIndependence = override !== undefined;
+  const reducedIndependence =
+    input.type === "PlanGenerated" && override !== undefined;
   const sectionTransitionValidation = input.sectionTransitionValidation;
   const sectionTransitionValid =
     sectionTransitionValidation.validator ===

@@ -2473,6 +2473,31 @@ describe("transition", () => {
     });
   });
 
+  it("ignores a Planner-specific independence override for a human-submitted plan", () => {
+    const approved = requirementsApprovedState();
+    const overridden = transition(
+      approved,
+      independenceOverrideGrantedInput(),
+      pinnedPolicy,
+    );
+    const result = transition(
+      overridden.nextState,
+      { ...planSubmittedInput(), expectedStateVersion: 5 },
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.state).toBe("baseline_review");
+    if (result.nextState.state !== "baseline_review") {
+      throw new Error("Expected baseline review state");
+    }
+    expect(result.nextState.activeReview.reviewerAssignment).toEqual(
+      configuredReviewerAssignment,
+    );
+    expect(result.nextState.activeReview.independence).toEqual({
+      reduced: false,
+    });
+  });
+
   it.each([
     ["a stale state version", { expectedStateVersion: 3 }],
     ["an invalid canonical schema", { canonicalSchemaValid: false }],
