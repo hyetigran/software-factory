@@ -2141,6 +2141,15 @@ describe("transition", () => {
     ["an unallowlisted Reviewer", { reviewerModelAllowed: false }],
     ["a floating Reviewer identity", { reviewerModelIdentityPinned: false }],
     [
+      "a Reviewer different from pinned policy",
+      {
+        reviewerAssignment: {
+          provider: "anthropic",
+          modelId: "different-pinned-model",
+        },
+      },
+    ],
+    [
       "an unauthorized Reviewer assignment",
       { reviewerAssignmentAuthorized: false },
     ],

@@ -1566,17 +1566,14 @@ function acceptGeneratedPlan(
   const reviewerValid = providerModelAssignmentIsValid(
     input.reviewerAssignment,
   );
-  const reducedIndependence =
-    input.reviewerAssignment.provider ===
-    previousState.activePlanning.plannerAssignment.provider;
   const override = previousState.reviewIndependenceOverride;
-  const overrideValid =
-    !reducedIndependence ||
-    (override !== undefined &&
-      providerModelAssignmentsEqual(
-        override.overrideReviewerAssignment,
-        input.reviewerAssignment,
-      ));
+  const expectedReviewerAssignment =
+    override?.overrideReviewerAssignment ?? policy.reviewerAssignment;
+  const reviewerAssignmentMatchesPolicy = providerModelAssignmentsEqual(
+    input.reviewerAssignment,
+    expectedReviewerAssignment,
+  );
+  const reducedIndependence = override !== undefined;
 
   if (
     input.expectedStateVersion !== previousState.stateVersion ||
@@ -1590,7 +1587,7 @@ function acceptGeneratedPlan(
     !input.reviewerModelIdentityPinned ||
     !input.reviewerAssignmentAuthorized ||
     !reviewerValid ||
-    !overrideValid ||
+    !reviewerAssignmentMatchesPolicy ||
     input.reviewPolicyArtifact.contentHash !== policy.policyHash ||
     !artifactsValid ||
     !input.auditChainVerified ||
