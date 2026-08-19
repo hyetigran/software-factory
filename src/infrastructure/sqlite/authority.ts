@@ -931,7 +931,7 @@ export class SqliteAuthority
       }
       if (
         request.attemptKind !== "strict_replay" &&
-        typeof command.provider === "string" &&
+        (command.provider === "openai" || command.provider === "anthropic") &&
         request.policy.configuration.budgetAcceptanceRequired &&
         this.database
           .prepare(

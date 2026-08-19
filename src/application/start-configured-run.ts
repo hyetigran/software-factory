@@ -32,6 +32,28 @@ export async function startConfiguredRun(input: {
   expectedPackageVersion: string;
   actor: { kind: "human"; displayName: string; osAccount: string };
 }): Promise<{ runId: string; state: object }> {
+  const authoritativeBytes = async (contentHash: string, label: string) => {
+    try {
+      return await input.artifacts.readVerified(contentHash);
+    } catch (error) {
+      throw new WorkspaceOperationError(
+        "INTEGRITY_ERROR",
+        `Authority-bound ${label} is missing or corrupt`,
+        { cause: error instanceof Error ? error.message : String(error) },
+      );
+    }
+  };
+  const authoritativeJson = <T>(bytes: Uint8Array, label: string): T => {
+    try {
+      return JSON.parse(Buffer.from(bytes).toString("utf8")) as T;
+    } catch (error) {
+      throw new WorkspaceOperationError(
+        "INTEGRITY_ERROR",
+        `Authority-bound ${label} is not valid JSON`,
+        { cause: error instanceof Error ? error.message : String(error) },
+      );
+    }
+  };
   const artifacts = await input.artifacts.listArtifacts();
   const configurationMetadata = artifacts.find(
     (artifact) => artifact.artifactId === input.configurationArtifactId,
@@ -55,12 +77,14 @@ export async function startConfiguredRun(input: {
       { configurationArtifactId: input.configurationArtifactId },
     );
   }
-  const configurationBytes = await input.artifacts.readVerified(
+  const configurationBytes = await authoritativeBytes(
     configurationMetadata.contentHash,
+    "resolved configuration",
   );
-  const configuration = JSON.parse(
-    Buffer.from(configurationBytes).toString("utf8"),
-  ) as ResolvedConfigurationSnapshot;
+  const configuration = authoritativeJson<ResolvedConfigurationSnapshot>(
+    configurationBytes,
+    "resolved configuration",
+  );
   if (
     !resolvedConfigurationIsValid(configuration) ||
     configuration.policyHash !== resolvedConfigurationPolicyHash(configuration)
@@ -104,7 +128,7 @@ export async function startConfiguredRun(input: {
           .provenance.packageVersion,
       ),
     );
-    await input.artifacts.readVerified(contentHash);
+    await authoritativeBytes(contentHash, expectedPath);
   }
   if (
     packageVersions.size !== 1 ||
@@ -115,21 +139,31 @@ export async function startConfiguredRun(input: {
       "Configured controls do not share one package version",
     );
   }
-  const resolvedSchema = JSON.parse(
-    Buffer.from(
-      await input.artifacts.readVerified(
-        configuration.artifactHashes.resolvedConfigurationSchema,
-      ),
-    ).toString("utf8"),
-  ) as unknown;
-  assertJsonSchema(configuration, resolvedSchema);
-  const allowlist = JSON.parse(
-    Buffer.from(
-      await input.artifacts.readVerified(
-        configuration.artifactHashes.frontierAllowlist,
-      ),
-    ).toString("utf8"),
-  ) as { models?: Array<{ provider?: unknown; model_id?: unknown }> };
+  const resolvedSchema = authoritativeJson<unknown>(
+    await authoritativeBytes(
+      configuration.artifactHashes.resolvedConfigurationSchema,
+      "resolved configuration schema",
+    ),
+    "resolved configuration schema",
+  );
+  try {
+    assertJsonSchema(configuration, resolvedSchema);
+  } catch (error) {
+    throw new WorkspaceOperationError(
+      "INTEGRITY_ERROR",
+      "Resolved configuration violates its authority-bound schema",
+      { cause: error instanceof Error ? error.message : String(error) },
+    );
+  }
+  const allowlist = authoritativeJson<{
+    models?: Array<{ provider?: unknown; model_id?: unknown }>;
+  }>(
+    await authoritativeBytes(
+      configuration.artifactHashes.frontierAllowlist,
+      "frontier allowlist",
+    ),
+    "frontier allowlist",
+  );
   const allowed = (assignment: { provider: string; modelId: string }) =>
     Array.isArray(allowlist.models) &&
     allowlist.models.some(
@@ -150,13 +184,15 @@ export async function startConfiguredRun(input: {
       "Resolved assignments violate the pinned allowlist",
     );
   }
-  const product = JSON.parse(
-    Buffer.from(
-      await input.artifacts.readVerified(
-        configuration.artifactHashes.productDefaults,
-      ),
-    ).toString("utf8"),
-  ) as { source_input?: { max_bytes?: unknown } };
+  const product = authoritativeJson<{
+    source_input?: { max_bytes?: unknown };
+  }>(
+    await authoritativeBytes(
+      configuration.artifactHashes.productDefaults,
+      "product defaults",
+    ),
+    "product defaults",
+  );
   const maximumSourceBytes = product.source_input?.max_bytes;
   if (
     !Number.isInteger(maximumSourceBytes) ||
@@ -193,6 +229,9 @@ export async function startConfiguredRun(input: {
     configurationArtifactId: input.configurationArtifactId,
     configurationContentHash: configurationMetadata.contentHash,
     configuration,
-    actor: input.actor,
+    actor: {
+      ...input.actor,
+      displayName: configuration.humanActorDisplayName,
+    },
   });
 }
