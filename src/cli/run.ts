@@ -18,6 +18,14 @@ type Writer = (line: string) => void;
 type ParsedCommand =
   | { kind: "init"; publicName: "init"; json: boolean; projectRoot: string }
   | {
+      kind: "submit_ledger";
+      publicName: "submit ledger";
+      json: boolean;
+      projectRoot: string;
+      runId: string;
+      ledgerPath: string;
+    }
+  | {
       kind: "configure";
       publicName: "configure";
       json: boolean;
@@ -69,7 +77,7 @@ type ParsedCommand =
     };
 
 const usage =
-  "Usage: factory init | configure [project-config.json] [overrides.json] | run start <source.md> <configuration-artifact-id> | run list | run status <run-id> | inspect <state|findings|usage|gates> <run-id> | inspect <audit|artifacts> [run-id] [--json] [--project <path>]";
+  "Usage: factory init | configure [project-config.json] [overrides.json] | run start <source.md> <configuration-artifact-id> | run list | run status <run-id> | submit ledger <run-id> <ledger.json> | inspect <state|findings|usage|gates> <run-id> | inspect <audit|artifacts> [run-id] [--json] [--project <path>]";
 
 export function runCli(args: string[], write: Writer): number {
   if (args.includes("--version")) {
@@ -125,6 +133,20 @@ function parseArgs(args: string[], cwd: string): ParsedCommand {
   const projectRoot = resolve(project ?? cwd);
   if (positional.length === 1 && positional[0] === "init") {
     return { kind: "init", publicName: "init", json, projectRoot };
+  }
+  if (
+    positional.length === 4 &&
+    positional[0] === "submit" &&
+    positional[1] === "ledger"
+  ) {
+    return {
+      kind: "submit_ledger",
+      publicName: "submit ledger",
+      json,
+      projectRoot,
+      runId: positional[2] ?? "",
+      ledgerPath: positional[3] ?? "",
+    };
   }
   if (
     positional[0] === "configure" &&
@@ -337,6 +359,20 @@ export async function runCliAsync(
                   (run) => `${run.runId}\t${run.state}\tv${run.stateVersion}`,
                 )
                 .join("\n"),
+        );
+        return CliExit.success;
+      }
+      case "submit_ledger": {
+        const submitted = await operations.submitLedger(
+          command.projectRoot,
+          command.runId,
+          command.ledgerPath,
+        );
+        writeSuccess(
+          write,
+          command,
+          submitted,
+          `Submitted ledger ${submitted.ledgerArtifactId}`,
         );
         return CliExit.success;
       }

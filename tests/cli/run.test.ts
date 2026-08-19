@@ -111,6 +111,63 @@ describe("factory executable", () => {
     expect(started.data.runId).toMatch(/^run_/u);
     expect(started.data.state.state).toBe("draft");
 
+    const sourceArtifactId = (
+      started.data.state as unknown as { sourceArtifactId: string }
+    ).sourceArtifactId;
+    await writeFile(
+      join(projectRoot, "ledger.json"),
+      JSON.stringify({
+        schema_version: 1,
+        ledger_id: "ledger_v1",
+        version: 1,
+        source_artifact_id: sourceArtifactId,
+        requirements: [
+          {
+            requirement_id: "requirement_1",
+            display_id: "REQ-1",
+            statement: "Build it safely.",
+            status: "active",
+            source_ranges: [{ start_byte: 0, end_byte: 10 }],
+            lineage_roots: ["requirement_1"],
+            change_kind: "original",
+          },
+        ],
+        source_exclusions: [],
+      }),
+    );
+    const submitLines: string[] = [];
+    await expect(
+      runCliAsync(
+        ["submit", "ledger", started.data.runId, "ledger.json", "--json"],
+        (line) => submitLines.push(line),
+        operations,
+        projectRoot,
+      ),
+    ).resolves.toBe(CliExit.success);
+    const submitted = JSON.parse(submitLines[0] ?? "null") as {
+      ok: boolean;
+      command: string;
+      data: {
+        ledgerArtifactId: string;
+        state: object;
+      };
+    };
+    expect(submitted).toMatchObject({
+      ok: true,
+      command: "submit ledger",
+      data: {
+        state: {
+          state: "draft",
+          stateVersion: 2,
+          currentLedger: {
+            versionId: "ledger_v1",
+            validationStatus: "pending",
+          },
+        },
+      },
+    });
+    expect(submitted.data.ledgerArtifactId).toMatch(/^ledger_/u);
+
     const conflictLines: string[] = [];
     const conflictExit = await runCliAsync(
       [
@@ -294,6 +351,7 @@ describe("factory executable", () => {
       initialize: vi.fn(),
       configure: vi.fn(),
       startRun: vi.fn(),
+      submitLedger: vi.fn(),
       listRuns,
       loadRun: vi.fn(),
       listAudit: vi.fn(),
@@ -347,6 +405,7 @@ describe("factory executable", () => {
       initialize: vi.fn(),
       configure: vi.fn(),
       startRun: vi.fn(),
+      submitLedger: vi.fn(),
       listRuns: vi.fn(),
       loadRun: vi.fn().mockResolvedValue({ runId: "run_1" }),
       listAudit: vi.fn(),
@@ -418,6 +477,7 @@ describe("factory executable", () => {
       initialize: vi.fn(),
       configure: vi.fn(),
       startRun: vi.fn(),
+      submitLedger: vi.fn(),
       listRuns: vi.fn(),
       loadRun: vi.fn(),
       listAudit: vi.fn(),

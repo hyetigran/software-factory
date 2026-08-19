@@ -11,6 +11,12 @@ import { SqliteAuthority } from "../sqlite/authority.js";
 import { SqliteReadModel } from "../sqlite/read-model.js";
 import { readVerifiedObject } from "../artifacts/object-verifier.js";
 import { startConfiguredRun } from "../../application/start-configured-run.js";
+import { submitLedger } from "../../application/submit-ledger.js";
+import {
+  resolvedConfigurationIsValid,
+  resolvedConfigurationPolicyHash,
+  type ResolvedConfigurationSnapshot,
+} from "../../application/stage-configuration.js";
 import {
   resolveAndRegisterConfiguration,
   packagedControlPaths,
@@ -221,6 +227,90 @@ export function createWorkspaceOperations(): WorkspaceOperations {
         throw error;
       } finally {
         authority.close();
+      }
+    },
+    async submitLedger(projectRoot, runId, ledgerPath) {
+      const store = await ContentAddressedArtifactStore.open(projectRoot);
+      const state = await withReadModel(projectRoot, (model) =>
+        model.loadRun(runId),
+      );
+      if (state === null) {
+        throw new WorkspaceOperationError(
+          "RUN_NOT_FOUND",
+          `Run not found: ${runId}`,
+          { runId },
+        );
+      }
+      const identity = state as {
+        configurationArtifactId?: unknown;
+        configurationContentHash?: unknown;
+      };
+      if (
+        typeof identity.configurationArtifactId !== "string" ||
+        typeof identity.configurationContentHash !== "string"
+      ) {
+        throw new WorkspaceOperationError(
+          "INTEGRITY_ERROR",
+          `Run configuration identity is invalid: ${runId}`,
+        );
+      }
+      try {
+        const bytes = await store.readVerified(
+          identity.configurationContentHash,
+        );
+        const configuration = JSON.parse(
+          bytes.toString("utf8"),
+        ) as ResolvedConfigurationSnapshot;
+        if (
+          !resolvedConfigurationIsValid(configuration) ||
+          configuration.policyHash !==
+            resolvedConfigurationPolicyHash(configuration)
+        ) {
+          throw new WorkspaceOperationError(
+            "INTEGRITY_ERROR",
+            `Run configuration is invalid: ${runId}`,
+          );
+        }
+        const authority = SqliteAuthority.open(
+          join(store.workspace.root, "state.db"),
+          { artifactStore: store },
+        );
+        try {
+          return await submitLedger({
+            authority,
+            staging: store,
+            runId,
+            ledgerBytes: await readFile(resolve(projectRoot, ledgerPath)),
+            configuration,
+            actor: {
+              kind: "human",
+              displayName: configuration.humanActorDisplayName,
+              osAccount: userInfo().username,
+            },
+          });
+        } finally {
+          authority.close();
+        }
+      } catch (error) {
+        if (error instanceof WorkspaceOperationError) throw error;
+        if (
+          error !== null &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === "ENOENT"
+        ) {
+          throw new WorkspaceOperationError(
+            "INPUT_NOT_FOUND",
+            `Ledger input was not found: ${ledgerPath}`,
+          );
+        }
+        if (error instanceof SyntaxError || error instanceof TypeError) {
+          throw new WorkspaceOperationError(
+            "INVALID_INPUT",
+            `Ledger input is invalid: ${error.message}`,
+          );
+        }
+        throw error;
       }
     },
     async listRuns(projectRoot) {

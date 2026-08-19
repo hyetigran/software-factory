@@ -138,6 +138,11 @@ export interface WorkspaceOperations {
     sourcePath: string,
     configurationArtifactId: string,
   ): Promise<{ runId: string; state: object }>;
+  submitLedger(
+    projectRoot: string,
+    runId: string,
+    ledgerPath: string,
+  ): Promise<{ state: object; ledgerArtifactId: string }>;
   listRuns(projectRoot: string): Promise<RunSummary[]>;
   loadRun(projectRoot: string, runId: string): Promise<object | null>;
   listAudit(projectRoot: string, runId?: string): Promise<AuditSummary[]>;
