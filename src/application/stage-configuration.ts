@@ -47,6 +47,13 @@ export type ResolvedProviderRequestSettings = {
   schemaRepair: ProviderRequestSettings;
 };
 
+export type ResolvedModelCapability = {
+  canonicalModelId: string;
+  structuredOutput: true;
+  contextWindowTokens: number;
+  maxOutputTokens: number;
+};
+
 export type HardCeilings = {
   calls: number;
   physicalAttempts: number;
@@ -66,6 +73,10 @@ export type ResolvedConfigurationSnapshot = {
   reviewerAssignment: ProviderModelAssignment;
   artifactHashes: ResolvedArtifactPins;
   providerRequestSettings: ResolvedProviderRequestSettings;
+  modelCapabilities: {
+    planner: ResolvedModelCapability;
+    reviewer: ResolvedModelCapability;
+  };
   recordingMode: "record" | "strict_replay";
   humanActorDisplayName: string;
   providerStorage: "minimize";
@@ -89,6 +100,7 @@ const allowedKeys = new Set([
   "reviewerAssignment",
   "artifactHashes",
   "providerRequestSettings",
+  "modelCapabilities",
   "recordingMode",
   "humanActorDisplayName",
   "providerStorage",
@@ -195,6 +207,27 @@ export function resolvedConfigurationIsValid(
           (typeof settings.reasoning === "string" &&
             settings.reasoning.trim().length > 0)),
     ) &&
+    hasExactKeys(value.modelCapabilities, ["planner", "reviewer"]) &&
+    Object.values(value.modelCapabilities).every(
+      (capability) =>
+        hasExactKeys(capability, [
+          "canonicalModelId",
+          "structuredOutput",
+          "contextWindowTokens",
+          "maxOutputTokens",
+        ]) &&
+        capability.canonicalModelId.trim().length > 0 &&
+        capability.structuredOutput === true &&
+        Number.isInteger(capability.contextWindowTokens) &&
+        capability.contextWindowTokens > 0 &&
+        Number.isInteger(capability.maxOutputTokens) &&
+        capability.maxOutputTokens > 0 &&
+        capability.maxOutputTokens <= capability.contextWindowTokens,
+    ) &&
+    value.modelCapabilities.planner.canonicalModelId ===
+      value.plannerAssignment.modelId &&
+    value.modelCapabilities.reviewer.canonicalModelId ===
+      value.reviewerAssignment.modelId &&
     (value.recordingMode === "record" ||
       value.recordingMode === "strict_replay") &&
     value.humanActorDisplayName.trim().length > 0 &&

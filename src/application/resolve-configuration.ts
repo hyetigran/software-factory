@@ -49,6 +49,11 @@ export const packagedControlPaths: Record<keyof ResolvedArtifactPins, string> =
   };
 
 type Worker = { provider: "openai" | "anthropic"; model_id: string };
+type AllowlistedModel = Worker & {
+  structured_output: true;
+  context_window_tokens: number;
+  max_output_tokens: number;
+};
 type Settings = { timeout_ms: number; reasoning: string | null };
 type PartialConfiguration = {
   schema_version: 1;
@@ -132,7 +137,7 @@ export async function resolveAndRegisterConfiguration(input: {
   };
   const allowlist = json<{
     default_assignments: { planner: Worker; reviewer: Worker };
-    models: Worker[];
+    models: AllowlistedModel[];
   }>(control("frontierAllowlist").bytes);
   const budgetDefaults = json<Budgets>(control("budgetDefaults").bytes);
   const providerDefaults = json<{
@@ -210,6 +215,29 @@ export async function resolveAndRegisterConfiguration(input: {
       );
     }
   }
+  const capabilityFor = (worker: Worker) => {
+    const model = allowlist.models.find(
+      (candidate) =>
+        candidate.provider === worker.provider &&
+        candidate.model_id === worker.model_id,
+    );
+    if (
+      model === undefined ||
+      model.structured_output !== true ||
+      !Number.isInteger(model.context_window_tokens) ||
+      model.context_window_tokens < 1 ||
+      !Number.isInteger(model.max_output_tokens) ||
+      model.max_output_tokens < 1 ||
+      model.max_output_tokens > model.context_window_tokens
+    )
+      throw new TypeError("Provider model capability is invalid");
+    return {
+      canonicalModelId: model.model_id,
+      structuredOutput: true as const,
+      contextWindowTokens: model.context_window_tokens,
+      maxOutputTokens: model.max_output_tokens,
+    };
+  };
   if (
     planner.provider === reviewer.provider ||
     planner.model_id === reviewer.model_id
@@ -290,6 +318,10 @@ export async function resolveAndRegisterConfiguration(input: {
         timeoutMs: repairSettings.timeout_ms,
         reasoning: repairSettings.reasoning,
       },
+    },
+    modelCapabilities: {
+      planner: capabilityFor(planner),
+      reviewer: capabilityFor(reviewer),
     },
     recordingMode: resolved.recording_mode ?? "record",
     humanActorDisplayName:

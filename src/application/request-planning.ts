@@ -122,7 +122,20 @@ export async function requestPlanning(input: {
       input.configuration.hardCeilings,
     );
     const availableBudget = capacity.availableBudget;
-    const reservation = { ...availableBudget, calls: 1 };
+    const capability = input.configuration.modelCapabilities.planner;
+    const outputTokens = Math.min(
+      availableBudget.outputTokens,
+      capability.maxOutputTokens,
+    );
+    const reservation = {
+      calls: 1,
+      inputTokens: Math.min(
+        availableBudget.inputTokens,
+        capability.contextWindowTokens - outputTokens,
+      ),
+      outputTokens,
+      costUsdMicros: availableBudget.costUsdMicros,
+    };
     const result = transition(
       state,
       {

@@ -40,6 +40,20 @@ const configuration: ResolvedConfigurationSnapshot = {
     remediation: { timeoutMs: 30_000, reasoning: null },
     schemaRepair: { timeoutMs: 30_000, reasoning: null },
   },
+  modelCapabilities: {
+    planner: {
+      canonicalModelId: "planner",
+      structuredOutput: true,
+      contextWindowTokens: 100_000,
+      maxOutputTokens: 10_000,
+    },
+    reviewer: {
+      canonicalModelId: "reviewer",
+      structuredOutput: true,
+      contextWindowTokens: 100_000,
+      maxOutputTokens: 10_000,
+    },
+  },
   recordingMode: "record",
   humanActorDisplayName: "Test User",
   providerStorage: "minimize",

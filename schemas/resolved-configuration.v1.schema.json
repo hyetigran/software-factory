@@ -11,6 +11,7 @@
     "reviewerAssignment",
     "artifactHashes",
     "providerRequestSettings",
+    "modelCapabilities",
     "recordingMode",
     "humanActorDisplayName",
     "providerStorage",
@@ -82,6 +83,15 @@
         "schemaRepair": { "$ref": "#/$defs/setting" }
       }
     },
+    "modelCapabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["planner", "reviewer"],
+      "properties": {
+        "planner": { "$ref": "#/$defs/modelCapability" },
+        "reviewer": { "$ref": "#/$defs/modelCapability" }
+      }
+    },
     "recordingMode": { "enum": ["record", "strict_replay"] },
     "humanActorDisplayName": { "type": "string", "minLength": 1 },
     "providerStorage": { "const": "minimize" },
@@ -135,6 +145,22 @@
       "properties": {
         "timeoutMs": { "type": "integer", "minimum": 1 },
         "reasoning": { "type": ["string", "null"] }
+      }
+    },
+    "modelCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canonicalModelId",
+        "structuredOutput",
+        "contextWindowTokens",
+        "maxOutputTokens"
+      ],
+      "properties": {
+        "canonicalModelId": { "type": "string", "minLength": 1 },
+        "structuredOutput": { "const": true },
+        "contextWindowTokens": { "type": "integer", "minimum": 1 },
+        "maxOutputTokens": { "type": "integer", "minimum": 1 }
       }
     },
     "credential": {

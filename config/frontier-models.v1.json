@@ -7,11 +7,51 @@
     "reviewer": { "provider": "anthropic", "model_id": "claude-sonnet-5" }
   },
   "models": [
-    { "provider": "openai", "model_id": "gpt-5.6-sol", "tier": "frontier", "canonical_id_expected": true },
-    { "provider": "openai", "model_id": "gpt-5.6-terra", "tier": "frontier", "canonical_id_expected": true },
-    { "provider": "anthropic", "model_id": "claude-fable-5", "tier": "frontier", "canonical_id_expected": true },
-    { "provider": "anthropic", "model_id": "claude-opus-5", "tier": "frontier", "canonical_id_expected": true },
-    { "provider": "anthropic", "model_id": "claude-sonnet-5", "tier": "frontier", "canonical_id_expected": true }
+    {
+      "provider": "openai",
+      "model_id": "gpt-5.6-sol",
+      "tier": "frontier",
+      "canonical_id_expected": true,
+      "structured_output": true,
+      "context_window_tokens": 128000,
+      "max_output_tokens": 16000
+    },
+    {
+      "provider": "openai",
+      "model_id": "gpt-5.6-terra",
+      "tier": "frontier",
+      "canonical_id_expected": true,
+      "structured_output": true,
+      "context_window_tokens": 128000,
+      "max_output_tokens": 16000
+    },
+    {
+      "provider": "anthropic",
+      "model_id": "claude-fable-5",
+      "tier": "frontier",
+      "canonical_id_expected": true,
+      "structured_output": true,
+      "context_window_tokens": 128000,
+      "max_output_tokens": 16000
+    },
+    {
+      "provider": "anthropic",
+      "model_id": "claude-opus-5",
+      "tier": "frontier",
+      "canonical_id_expected": true,
+      "structured_output": true,
+      "context_window_tokens": 128000,
+      "max_output_tokens": 16000
+    },
+    {
+      "provider": "anthropic",
+      "model_id": "claude-sonnet-5",
+      "tier": "frontier",
+      "canonical_id_expected": true,
+      "structured_output": true,
+      "context_window_tokens": 128000,
+      "max_output_tokens": 16000
+    }
   ],
   "sources": [
     "https://platform.openai.com/pricing",

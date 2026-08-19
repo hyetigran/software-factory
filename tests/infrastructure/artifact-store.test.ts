@@ -197,6 +197,20 @@ describe("workspace and content-addressed artifact store", () => {
         remediation: { timeoutMs: 30_000, reasoning: null },
         schemaRepair: { timeoutMs: 30_000, reasoning: null },
       },
+      modelCapabilities: {
+        planner: {
+          canonicalModelId: "gpt-pinned",
+          structuredOutput: true as const,
+          contextWindowTokens: 100_000,
+          maxOutputTokens: 10_000,
+        },
+        reviewer: {
+          canonicalModelId: "claude-pinned",
+          structuredOutput: true as const,
+          contextWindowTokens: 100_000,
+          maxOutputTokens: 10_000,
+        },
+      },
       recordingMode: "record" as const,
       humanActorDisplayName: "Test User",
       providerStorage: "minimize" as const,
