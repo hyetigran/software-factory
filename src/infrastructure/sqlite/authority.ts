@@ -492,8 +492,18 @@ export class SqliteAuthority
         const {
           completion: completionRequest,
           persistRequest,
+          previousStateHash,
           result,
         } = accepted.toPersistenceData();
+        const authoritativeState = this.loadRun<object>(persistRequest.runId);
+        const authoritativeStateHash = createHash("sha256")
+          .update(canonicalJson(authoritativeState))
+          .digest("hex");
+        if (authoritativeStateHash !== previousStateHash) {
+          throw new TypeError(
+            "Provider completion was not derived from authoritative state",
+          );
+        }
         const completion = this.providerCompletion.complete(completionRequest);
         const combined = {
           ...result,

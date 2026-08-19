@@ -11,6 +11,8 @@ import {
   type PinnedRunPolicy,
   type ReviewAccepted,
 } from "../domain/index.js";
+import { canonicalJson } from "../domain/canonical-json.js";
+import { createHash } from "node:crypto";
 
 type ProviderOutcomeInput = PlanGenerated | ReviewAccepted;
 
@@ -23,6 +25,7 @@ export type CompleteProviderAttemptRequest = PersistTransitionRequest & {
 const acceptedProviderCompletionBrand = Symbol("AcceptedProviderCompletion");
 
 type AcceptedProviderCompletionData = {
+  previousStateHash: string;
   completion: CompleteProviderAttemptEvidence;
   persistRequest: PersistTransitionRequest;
   result: PersistableTransition<NonterminalRunState>;
@@ -60,6 +63,9 @@ export class AcceptedProviderCompletion {
     const result = transition(previousState, request.input, request.policy);
     const { validatedProjection, ...plainPersistRequest } = request;
     const copied = immutableCopy({
+      previousStateHash: createHash("sha256")
+        .update(canonicalJson(previousState))
+        .digest("hex"),
       completion: request.completion,
       persistRequest: {
         runId: request.runId,

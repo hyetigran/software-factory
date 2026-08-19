@@ -9,6 +9,7 @@ import type {
   CompleteProviderAttemptEvidence,
   CompletedCommandAttempt,
 } from "../../application/execution-port.js";
+import type { ProviderEvidence } from "../../application/provider-port.js";
 import type { StagedArtifactRegistration } from "../../application/artifact-port.js";
 import { AuthorityIntegrityError } from "./errors.js";
 
@@ -24,6 +25,57 @@ type Dependencies = {
 type Completion = CompletedCommandAttempt & {
   auditFacts: PersistableAuditFact[];
 };
+
+export function providerEvidenceMatchesRecording(
+  evidence: ProviderEvidence,
+  correlationId: string,
+  bytes: Uint8Array,
+): boolean {
+  try {
+    const recording = JSON.parse(Buffer.from(bytes).toString("utf8")) as {
+      endpoint?: unknown;
+      headers?: unknown;
+      preflight?: unknown;
+    };
+    const headers = recording.headers as Record<string, unknown> | undefined;
+    const recordedPreflight = recording.preflight as
+      | {
+          capability?: {
+            canonicalModelId?: unknown;
+            structuredOutput?: unknown;
+            contextWindowTokens?: unknown;
+            maxOutputTokens?: unknown;
+          };
+          inputTokens?: unknown;
+        }
+      | undefined;
+    return (
+      recording !== null &&
+      typeof recording === "object" &&
+      !Array.isArray(recording) &&
+      recording.endpoint === evidence.endpoint &&
+      headers?.["content-type"] === "application/json" &&
+      (headers["x-client-request-id"] === undefined ||
+        headers["x-client-request-id"] === correlationId) &&
+      Object.entries(evidence.behaviorHeaders).every(
+        ([key, value]) => headers?.[key] === value,
+      ) &&
+      recordedPreflight?.capability?.canonicalModelId ===
+        evidence.preflight.canonicalModelId &&
+      recordedPreflight.capability.structuredOutput ===
+        evidence.preflight.structuredOutput &&
+      recordedPreflight.capability.contextWindowTokens ===
+        evidence.preflight.contextWindowTokens &&
+      recordedPreflight.capability.maxOutputTokens ===
+        evidence.preflight.maxOutputTokens &&
+      recordedPreflight.inputTokens === evidence.preflight.inputTokens &&
+      (evidence.apiVersion === undefined ||
+        headers["anthropic-version"] === evidence.apiVersion)
+    );
+  } catch {
+    return false;
+  }
+}
 
 export class SqliteProviderCompletion {
   constructor(private readonly dependencies: Dependencies) {}
@@ -357,29 +409,11 @@ export class SqliteProviderCompletion {
     request: CompleteProviderAttemptEvidence,
     bytes: Uint8Array,
   ): boolean {
-    try {
-      const recording = JSON.parse(Buffer.from(bytes).toString("utf8")) as {
-        endpoint?: unknown;
-        headers?: unknown;
-        preflight?: unknown;
-      };
-      return (
-        recording !== null &&
-        typeof recording === "object" &&
-        !Array.isArray(recording) &&
-        recording.endpoint === request.providerEvidence.endpoint &&
-        JSON.stringify(recording.headers) ===
-          JSON.stringify(request.providerEvidence.behaviorHeaders) &&
-        JSON.stringify(recording.preflight) ===
-          JSON.stringify(request.providerEvidence.preflight) &&
-        (request.providerEvidence.apiVersion === undefined ||
-          (recording.headers as Record<string, unknown> | undefined)?.[
-            "anthropic-version"
-          ] === request.providerEvidence.apiVersion)
-      );
-    } catch {
-      return false;
-    }
+    return providerEvidenceMatchesRecording(
+      request.providerEvidence,
+      request.correlationId,
+      bytes,
+    );
   }
 
   private loadReservation(attemptId: string) {

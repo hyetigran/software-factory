@@ -15,6 +15,7 @@ import type {
   HttpTransport,
   ProviderPreflight,
 } from "../../src/infrastructure/providers/transport.js";
+import { providerEvidenceMatchesRecording } from "../../src/infrastructure/sqlite/provider-completion.js";
 
 const inputContent = '{"requirements":["traceability"]}';
 const systemPrompt = "Produce a plan.";
@@ -96,6 +97,14 @@ describe("provider adapter contract", () => {
     expect(send).not.toHaveBeenCalled();
     const result = await prepared.dispatch();
 
+    expect(
+      providerEvidenceMatchesRecording(
+        result.evidence,
+        baseRequest.correlationId,
+        prepared.redactedRequestBytes,
+      ),
+    ).toBe(true);
+
     expect(result).toMatchObject({
       kind: "completed",
       structured: { plan: "ok" },
@@ -151,6 +160,14 @@ describe("provider adapter contract", () => {
     });
     expect(send).not.toHaveBeenCalled();
     const result = await prepared.dispatch();
+
+    expect(
+      providerEvidenceMatchesRecording(
+        result.evidence,
+        baseRequest.correlationId,
+        prepared.redactedRequestBytes,
+      ),
+    ).toBe(true);
 
     expect(result).toMatchObject({
       kind: "completed",
