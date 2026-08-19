@@ -1,5 +1,5 @@
 import type { ProviderRequestPolicy } from "../domain/index.js";
-import type { CompleteProviderAttemptEvidence } from "./execution-port.js";
+import type { AcceptedProviderCompletion } from "./complete-provider-attempt.js";
 
 export type PersistableCommand = {
   commandId: string;
@@ -460,9 +460,7 @@ export class ValidatedProjection {
 export interface AuthorityTransaction {
   loadRun<TState extends object>(runId: string): TState | null;
   persistProviderCompletion<TState extends object>(
-    completion: CompleteProviderAttemptEvidence,
-    request: PersistTransitionRequest,
-    result: PersistableTransition<TState>,
+    completion: AcceptedProviderCompletion,
   ): PersistableTransition<TState>;
   persist<TState extends object>(
     request: PersistTransitionRequest,

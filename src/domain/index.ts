@@ -499,6 +499,8 @@ export type AcceptedAttemptResolution = {
   requestContentHash: string;
   responseArtifactId: string;
   responseContentHash: string;
+  rawResponseArtifactId: string;
+  rawResponseContentHash: string;
   nativeUsageArtifactId: string;
   nativeUsageContentHash: string;
 };
@@ -2424,6 +2426,8 @@ function acceptPlanForBaseline(
       /^[a-f0-9]{64}$/u.test(input.acceptedAttempt.requestContentHash) &&
       input.acceptedAttempt.responseArtifactId.length > 0 &&
       /^[a-f0-9]{64}$/u.test(input.acceptedAttempt.responseContentHash) &&
+      input.acceptedAttempt.rawResponseArtifactId.length > 0 &&
+      /^[a-f0-9]{64}$/u.test(input.acceptedAttempt.rawResponseContentHash) &&
       input.acceptedAttempt.nativeUsageArtifactId.length > 0 &&
       /^[a-f0-9]{64}$/u.test(input.acceptedAttempt.nativeUsageContentHash));
 
@@ -3125,6 +3129,8 @@ function acceptBaselineReview(
       input.reviewRequestArtifact.contentHash &&
     acceptedAttempt.responseArtifactId === input.reviewArtifact.artifactId &&
     acceptedAttempt.responseContentHash === input.reviewArtifact.contentHash &&
+    acceptedAttempt.rawResponseArtifactId.length > 0 &&
+    /^[a-f0-9]{64}$/u.test(acceptedAttempt.rawResponseContentHash) &&
     acceptedAttempt.nativeUsageArtifactId ===
       input.providerUsageArtifact.artifactId &&
     acceptedAttempt.nativeUsageContentHash ===

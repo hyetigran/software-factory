@@ -22,13 +22,13 @@ import type {
   ValidatedProjectionData,
 } from "../../application/authority-port.js";
 import type { PreparedProviderRequestRegistrationPort } from "../../application/execute-provider-call.js";
+import type { AcceptedProviderCompletion } from "../../application/complete-provider-attempt.js";
 import type { ProviderRequest } from "../../application/provider-port.js";
 import type {
   BeginAttemptRequest,
   BeginAttemptOutcome,
   CommandExecutionPort,
   CompleteAttemptRequest,
-  CompleteProviderAttemptEvidence,
   CompletedCommandAttempt,
   StartedCommandAttempt,
 } from "../../application/execution-port.js";
@@ -157,15 +157,9 @@ export class SqliteAuthority
       database,
       now,
       verifyStagedArtifact: (artifact) => this.verifyStagedArtifact(artifact),
-      readStagedArtifactBytes: (artifact) => {
-        this.verifyStagedArtifact(artifact);
-        if (this.artifactStore === undefined) {
-          throw new AuthorityIntegrityError("Artifact store is unavailable");
-        }
-        return readFileSync(
-          join(this.artifactStore.workspace.objects, artifact.contentHash),
-        );
-      },
+      readStagedArtifactBytes: (artifact) =>
+        this.readVerifiedStagedArtifact(artifact),
+      readObjectBytes: (contentHash) => this.readVerifiedObject(contentHash),
       persistArtifactMetadata: (artifact) =>
         this.persistArtifactMetadata(artifact),
     });
@@ -489,21 +483,21 @@ export class SqliteAuthority
         return this.loadRun<TState>(runId);
       },
       persistProviderCompletion: <TState extends object>(
-        completionRequest: CompleteProviderAttemptEvidence,
-        persistRequest: PersistTransitionRequest,
-        transitionResult: PersistableTransition<TState>,
+        accepted: AcceptedProviderCompletion,
       ): PersistableTransition<TState> => {
         assertActive();
         if (persisted) {
           throw new Error("Authority transaction accepts exactly one input");
         }
+        const {
+          completion: completionRequest,
+          persistRequest,
+          result,
+        } = accepted.toPersistenceData();
         const completion = this.providerCompletion.complete(completionRequest);
         const combined = {
-          ...transitionResult,
-          auditFacts: [
-            ...completion.auditFacts,
-            ...transitionResult.auditFacts,
-          ],
+          ...result,
+          auditFacts: [...completion.auditFacts, ...result.auditFacts],
         };
         const stagedArtifacts = [
           ...(persistRequest.stagedArtifacts ?? []),
@@ -519,7 +513,7 @@ export class SqliteAuthority
           .prepare("DELETE FROM mutation_lease WHERE singleton = 1")
           .run();
         persisted = true;
-        return combined;
+        return combined as PersistableTransition<TState>;
       },
       persist: <TState extends object>(
         request: PersistTransitionRequest,
@@ -1174,6 +1168,12 @@ export class SqliteAuthority
   }
 
   private verifyStagedArtifact(artifact: StagedArtifactRegistration): void {
+    void this.readVerifiedStagedArtifact(artifact);
+  }
+
+  private readVerifiedStagedArtifact(
+    artifact: StagedArtifactRegistration,
+  ): Buffer {
     if (
       this.artifactStore === undefined ||
       artifact.schemaVersion !== 1 ||
@@ -1203,12 +1203,41 @@ export class SqliteAuthority
           `Staged artifact body is invalid: ${artifact.artifactId}`,
         );
       }
+      return bytes;
     } catch (error) {
       if (error instanceof AuthorityIntegrityError) throw error;
       throw new AuthorityIntegrityError(
         `Staged artifact body is unavailable: ${artifact.artifactId}`,
         { cause: error },
       );
+    } finally {
+      if (handle !== undefined) closeSync(handle);
+    }
+  }
+
+  private readVerifiedObject(contentHash: string): Buffer {
+    if (
+      this.artifactStore === undefined ||
+      !/^[a-f0-9]{64}$/u.test(contentHash)
+    ) {
+      throw new AuthorityIntegrityError("Artifact object identity is invalid");
+    }
+    let handle: number | undefined;
+    try {
+      handle = openSync(
+        join(this.artifactStore.workspace.objects, contentHash),
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+      const bytes = readFileSync(handle);
+      if (createHash("sha256").update(bytes).digest("hex") !== contentHash) {
+        throw new AuthorityIntegrityError("Artifact object content is invalid");
+      }
+      return bytes;
+    } catch (error) {
+      if (error instanceof AuthorityIntegrityError) throw error;
+      throw new AuthorityIntegrityError("Artifact object is unavailable", {
+        cause: error,
+      });
     } finally {
       if (handle !== undefined) closeSync(handle);
     }

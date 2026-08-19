@@ -20,6 +20,80 @@ export type CompleteProviderAttemptRequest = PersistTransitionRequest & {
   policy: PinnedRunPolicy;
 };
 
+const acceptedProviderCompletionBrand = Symbol("AcceptedProviderCompletion");
+
+type AcceptedProviderCompletionData = {
+  completion: CompleteProviderAttemptEvidence;
+  persistRequest: PersistTransitionRequest;
+  result: PersistableTransition<NonterminalRunState>;
+};
+
+function immutableCopy<T>(value: T): T {
+  const copy = structuredClone(value);
+  const freeze = (nested: unknown): void => {
+    if (nested === null || typeof nested !== "object") return;
+    Object.freeze(nested);
+    Object.values(nested).forEach(freeze);
+  };
+  freeze(copy);
+  return copy;
+}
+
+export class AcceptedProviderCompletion {
+  readonly [acceptedProviderCompletionBrand] = true;
+
+  private constructor(private readonly value: AcceptedProviderCompletionData) {
+    Object.freeze(value.persistRequest);
+    Object.freeze(value);
+    Object.freeze(this);
+  }
+
+  static fromDomain(
+    previousState: NonterminalRunState | null,
+    request: CompleteProviderAttemptRequest,
+  ): AcceptedProviderCompletion {
+    if (!outcomeMatchesAttempt(request.input, request.completion)) {
+      throw new TypeError(
+        "Provider outcome does not match its physical attempt",
+      );
+    }
+    const result = transition(previousState, request.input, request.policy);
+    const { validatedProjection, ...plainPersistRequest } = request;
+    const copied = immutableCopy({
+      completion: request.completion,
+      persistRequest: {
+        runId: request.runId,
+        expectedStateVersion: request.expectedStateVersion,
+        ...(request.causationId === undefined
+          ? {}
+          : { causationId: request.causationId }),
+        ...(request.correlationId === undefined
+          ? {}
+          : { correlationId: request.correlationId }),
+        ...(request.stagedArtifacts === undefined
+          ? {}
+          : { stagedArtifacts: request.stagedArtifacts }),
+      },
+      result,
+    });
+    void plainPersistRequest;
+    return new AcceptedProviderCompletion({
+      ...copied,
+      persistRequest: {
+        ...copied.persistRequest,
+        ...(validatedProjection === undefined ? {} : { validatedProjection }),
+      },
+    });
+  }
+
+  toPersistenceData(): AcceptedProviderCompletionData {
+    if (this[acceptedProviderCompletionBrand] !== true) {
+      throw new TypeError("Provider completion capability is invalid");
+    }
+    return this.value;
+  }
+}
+
 function outcomeMatchesAttempt(
   input: ProviderOutcomeInput,
   completion: CompleteProviderAttemptEvidence,
@@ -38,8 +112,12 @@ function outcomeMatchesAttempt(
       input.acceptedAttempt.requestContentHash ===
         completion.requestContentHash &&
       input.acceptedAttempt.responseArtifactId ===
-        completion.rawResponseArtifact.artifactId &&
+        completion.outputArtifact.artifactId &&
       input.acceptedAttempt.responseContentHash ===
+        completion.outputArtifact.contentHash &&
+      input.acceptedAttempt.rawResponseArtifactId ===
+        completion.rawResponseArtifact.artifactId &&
+      input.acceptedAttempt.rawResponseContentHash ===
         completion.rawResponseArtifact.contentHash &&
       input.acceptedAttempt.nativeUsageArtifactId ===
         completion.nativeUsageArtifact.artifactId &&
@@ -60,6 +138,10 @@ function outcomeMatchesAttempt(
         completion.outputArtifact.artifactId &&
       input.acceptedAttempt.responseContentHash ===
         completion.outputArtifact.contentHash &&
+      input.acceptedAttempt.rawResponseArtifactId ===
+        completion.rawResponseArtifact.artifactId &&
+      input.acceptedAttempt.rawResponseContentHash ===
+        completion.rawResponseArtifact.contentHash &&
       input.acceptedAttempt.nativeUsageArtifactId ===
         completion.nativeUsageArtifact.artifactId &&
       input.acceptedAttempt.nativeUsageContentHash ===
@@ -73,33 +155,12 @@ export async function completeProviderAttempt(
   authority: AuthorityPort,
   request: CompleteProviderAttemptRequest,
 ): Promise<PersistableTransition<NonterminalRunState>> {
-  if (!outcomeMatchesAttempt(request.input, request.completion)) {
-    throw new TypeError("Provider outcome does not match its physical attempt");
-  }
   return authority.transaction((transaction) => {
     const previousState = transaction.loadRun<NonterminalRunState>(
       request.runId,
     );
-    const result = transition(previousState, request.input, request.policy);
-    return transaction.persistProviderCompletion<NonterminalRunState>(
-      request.completion,
-      {
-        runId: request.runId,
-        expectedStateVersion: request.expectedStateVersion,
-        ...(request.causationId === undefined
-          ? {}
-          : { causationId: request.causationId }),
-        ...(request.correlationId === undefined
-          ? {}
-          : { correlationId: request.correlationId }),
-        ...(request.validatedProjection === undefined
-          ? {}
-          : { validatedProjection: request.validatedProjection }),
-        ...(request.stagedArtifacts === undefined
-          ? {}
-          : { stagedArtifacts: request.stagedArtifacts }),
-      },
-      result,
+    return transaction.persistProviderCompletion(
+      AcceptedProviderCompletion.fromDomain(previousState, request),
     );
   });
 }

@@ -28,7 +28,7 @@ export type ArtifactProvenance =
     }
   | {
       method: "application_generated";
-      purpose: "provider_request";
+      purpose: "provider_request" | "structured_provider_output";
       sourceArtifactIds: string[];
       commandId: string;
       attemptId: string;
@@ -132,7 +132,8 @@ export function artifactRegistrationIsValid(
             "commandId",
             "attemptId",
           ]) &&
-          provenance.purpose === "provider_request" &&
+          (provenance.purpose === "provider_request" ||
+            provenance.purpose === "structured_provider_output") &&
           identifiers(provenance.sourceArtifactIds) &&
           provenance.commandId.trim().length > 0 &&
           provenance.attemptId.trim().length > 0

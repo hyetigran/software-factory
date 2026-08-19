@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { AuthorityPort } from "../../src/application/authority-port.js";
+import type {
+  AuthorityPort,
+  PersistableTransition,
+} from "../../src/application/authority-port.js";
 import { completeProviderAttempt } from "../../src/application/complete-provider-attempt.js";
+import type { AcceptedProviderCompletion } from "../../src/application/complete-provider-attempt.js";
 
 import {
   transition,
@@ -295,8 +299,10 @@ function planGeneratedInput(): PlanGenerated {
       attemptId: "attempt_generate_plan_01JTEST",
       requestArtifactId: "artifact_plan_request_01JTEST",
       requestContentHash: "b".repeat(64),
-      responseArtifactId: "artifact_plan_raw_response_01JTEST",
-      responseContentHash: "c".repeat(64),
+      responseArtifactId: "artifact_plan_01JTEST",
+      responseContentHash: planContentHash,
+      rawResponseArtifactId: "artifact_plan_raw_response_01JTEST",
+      rawResponseContentHash: "c".repeat(64),
       nativeUsageArtifactId: "artifact_plan_usage_01JTEST",
       nativeUsageContentHash: "d".repeat(64),
     },
@@ -472,6 +478,8 @@ function reviewAcceptedInput(blockingFindingIds: string[]): ReviewAccepted {
       requestContentHash: "0".repeat(64),
       responseArtifactId: "artifact_review_baseline_01JTEST",
       responseContentHash: reviewContentHash,
+      rawResponseArtifactId: "artifact_review_raw_response_01JTEST",
+      rawResponseContentHash: "a".repeat(64),
       nativeUsageArtifactId: "artifact_review_usage_01JTEST",
       nativeUsageContentHash: "3".repeat(64),
     },
@@ -3460,9 +3468,12 @@ describe("transition", () => {
           work({
             loadRun: <TState extends object>() => state as unknown as TState,
             persist: vi.fn(),
-            persistProviderCompletion: (_completion, _request, result) => {
+            persistProviderCompletion: <TState extends object>(
+              completion: AcceptedProviderCompletion,
+            ) => {
               persistedProviderCompletion = true;
-              return result;
+              return completion.toPersistenceData()
+                .result as unknown as PersistableTransition<TState>;
             },
           }),
         ),
@@ -3505,8 +3516,8 @@ describe("transition", () => {
           "provider_response",
         ),
         rawResponseArtifact: artifact(
-          input.acceptedAttempt.responseArtifactId,
-          input.acceptedAttempt.responseContentHash,
+          input.acceptedAttempt.rawResponseArtifactId,
+          input.acceptedAttempt.rawResponseContentHash,
           "provider_response",
         ),
         nativeUsageArtifact: artifact(

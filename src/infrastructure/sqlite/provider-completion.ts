@@ -17,6 +17,7 @@ type Dependencies = {
   now: () => string;
   verifyStagedArtifact(artifact: StagedArtifactRegistration): void;
   readStagedArtifactBytes(artifact: StagedArtifactRegistration): Uint8Array;
+  readObjectBytes(contentHash: string): Uint8Array;
   persistArtifactMetadata(artifact: StagedArtifactRegistration): void;
 };
 
@@ -94,32 +95,28 @@ export class SqliteProviderCompletion {
     ) {
       throw new TypeError("Provider completion evidence is invalid");
     }
-    this.assertArtifact(
-      request.outputArtifact,
-      request,
-      "provider_response",
-      row.request_artifact_id,
-    );
-    this.assertArtifact(
+    this.assertStructuredOutput(request.outputArtifact, request, command);
+    this.assertProviderArtifact(
       request.rawResponseArtifact,
       request,
       "provider_response",
       row.request_artifact_id,
     );
-    this.assertArtifact(
+    this.assertProviderArtifact(
       request.nativeUsageArtifact,
       request,
       "native_usage",
       row.request_artifact_id,
     );
     this.dependencies.verifyStagedArtifact(request.outputArtifact);
-    this.dependencies.verifyStagedArtifact(request.rawResponseArtifact);
-    this.dependencies.verifyStagedArtifact(request.nativeUsageArtifact);
     const rawResponseBytes = this.dependencies.readStagedArtifactBytes(
       request.rawResponseArtifact,
     );
     const nativeUsageBytes = this.dependencies.readStagedArtifactBytes(
       request.nativeUsageArtifact,
+    );
+    const recordedRequestBytes = this.dependencies.readObjectBytes(
+      row.request_content_hash,
     );
     this.dependencies.persistArtifactMetadata(request.outputArtifact);
     this.dependencies.persistArtifactMetadata(request.rawResponseArtifact);
@@ -133,9 +130,10 @@ export class SqliteProviderCompletion {
       request.actualUsage.calls > reservation.calls ||
       request.actualUsage.inputTokens > reservation.inputTokens ||
       request.actualUsage.outputTokens > reservation.outputTokens ||
-      request.actualUsage.costUsdMicros > reservation.costUsdMicros ||
+      request.actualUsage.costUsdMicros !== reservation.costUsdMicros ||
       !this.usageMatchesNative(request, nativeUsageBytes) ||
-      !this.responseMatchesEvidence(request, rawResponseBytes)
+      !this.responseMatchesEvidence(request, rawResponseBytes) ||
+      !this.evidenceMatchesRecording(request, recordedRequestBytes)
     ) {
       throw new TypeError("Provider usage exceeds the reserved maximum");
     }
@@ -202,6 +200,7 @@ export class SqliteProviderCompletion {
             attemptId: request.attemptId,
             reserved: reservation,
             actual: request.actualUsage,
+            costBasis: "reserved_maximum_no_pinned_price_schedule",
           },
         },
       ],
@@ -242,14 +241,16 @@ export class SqliteProviderCompletion {
         typeof response === "object" &&
         !Array.isArray(response) &&
         response.id === request.providerEvidence.providerResponseId &&
-        response.model === request.providerEvidence.returnedModel
+        response.model === request.providerEvidence.returnedModel &&
+        (response.status === request.providerEvidence.completionStatus ||
+          response.stop_reason === request.providerEvidence.completionStatus)
       );
     } catch {
       return false;
     }
   }
 
-  private assertArtifact(
+  private assertProviderArtifact(
     artifact: StagedArtifactRegistration,
     request: CompleteProviderAttemptEvidence,
     kind: "provider_response" | "native_usage",
@@ -268,18 +269,77 @@ export class SqliteProviderCompletion {
     }
   }
 
+  private assertStructuredOutput(
+    artifact: StagedArtifactRegistration,
+    request: CompleteProviderAttemptEvidence,
+    command: PersistableCommand,
+  ): void {
+    const provenance = artifact.provenance;
+    const schemaArtifactId =
+      command.providerRequestPolicy?.outputSchemaArtifactId;
+    if (
+      artifact.kind !== "provider_response" ||
+      artifact.createdBy !== request.ownerProcess ||
+      provenance.method !== "application_generated" ||
+      provenance.purpose !== "structured_provider_output" ||
+      provenance.commandId !== request.commandId ||
+      provenance.attemptId !== request.attemptId ||
+      schemaArtifactId === undefined ||
+      new Set(provenance.sourceArtifactIds).size !== 2 ||
+      !provenance.sourceArtifactIds.includes(
+        request.rawResponseArtifact.artifactId,
+      ) ||
+      !provenance.sourceArtifactIds.includes(schemaArtifactId)
+    ) {
+      throw new TypeError("Structured provider output provenance is invalid");
+    }
+  }
+
   private providerEvidenceIsValid(
     request: CompleteProviderAttemptEvidence,
     command: PersistableCommand,
   ): boolean {
     const evidence = request.providerEvidence;
     const preflight = evidence.preflight;
+    const optionalKeys = [
+      ...(evidence.returnedModel === undefined ? [] : ["returnedModel"]),
+      ...(evidence.apiVersion === undefined ? [] : ["apiVersion"]),
+      ...(evidence.providerRequestId === undefined
+        ? []
+        : ["providerRequestId"]),
+      ...(evidence.providerResponseId === undefined
+        ? []
+        : ["providerResponseId"]),
+      ...(evidence.completionStatus === undefined ? [] : ["completionStatus"]),
+    ];
+    const exactKeys = (value: object, keys: string[]): boolean =>
+      Object.keys(value).sort().join(",") === [...keys].sort().join(",");
     return (
+      exactKeys(evidence, [
+        "requestedModel",
+        "endpoint",
+        "behaviorHeaders",
+        "correlationId",
+        "preflight",
+        ...optionalKeys,
+      ]) &&
+      exactKeys(preflight, [
+        "canonicalModelId",
+        "structuredOutput",
+        "contextWindowTokens",
+        "maxOutputTokens",
+        "inputTokens",
+      ]) &&
       evidence.requestedModel === command.modelId &&
       evidence.returnedModel === command.modelId &&
       evidence.correlationId === request.correlationId &&
       evidence.endpoint.trim().length > 0 &&
       (evidence.providerResponseId?.trim().length ?? 0) > 0 &&
+      (evidence.completionStatus?.trim().length ?? 0) > 0 &&
+      (evidence.apiVersion === undefined ||
+        evidence.apiVersion.trim().length > 0) &&
+      (evidence.providerRequestId === undefined ||
+        evidence.providerRequestId.trim().length > 0) &&
       preflight.structuredOutput === true &&
       preflight.canonicalModelId === command.modelId &&
       [
@@ -291,6 +351,35 @@ export class SqliteProviderCompletion {
         (value) => typeof value === "string",
       )
     );
+  }
+
+  private evidenceMatchesRecording(
+    request: CompleteProviderAttemptEvidence,
+    bytes: Uint8Array,
+  ): boolean {
+    try {
+      const recording = JSON.parse(Buffer.from(bytes).toString("utf8")) as {
+        endpoint?: unknown;
+        headers?: unknown;
+        preflight?: unknown;
+      };
+      return (
+        recording !== null &&
+        typeof recording === "object" &&
+        !Array.isArray(recording) &&
+        recording.endpoint === request.providerEvidence.endpoint &&
+        JSON.stringify(recording.headers) ===
+          JSON.stringify(request.providerEvidence.behaviorHeaders) &&
+        JSON.stringify(recording.preflight) ===
+          JSON.stringify(request.providerEvidence.preflight) &&
+        (request.providerEvidence.apiVersion === undefined ||
+          (recording.headers as Record<string, unknown> | undefined)?.[
+            "anthropic-version"
+          ] === request.providerEvidence.apiVersion)
+      );
+    } catch {
+      return false;
+    }
   }
 
   private loadReservation(attemptId: string) {
