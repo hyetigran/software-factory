@@ -14,6 +14,8 @@ import {
   type ReviewAccepted,
   type RunStarted,
   type SourceExclusionApproved,
+  type ExternalEditDetected,
+  type ProjectionRestored,
 } from "../../src/domain/index.js";
 import { createProvisionalBaselineExport } from "../../src/reporting/provisional-baseline.js";
 
@@ -3290,6 +3292,67 @@ describe("transition", () => {
             modelId: "different-pinned-reviewer",
           },
         },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("blocks on a preserved external edit and unblocks only on the verified render", () => {
+    const started = transition(null, runStartedInput(), pinnedPolicy).nextState;
+    const edit: ExternalEditDetected = {
+      type: "ExternalEditDetected",
+      runId: started.runId,
+      expectedStateVersion: started.stateVersion,
+      projectionKind: "plan",
+      expectedContentHash: planContentHash,
+      editedArtifact: {
+        artifactId: "artifact_external_edit_01JTEST",
+        contentHash: reviewContentHash,
+        verified: true,
+      },
+      auditChainVerified: true,
+      databaseIntegrityVerified: true,
+      schemaCompatible: true,
+      mutationLeaseAvailable: true,
+      actor: {
+        kind: "system",
+        component: "projection-watch",
+        version: "0.0.0",
+      },
+    };
+    const blocked = transition(started, edit, pinnedPolicy);
+    expect(blocked.nextState).toMatchObject({
+      stateVersion: 2,
+      blockedReason: "external_projection_edit",
+      projectionBlock: { projectionKind: "plan" },
+    });
+    expect(blocked.auditFacts[0]?.type).toBe("external_edit_detected");
+
+    const restore: ProjectionRestored = {
+      type: "ProjectionRestored",
+      runId: started.runId,
+      expectedStateVersion: 2,
+      restoredContentHash: planContentHash,
+      auditChainVerified: true,
+      databaseIntegrityVerified: true,
+      schemaCompatible: true,
+      mutationLeaseAvailable: true,
+      actor: {
+        kind: "system",
+        component: "projection-watch",
+        version: "0.0.0",
+      },
+    };
+    expect(
+      transition(blocked.nextState, restore, pinnedPolicy).nextState,
+    ).toMatchObject({
+      stateVersion: 3,
+      blockedReason: null,
+    });
+    expect(() =>
+      transition(
+        blocked.nextState,
+        { ...restore, restoredContentHash: sourceContentHash },
+        pinnedPolicy,
       ),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });

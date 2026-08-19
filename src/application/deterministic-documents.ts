@@ -91,6 +91,8 @@ function validRange(range: ByteRange, sourceLength: number): boolean {
 export function validateLedger(input: {
   ledgerBytes: Uint8Array;
   sourceBytes: Uint8Array;
+  expectedSourceArtifactId: string;
+  approvedExclusionIds: string[];
 }): LedgerValidationReport {
   const parsed: unknown = JSON.parse(
     Buffer.from(input.ledgerBytes).toString("utf8"),
@@ -99,16 +101,44 @@ export function validateLedger(input: {
   const ledger = parsed as Record<string, unknown>;
   const requirements = ledger.requirements as Array<Record<string, unknown>>;
   const exclusions = ledger.source_exclusions as Array<Record<string, unknown>>;
+  if (ledger.source_artifact_id !== input.expectedSourceArtifactId) {
+    throw new TypeError(
+      "Ledger source identity does not match the immutable source",
+    );
+  }
   const ids = requirements.map(({ requirement_id }) => String(requirement_id));
   const identityValid = new Set(ids).size === ids.length;
   const knownIds = new Set(ids);
   const lineageValid = requirements.every(
     ({ lineage_roots, predecessor_ids }) =>
-      [...(lineage_roots as string[]), ...(predecessor_ids as string[])].every(
-        (id) => knownIds.has(id),
-      ),
+      [
+        ...(lineage_roots as string[]),
+        ...((predecessor_ids as string[] | undefined) ?? []),
+      ].every((id) => knownIds.has(id)),
   );
-  if (!identityValid || !lineageValid) {
+  const predecessors = new Map(
+    requirements.map((requirement) => [
+      String(requirement.requirement_id),
+      (requirement.predecessor_ids as string[] | undefined) ?? [],
+    ]),
+  );
+  const lineageAcyclic = [...predecessors.keys()].every((root) => {
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    const visit = (id: string): boolean => {
+      if (visiting.has(id)) return false;
+      if (visited.has(id)) return true;
+      visiting.add(id);
+      for (const predecessor of predecessors.get(id) ?? []) {
+        if (!visit(predecessor)) return false;
+      }
+      visiting.delete(id);
+      visited.add(id);
+      return true;
+    };
+    return visit(root);
+  });
+  if (!identityValid || !lineageValid || !lineageAcyclic) {
     throw new TypeError("Ledger identities and lineage are invalid");
   }
   const coveredRanges = requirements
@@ -119,6 +149,17 @@ export function validateLedger(input: {
         endByte: Number(range.end_byte),
       })),
     );
+  const approvedIds = new Set(input.approvedExclusionIds);
+  if (
+    approvedIds.size !== input.approvedExclusionIds.length ||
+    exclusions.some(
+      ({ exclusion_id }) => !approvedIds.has(String(exclusion_id)),
+    )
+  ) {
+    throw new TypeError(
+      "Ledger source exclusion lacks authoritative human approval",
+    );
+  }
   const excludedRanges = exclusions.map(({ source_range }) => {
     const range = source_range as Record<string, unknown>;
     return {

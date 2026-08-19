@@ -73,6 +73,8 @@ describe("deterministic documents", () => {
     const valid = validateLedger({
       ledgerBytes: Buffer.from(canonicalJson(ledger)),
       sourceBytes: source,
+      expectedSourceArtifactId: "artifact_source",
+      approvedExclusionIds: [],
     });
     expect(valid.coverageValid).toBe(true);
     expect(valid.uncoveredRanges).toEqual([]);
@@ -83,8 +85,68 @@ describe("deterministic documents", () => {
       validateLedger({
         ledgerBytes: Buffer.from(canonicalJson(partial)),
         sourceBytes: source,
+        expectedSourceArtifactId: "artifact_source",
+        approvedExclusionIds: [],
       }).uncoveredRanges,
     ).toEqual([{ startByte: 5, endByte: source.byteLength }]);
+  });
+
+  it("binds source identity, approved exclusions, and acyclic lineage", () => {
+    const withoutOptionalPredecessors = JSON.parse(canonicalJson(ledger)) as {
+      requirements: Array<Record<string, unknown>>;
+    };
+    delete withoutOptionalPredecessors.requirements[0]!.predecessor_ids;
+    expect(() =>
+      validateLedger({
+        ledgerBytes: Buffer.from(canonicalJson(withoutOptionalPredecessors)),
+        sourceBytes: source,
+        expectedSourceArtifactId: "artifact_source",
+        approvedExclusionIds: [],
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      validateLedger({
+        ledgerBytes: Buffer.from(canonicalJson(ledger)),
+        sourceBytes: source,
+        expectedSourceArtifactId: "artifact_other",
+        approvedExclusionIds: [],
+      }),
+    ).toThrow("source identity");
+
+    const excluded = JSON.parse(canonicalJson(ledger)) as Record<
+      string,
+      unknown
+    >;
+    excluded.requirements = [];
+    excluded.source_exclusions = [
+      {
+        exclusion_id: "exclusion_all",
+        source_range: { start_byte: 0, end_byte: source.byteLength },
+        reason: "Not relevant",
+      },
+    ];
+    expect(() =>
+      validateLedger({
+        ledgerBytes: Buffer.from(canonicalJson(excluded)),
+        sourceBytes: source,
+        expectedSourceArtifactId: "artifact_source",
+        approvedExclusionIds: [],
+      }),
+    ).toThrow("human approval");
+
+    const cyclic = JSON.parse(canonicalJson(ledger)) as {
+      requirements: Array<Record<string, unknown>>;
+    };
+    cyclic.requirements[0]!.predecessor_ids = ["requirement_api"];
+    expect(() =>
+      validateLedger({
+        ledgerBytes: Buffer.from(canonicalJson(cyclic)),
+        sourceBytes: source,
+        expectedSourceArtifactId: "artifact_source",
+        approvedExclusionIds: [],
+      }),
+    ).toThrow("lineage");
   });
 
   it("renders byte-stable anchored ledger and plan Markdown", () => {

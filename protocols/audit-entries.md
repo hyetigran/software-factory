@@ -65,6 +65,7 @@ Evidence references use stable artifact, requirement, section, finding, observat
 | `planning_requested` | plan purpose and Planner assignment |
 | `plan_version_accepted` | plan artifact, section transition map, provenance |
 | `external_edit_detected` | expected and observed hashes, preserved artifact |
+| `projection_restored` | projection kind, verified render hash, restored working hash |
 | `review_accepted` | review artifact, cycle, policy, model, observation IDs |
 | `finding_created` | finding ID and initial observation |
 | `finding_transitioned` | prior and next status, controlling evidence |

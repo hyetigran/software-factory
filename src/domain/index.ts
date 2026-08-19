@@ -52,7 +52,12 @@ type RunStateBase = {
   configurationArtifactId: string;
   configurationContentHash: string;
   policyHash: string;
-  blockedReason: null;
+  blockedReason: string | null;
+  projectionBlock?: {
+    projectionKind: "ledger" | "plan";
+    expectedContentHash: string;
+    editedArtifact: Omit<ArtifactEvidenceReference, "kind">;
+  };
   sourceExclusions?: SourceExclusion[];
   reviewIndependenceOverride?: ReviewIndependenceOverride;
 };
@@ -541,6 +546,32 @@ export type ProviderOutcomeFailed = {
   actor: SystemActor;
 };
 
+export type ExternalEditDetected = {
+  type: "ExternalEditDetected";
+  runId: string;
+  expectedStateVersion: number;
+  projectionKind: "ledger" | "plan";
+  expectedContentHash: string;
+  editedArtifact: VerifiedArtifactInput;
+  auditChainVerified: boolean;
+  databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
+  actor: SystemActor;
+};
+
+export type ProjectionRestored = {
+  type: "ProjectionRestored";
+  runId: string;
+  expectedStateVersion: number;
+  restoredContentHash: string;
+  auditChainVerified: boolean;
+  databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
+  actor: SystemActor;
+};
+
 export type BudgetReservation = {
   calls: number;
   inputTokens: number;
@@ -985,6 +1016,18 @@ export type IndependenceOverrideGrantedFact = {
   };
 };
 
+export type ExternalEditFact = {
+  type: "external_edit_detected" | "projection_restored";
+  actor: SystemActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    projectionKind: "ledger" | "plan";
+    expectedContentHash: string;
+    actualContentHash: string;
+  };
+};
+
 export type TransitionResult = {
   nextState: NonterminalRunState;
   commands: Array<
@@ -1010,6 +1053,7 @@ export type TransitionResult = {
     | ReviewAcceptedFact
     | FindingCreatedFact
     | IndependenceOverrideGrantedFact
+    | ExternalEditFact
     | CommandPlannedFact
   >;
 };
@@ -1157,7 +1201,123 @@ type NonterminalDomainInput =
   | PlanGenerated
   | PlanSubmitted
   | ReviewAccepted
-  | IndependenceOverrideGranted;
+  | IndependenceOverrideGranted
+  | ExternalEditDetected
+  | ProjectionRestored;
+
+function editInputIsTrusted(
+  previousState: NonterminalRunState | null,
+  input: ExternalEditDetected | ProjectionRestored,
+): previousState is NonterminalRunState {
+  return (
+    previousState !== null &&
+    previousState.runId === input.runId &&
+    previousState.stateVersion === input.expectedStateVersion &&
+    input.auditChainVerified &&
+    input.databaseIntegrityVerified &&
+    input.schemaCompatible &&
+    input.mutationLeaseAvailable &&
+    input.actor.kind === "system" &&
+    input.actor.component.length > 0 &&
+    input.actor.version.length > 0
+  );
+}
+
+function recordExternalEdit(
+  previousState: NonterminalRunState | null,
+  input: ExternalEditDetected,
+): TransitionResult {
+  if (
+    !editInputIsTrusted(previousState, input) ||
+    previousState.projectionBlock !== undefined ||
+    !input.editedArtifact.verified ||
+    input.editedArtifact.artifactId.length === 0 ||
+    !/^[a-f0-9]{64}$/u.test(input.expectedContentHash) ||
+    !/^[a-f0-9]{64}$/u.test(input.editedArtifact.contentHash) ||
+    input.expectedContentHash === input.editedArtifact.contentHash
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "External edit requires verified mismatched projection evidence",
+    );
+  }
+  const nextState: NonterminalRunState = {
+    ...previousState,
+    stateVersion: previousState.stateVersion + 1,
+    blockedReason: "external_projection_edit",
+    projectionBlock: {
+      projectionKind: input.projectionKind,
+      expectedContentHash: input.expectedContentHash,
+      editedArtifact: {
+        artifactId: input.editedArtifact.artifactId,
+        contentHash: input.editedArtifact.contentHash,
+      },
+    },
+  };
+  return {
+    nextState,
+    commands: [],
+    auditFacts: [
+      {
+        type: "external_edit_detected",
+        actor: input.actor,
+        reason: "Working projection differs from the verified render",
+        evidence: [
+          artifactEvidence(
+            input.editedArtifact.artifactId,
+            input.editedArtifact.contentHash,
+          ),
+        ],
+        payload: {
+          projectionKind: input.projectionKind,
+          expectedContentHash: input.expectedContentHash,
+          actualContentHash: input.editedArtifact.contentHash,
+        },
+      },
+    ],
+  };
+}
+
+function restoreProjection(
+  previousState: NonterminalRunState | null,
+  input: ProjectionRestored,
+): TransitionResult {
+  if (
+    !editInputIsTrusted(previousState, input) ||
+    previousState.projectionBlock === undefined ||
+    input.restoredContentHash !==
+      previousState.projectionBlock.expectedContentHash
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "Projection restoration must match the verified render",
+    );
+  }
+  const block = previousState.projectionBlock;
+  const { projectionBlock: _removed, ...unblocked } = previousState;
+  void _removed;
+  return {
+    nextState: {
+      ...unblocked,
+      stateVersion: previousState.stateVersion + 1,
+      blockedReason: null,
+    },
+    commands: [],
+    auditFacts: [
+      {
+        type: "projection_restored",
+        actor: input.actor,
+        reason: "Working projection matches the verified render",
+        evidence: [],
+        payload: {
+          projectionKind: block.projectionKind,
+          expectedContentHash: block.expectedContentHash,
+          actualContentHash: input.restoredContentHash,
+        },
+      },
+    ],
+  };
+}
 
 export function transition(
   previousState: NonterminalRunState | null,
@@ -1174,6 +1334,16 @@ export function transition(
   input: NonterminalDomainInput | ProviderOutcomeFailed,
   policy: PinnedRunPolicy,
 ): TransitionResult | TerminalTransitionResult {
+  if (
+    previousState?.projectionBlock !== undefined &&
+    input.type !== "ProjectionRestored" &&
+    input.type !== "PlanSubmitted"
+  ) {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      "External projection edit must be reconciled before progression",
+    );
+  }
   switch (input.type) {
     case "RunStarted":
       return startRun(previousState, input, policy);
@@ -1195,6 +1365,10 @@ export function transition(
       return haltAfterProviderFailure(previousState, input, policy);
     case "IndependenceOverrideGranted":
       return grantIndependenceOverride(previousState, input, policy);
+    case "ExternalEditDetected":
+      return recordExternalEdit(previousState, input);
+    case "ProjectionRestored":
+      return restoreProjection(previousState, input);
     default:
       throw new DomainTransitionError(
         "INVALID_TRANSITION",
@@ -2201,12 +2375,17 @@ function acceptPlanForBaseline(
     );
   }
 
+  const { projectionBlock: _projectionBlock, ...reconciledState } =
+    previousState;
+  void _projectionBlock;
+
   return {
     nextState: {
-      ...previousState,
+      ...reconciledState,
       state: "baseline_review",
       stateVersion: nextStateVersion,
       policyLocked: true,
+      blockedReason: null,
       currentPlan: {
         versionId: input.planVersionId,
         artifactId: input.planArtifact.artifactId,
