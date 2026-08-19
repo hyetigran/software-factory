@@ -196,7 +196,19 @@ describe("factory executable", () => {
       "loadUsage",
       {
         entries: [],
-        totals: {
+        actualAndConservative: {
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsdMicros: 0,
+        },
+        outstandingReserved: {
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsdMicros: 0,
+        },
+        effectiveConsumption: {
           calls: 0,
           inputTokens: 0,
           outputTokens: 0,

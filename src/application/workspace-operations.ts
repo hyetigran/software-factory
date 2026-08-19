@@ -24,6 +24,7 @@ export type ArtifactSummary = {
   schemaId: string | null;
   metadata: object;
   createdAt: string;
+  objectVerified: true;
 };
 
 export type FindingSummary = {
@@ -32,7 +33,34 @@ export type FindingSummary = {
   severity: string;
   createdAt: string;
   updatedAt: string;
-  fingerprints: string[];
+  fingerprints: Array<{
+    fingerprint: string;
+    policyHash: string;
+    createdAt: string;
+  }>;
+  observations: Array<{
+    observationId: string;
+    reviewArtifactId: string;
+    planVersionId: string;
+    reviewKind: string;
+    disposition: string;
+    severity: string;
+    ruleId: string;
+    componentIds: string[];
+    requirementIds: string[];
+    evidence: unknown[];
+    createdAt: string;
+  }>;
+  waivers: Array<{
+    waiverId: string;
+    status: string;
+    reason: string;
+    evidenceHash: string;
+    grantedByActorId: string;
+    grantedAt: string;
+    reaffirmedAt: string | null;
+  }>;
+  history: AuditSummary[];
 };
 
 export type UsageSummary = {
@@ -48,7 +76,19 @@ export type UsageSummary = {
     nativeUsageArtifactId: string | null;
     createdAt: string;
   }>;
-  totals: {
+  actualAndConservative: {
+    calls: number;
+    inputTokens: number;
+    outputTokens: number;
+    costUsdMicros: number;
+  };
+  outstandingReserved: {
+    calls: number;
+    inputTokens: number;
+    outputTokens: number;
+    costUsdMicros: number;
+  };
+  effectiveConsumption: {
     calls: number;
     inputTokens: number;
     outputTokens: number;

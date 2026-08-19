@@ -359,7 +359,7 @@ export async function runCliAsync(
           write,
           command,
           usage,
-          `Calls: ${usage.totals.calls}\nInput tokens: ${usage.totals.inputTokens}\nOutput tokens: ${usage.totals.outputTokens}\nCost (USD micros): ${usage.totals.costUsdMicros}`,
+          `Actual/conservative calls: ${usage.actualAndConservative.calls}\nOutstanding reserved calls: ${usage.outstandingReserved.calls}\nEffective consumed calls: ${usage.effectiveConsumption.calls}\nEffective input tokens: ${usage.effectiveConsumption.inputTokens}\nEffective output tokens: ${usage.effectiveConsumption.outputTokens}\nEffective cost (USD micros): ${usage.effectiveConsumption.costUsdMicros}`,
         );
         return CliExit.success;
       }

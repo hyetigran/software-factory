@@ -15,6 +15,40 @@ import {
 import { decodeAuditEntry, type AuditRow } from "./audit-codec.js";
 import { verifySqliteAuthorityIntegrity } from "./authority-integrity.js";
 
+function stringArray(value: string, field: string): string[] {
+  const parsed: unknown = JSON.parse(value);
+  if (
+    !Array.isArray(parsed) ||
+    !parsed.every((item) => typeof item === "string")
+  ) {
+    throw new WorkspaceOperationError(
+      "INTEGRITY_ERROR",
+      `${field} must be an array of strings`,
+    );
+  }
+  return parsed;
+}
+
+function arrayValue(value: string, field: string): unknown[] {
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed)) {
+    throw new WorkspaceOperationError(
+      "INTEGRITY_ERROR",
+      `${field} must be an array`,
+    );
+  }
+  return parsed;
+}
+
+function containsString(value: unknown, expected: string): boolean {
+  if (value === expected) return true;
+  if (Array.isArray(value))
+    return value.some((item) => containsString(item, expected));
+  return value !== null && typeof value === "object"
+    ? Object.values(value).some((item) => containsString(item, expected))
+    : false;
+}
+
 export class SqliteReadModel {
   private constructor(private readonly database: DatabaseSync) {}
 
@@ -176,52 +210,12 @@ export class SqliteReadModel {
     );
   }
 
-  listArtifacts(runId?: string): ArtifactSummary[] {
-    const rows = (
-      runId === undefined
-        ? this.database
-            .prepare("SELECT * FROM artifacts ORDER BY created_at, artifact_id")
-            .all()
-        : this.database
-            .prepare(
-              `WITH run_artifacts(artifact_id) AS (
-               SELECT source_artifact_id FROM runs WHERE run_id = ?
-               UNION SELECT configuration_artifact_id FROM runs WHERE run_id = ?
-               UNION SELECT terminal_manifest_artifact_id FROM runs WHERE run_id = ?
-               UNION SELECT artifact_id FROM ledger_versions WHERE run_id = ?
-               UNION SELECT coverage_artifact_id FROM ledger_versions WHERE run_id = ?
-               UNION SELECT structured_artifact_id FROM plan_versions WHERE run_id = ?
-               UNION SELECT rendered_artifact_id FROM plan_versions WHERE run_id = ?
-               UNION SELECT review_artifact_id FROM observations WHERE run_id = ?
-               UNION SELECT evidence_artifact_id FROM gates WHERE run_id = ?
-               UNION SELECT result_artifact_id FROM command_attempts
-                 JOIN logical_commands USING (command_id) WHERE logical_commands.run_id = ?
-               UNION SELECT native_usage_artifact_id FROM command_attempts
-                 JOIN logical_commands USING (command_id) WHERE logical_commands.run_id = ?
-               UNION SELECT artifacts.artifact_id FROM artifacts
-                 JOIN logical_commands
-                   ON json_extract(artifacts.metadata_json, '$.provenance.commandId') = logical_commands.command_id
-                 WHERE logical_commands.run_id = ?
-             )
-             SELECT artifacts.* FROM artifacts JOIN run_artifacts USING (artifact_id)
-             WHERE run_artifacts.artifact_id IS NOT NULL
-             ORDER BY artifacts.created_at, artifacts.artifact_id`,
-            )
-            .all(
-              runId,
-              runId,
-              runId,
-              runId,
-              runId,
-              runId,
-              runId,
-              runId,
-              runId,
-              runId,
-              runId,
-              runId,
-            )
-    ) as Array<{
+  listArtifacts(
+    runId?: string,
+  ): Array<Omit<ArtifactSummary, "objectVerified">> {
+    const rows = this.database
+      .prepare("SELECT * FROM artifacts ORDER BY created_at, artifact_id")
+      .all() as Array<{
       artifact_id: string;
       kind: string;
       content_hash: string;
@@ -231,7 +225,7 @@ export class SqliteReadModel {
       metadata_json: string;
       created_at: string;
     }>;
-    return rows.map((row) => {
+    const summaries = rows.map((row) => {
       const metadata: unknown = JSON.parse(row.metadata_json);
       if (
         metadata === null ||
@@ -254,15 +248,112 @@ export class SqliteReadModel {
         createdAt: row.created_at,
       };
     });
+    if (runId === undefined) return summaries;
+
+    const artifactIds = new Set(
+      summaries.map((artifact) => artifact.artifactId),
+    );
+    const referenced = new Set<string>();
+    const collect = (value: unknown): void => {
+      if (typeof value === "string") {
+        if (artifactIds.has(value)) referenced.add(value);
+        return;
+      }
+      if (Array.isArray(value)) {
+        value.forEach(collect);
+      } else if (value !== null && typeof value === "object") {
+        Object.values(value).forEach(collect);
+      }
+    };
+    const directRows = this.database
+      .prepare(
+        `SELECT source_artifact_id AS artifact_id FROM runs WHERE run_id = ?
+         UNION SELECT configuration_artifact_id FROM runs WHERE run_id = ?
+         UNION SELECT terminal_manifest_artifact_id FROM runs WHERE run_id = ?
+         UNION SELECT artifact_id FROM ledger_versions WHERE run_id = ?
+         UNION SELECT coverage_artifact_id FROM ledger_versions WHERE run_id = ?
+         UNION SELECT structured_artifact_id FROM plan_versions WHERE run_id = ?
+         UNION SELECT rendered_artifact_id FROM plan_versions WHERE run_id = ?
+         UNION SELECT review_artifact_id FROM observations WHERE run_id = ?
+         UNION SELECT evidence_artifact_id FROM gates WHERE run_id = ?
+         UNION SELECT result_artifact_id FROM command_attempts
+           JOIN logical_commands USING (command_id) WHERE logical_commands.run_id = ?
+         UNION SELECT native_usage_artifact_id FROM command_attempts
+           JOIN logical_commands USING (command_id) WHERE logical_commands.run_id = ?`,
+      )
+      .all(
+        runId,
+        runId,
+        runId,
+        runId,
+        runId,
+        runId,
+        runId,
+        runId,
+        runId,
+        runId,
+        runId,
+      ) as Array<{ artifact_id: string | null }>;
+    directRows.forEach((row) => {
+      if (row.artifact_id !== null) referenced.add(row.artifact_id);
+    });
+    const jsonRows = this.database
+      .prepare(
+        `SELECT state_json AS document FROM run_state_snapshots WHERE run_id = ?
+         UNION ALL SELECT specification_json FROM logical_commands WHERE run_id = ?
+         UNION ALL SELECT evidence_json FROM audit_entries WHERE run_id = ?
+         UNION ALL SELECT payload_json FROM audit_entries WHERE run_id = ?
+         UNION ALL SELECT evidence_json FROM human_decisions WHERE run_id = ?
+         UNION ALL SELECT evidence_json FROM observations WHERE run_id = ?`,
+      )
+      .all(runId, runId, runId, runId, runId, runId) as Array<{
+      document: string;
+    }>;
+    jsonRows.forEach((row) => collect(JSON.parse(row.document)));
+    for (const artifact of summaries) {
+      const provenance = (artifact.metadata as { provenance?: unknown })
+        .provenance;
+      if (
+        provenance !== null &&
+        typeof provenance === "object" &&
+        !Array.isArray(provenance) &&
+        (provenance as { commandId?: unknown }).commandId !== undefined
+      ) {
+        const commandId = (provenance as { commandId: unknown }).commandId;
+        if (
+          typeof commandId === "string" &&
+          this.database
+            .prepare(
+              "SELECT 1 FROM logical_commands WHERE run_id = ? AND command_id = ?",
+            )
+            .get(runId, commandId) !== undefined
+        ) {
+          referenced.add(artifact.artifactId);
+        }
+      }
+    }
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const artifact of summaries) {
+        if (!referenced.has(artifact.artifactId)) continue;
+        const before = referenced.size;
+        collect(artifact.metadata);
+        changed ||= referenced.size !== before;
+      }
+    }
+    return summaries.filter((artifact) => referenced.has(artifact.artifactId));
   }
 
   listFindings(runId: string): FindingSummary[] {
     const rows = this.database
       .prepare(
-        `SELECT findings.*, finding_fingerprints.fingerprint
+        `SELECT findings.*, finding_fingerprints.fingerprint,
+                finding_fingerprints.policy_hash, finding_fingerprints.created_at AS fingerprint_created_at
          FROM findings LEFT JOIN finding_fingerprints USING (finding_id)
          WHERE findings.run_id = ?
-         ORDER BY findings.created_at, findings.finding_id, finding_fingerprints.created_at`,
+         ORDER BY findings.created_at, findings.finding_id,
+                  finding_fingerprints.created_at, finding_fingerprints.policy_hash`,
       )
       .all(runId) as Array<{
       finding_id: string;
@@ -271,6 +362,8 @@ export class SqliteReadModel {
       created_at: string;
       updated_at: string;
       fingerprint: string | null;
+      policy_hash: string | null;
+      fingerprint_created_at: string | null;
     }>;
     const findings = new Map<string, FindingSummary>();
     for (const row of rows) {
@@ -282,9 +375,80 @@ export class SqliteReadModel {
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         fingerprints: [],
+        observations: [],
+        waivers: [],
+        history: [],
       };
-      if (row.fingerprint !== null) finding.fingerprints.push(row.fingerprint);
+      if (
+        row.fingerprint !== null &&
+        row.policy_hash !== null &&
+        row.fingerprint_created_at !== null
+      ) {
+        finding.fingerprints.push({
+          fingerprint: row.fingerprint,
+          policyHash: row.policy_hash,
+          createdAt: row.fingerprint_created_at,
+        });
+      }
       findings.set(findingId, finding);
+    }
+    const observations = this.database
+      .prepare(
+        "SELECT * FROM observations WHERE run_id = ? ORDER BY created_at, observation_id",
+      )
+      .all(runId) as Array<Record<string, string | null>>;
+    for (const row of observations) {
+      const findingId = row.finding_id;
+      if (findingId === null || findingId === undefined) continue;
+      const finding = findings.get(findingId);
+      if (finding === undefined) continue;
+      finding.observations.push({
+        observationId: String(row.observation_id),
+        reviewArtifactId: String(row.review_artifact_id),
+        planVersionId: String(row.plan_version_id),
+        reviewKind: String(row.review_kind),
+        disposition: String(row.disposition),
+        severity: String(row.severity),
+        ruleId: String(row.rule_id),
+        componentIds: stringArray(
+          String(row.component_ids_json),
+          "Observation component IDs",
+        ),
+        requirementIds: stringArray(
+          String(row.requirement_ids_json),
+          "Observation requirement IDs",
+        ),
+        evidence: arrayValue(String(row.evidence_json), "Observation evidence"),
+        createdAt: String(row.created_at),
+      });
+    }
+    const waivers = this.database
+      .prepare(
+        "SELECT * FROM waivers WHERE run_id = ? ORDER BY granted_at, waiver_id",
+      )
+      .all(runId) as Array<Record<string, string | null>>;
+    for (const row of waivers) {
+      const findingId = row.finding_id;
+      const finding =
+        findingId === null || findingId === undefined
+          ? undefined
+          : findings.get(findingId);
+      if (finding === undefined) continue;
+      finding.waivers.push({
+        waiverId: String(row.waiver_id),
+        status: String(row.status),
+        reason: String(row.reason),
+        evidenceHash: String(row.evidence_hash),
+        grantedByActorId: String(row.granted_by_actor_id),
+        grantedAt: String(row.granted_at),
+        reaffirmedAt: row.reaffirmed_at ?? null,
+      });
+    }
+    const audit = this.listAudit(runId);
+    for (const finding of findings.values()) {
+      finding.history = audit.filter((entry) =>
+        containsString(entry, finding.findingId),
+      );
     }
     return [...findings.values()];
   }
@@ -321,7 +485,7 @@ export class SqliteReadModel {
     }));
     return {
       entries,
-      totals: entries.reduce(
+      actualAndConservative: entries.reduce(
         (total, entry) =>
           entry.kind === "actual" || entry.kind === "conservative_charge"
             ? {
@@ -331,6 +495,42 @@ export class SqliteReadModel {
                 costUsdMicros: total.costUsdMicros + entry.costUsdMicros,
               }
             : total,
+        { calls: 0, inputTokens: 0, outputTokens: 0, costUsdMicros: 0 },
+      ),
+      outstandingReserved: entries.reduce(
+        (total, entry) => {
+          const sign =
+            entry.kind === "reservation"
+              ? 1
+              : entry.kind === "release"
+                ? -1
+                : 0;
+          return {
+            calls: total.calls + sign * entry.calls,
+            inputTokens: total.inputTokens + sign * entry.inputTokens,
+            outputTokens: total.outputTokens + sign * entry.outputTokens,
+            costUsdMicros: total.costUsdMicros + sign * entry.costUsdMicros,
+          };
+        },
+        { calls: 0, inputTokens: 0, outputTokens: 0, costUsdMicros: 0 },
+      ),
+      effectiveConsumption: entries.reduce(
+        (total, entry) => {
+          const sign =
+            entry.kind === "actual" ||
+            entry.kind === "conservative_charge" ||
+            entry.kind === "reservation"
+              ? 1
+              : entry.kind === "release"
+                ? -1
+                : 0;
+          return {
+            calls: total.calls + sign * entry.calls,
+            inputTokens: total.inputTokens + sign * entry.inputTokens,
+            outputTokens: total.outputTokens + sign * entry.outputTokens,
+            costUsdMicros: total.costUsdMicros + sign * entry.costUsdMicros,
+          };
+        },
         { calls: 0, inputTokens: 0, outputTokens: 0, costUsdMicros: 0 },
       ),
     };

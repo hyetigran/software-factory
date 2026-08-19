@@ -1,4 +1,7 @@
 import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
 
 import type { WorkspaceOperations } from "../../application/workspace-operations.js";
 import { WorkspaceOperationError } from "../../application/workspace-operations.js";
@@ -9,11 +12,11 @@ import { SqliteReadModel } from "../sqlite/read-model.js";
 export function createWorkspaceOperations(): WorkspaceOperations {
   async function withReadModel<T>(
     projectRoot: string,
-    read: (model: SqliteReadModel) => T,
+    read: (model: SqliteReadModel) => T | Promise<T>,
   ): Promise<T> {
     const model = await SqliteReadModel.open(projectRoot);
     try {
-      return read(model);
+      return await read(model);
     } finally {
       model.close();
     }
@@ -57,7 +60,7 @@ export function createWorkspaceOperations(): WorkspaceOperations {
       }
     },
     async listArtifacts(projectRoot, runId) {
-      return withReadModel(projectRoot, (model) => {
+      return withReadModel(projectRoot, async (model) => {
         if (runId !== undefined && model.loadRun(runId) === null) {
           throw new WorkspaceOperationError(
             "RUN_NOT_FOUND",
@@ -65,7 +68,41 @@ export function createWorkspaceOperations(): WorkspaceOperations {
             { runId },
           );
         }
-        return model.listArtifacts(runId);
+        const artifacts = model.listArtifacts(runId);
+        for (const artifact of artifacts) {
+          let handle;
+          try {
+            handle = await open(
+              join(projectRoot, ".factory", "objects", artifact.contentHash),
+              constants.O_RDONLY | constants.O_NOFOLLOW,
+            );
+            const metadata = await handle.stat();
+            const bytes = await handle.readFile();
+            if (
+              !metadata.isFile() ||
+              bytes.byteLength !== artifact.byteLength ||
+              createHash("sha256").update(bytes).digest("hex") !==
+                artifact.contentHash
+            ) {
+              throw new Error("mismatch");
+            }
+          } catch (error) {
+            throw new WorkspaceOperationError(
+              "INTEGRITY_ERROR",
+              `Artifact body is missing or corrupt: ${artifact.artifactId}`,
+              {
+                artifactId: artifact.artifactId,
+                cause: error instanceof Error ? error.message : String(error),
+              },
+            );
+          } finally {
+            await handle?.close();
+          }
+        }
+        return artifacts.map((artifact) => ({
+          ...artifact,
+          objectVerified: true as const,
+        }));
       });
     },
     async listFindings(projectRoot, runId) {
