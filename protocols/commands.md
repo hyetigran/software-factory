@@ -31,6 +31,7 @@ interface PlannedCommand<T> {
 | `render_source_registration_report` | deterministic source-registration receipt | operational evidence only; no domain transition |
 | `validate_ledger` | deterministic schema, coverage, identity, and lineage checks | `LedgerValidationCompleted` |
 | `render_ledger` | deterministic Markdown and coverage projection | `LedgerRendered` |
+| `render_ledger_approval` | deterministic ledger-approval receipt with coverage evidence | operational evidence only; no domain transition |
 | `generate_plan` | Planner provider request | `PlanGenerated` |
 | `render_plan` | deterministic anchored Markdown | `PlanRendered` |
 | `baseline_review` | full Reviewer evaluation | `ReviewAccepted` |

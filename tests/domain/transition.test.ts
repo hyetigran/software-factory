@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   transition,
   type AdvancedRunState,
+  type DraftRunState,
+  type LedgerApprovalRequested,
   type LedgerSubmitted,
   type RunStarted,
   type SourceExclusionApproved,
@@ -14,6 +16,7 @@ const configurationContentHash = "c".repeat(64);
 const ledgerContentHash = "d".repeat(64);
 const planContentHash = "e".repeat(64);
 const reviewContentHash = "f".repeat(64);
+const coverageReportContentHash = "0".repeat(64);
 
 function runStartedInput(): RunStarted {
   return {
@@ -87,6 +90,32 @@ function sourceExclusionApprovedInput(): SourceExclusionApproved {
   };
 }
 
+function ledgerApprovalRequestedInput(): LedgerApprovalRequested {
+  return {
+    type: "LedgerApprovalRequested",
+    runId: "run_01JTEST0000000000000000000",
+    expectedStateVersion: 3,
+    ledgerSchemaValid: true,
+    lineageValid: true,
+    identityValid: true,
+    coverageComplete: true,
+    coverageReportArtifactId: "artifact_coverage_01JTEST",
+    coverageReportContentHash,
+    coverageReportVerified: true,
+    approvalGateId: "gate_requirements_approval_01JTEST",
+    auditChainVerified: true,
+    databaseIntegrityVerified: true,
+    schemaCompatible: true,
+    mutationLeaseAvailable: true,
+    renderCommandId: "command_render_approval_01JTEST",
+    actor: {
+      kind: "human",
+      displayName: "Tigran",
+      osAccount: "tig",
+    },
+  };
+}
+
 function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
   const draft = transition(null, runStartedInput(), { policyHash }).nextState;
   return {
@@ -116,6 +145,20 @@ function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
       gateIds: ["gate_closure_01JTEST", "gate_qualification_01JTEST"],
     },
   };
+}
+
+function approvalReadyDraft(): DraftRunState {
+  const draft = transition(null, runStartedInput(), { policyHash }).nextState;
+  const ledgerDraft = transition(draft, ledgerSubmittedInput(), {
+    policyHash,
+  }).nextState;
+  const result = transition(ledgerDraft, sourceExclusionApprovedInput(), {
+    policyHash,
+  }).nextState;
+  if (result.state !== "draft") {
+    throw new Error("expected draft state");
+  }
+  return result;
 }
 
 describe("transition", () => {
@@ -1082,5 +1125,312 @@ describe("transition", () => {
     expect(revisedValidationCommand.payload.sourceExclusions).toEqual(
       second.nextState.sourceExclusions,
     );
+  });
+
+  it("approves a validated ledger and renders approval evidence", () => {
+    const exclusionApproved = approvalReadyDraft();
+
+    const result = transition(
+      exclusionApproved,
+      ledgerApprovalRequestedInput(),
+      { policyHash },
+    );
+
+    expect(result.nextState).toEqual({
+      ...exclusionApproved,
+      state: "requirements_approved",
+      stateVersion: 4,
+      currentLedger: {
+        ...exclusionApproved.currentLedger,
+        validationStatus: "approved",
+      },
+      downstreamQualification: {
+        artifacts: [
+          {
+            kind: "artifact",
+            artifactId: "artifact_coverage_01JTEST",
+            contentHash: coverageReportContentHash,
+          },
+        ],
+        gateIds: ["gate_requirements_approval_01JTEST"],
+      },
+    });
+    expect(result.commands).toEqual([
+      {
+        commandId: "command_render_approval_01JTEST",
+        commandKey:
+          "035714a21b3a9498c6d7a3f97ce7071ac06fc0052f4bd575e68f4c4b1c04e9b3",
+        commandType: "render_ledger_approval",
+        schemaVersion: 1,
+        runId: exclusionApproved.runId,
+        triggeringStateVersion: 4,
+        purposeId: `${exclusionApproved.runId}:ledger:ledger_01JTEST:approval`,
+        inputArtifactHashes: [
+          ledgerContentHash,
+          coverageReportContentHash,
+          sourceContentHash,
+        ],
+        policyHash,
+        provider: "local",
+        budgetReservation: {
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsdMicros: 0,
+        },
+        payload: {
+          ledgerVersionId: "ledger_01JTEST",
+          ledgerArtifactId: "artifact_ledger_01JTEST",
+          coverageReportArtifactId: "artifact_coverage_01JTEST",
+          approvalGateId: "gate_requirements_approval_01JTEST",
+          sourceExclusions: exclusionApproved.sourceExclusions,
+          approvedBy: ledgerApprovalRequestedInput().actor,
+        },
+      },
+    ]);
+    expect(result.auditFacts[0]).toEqual({
+      type: "ledger_approved",
+      actor: ledgerApprovalRequestedInput().actor,
+      reason: "Approve the validated requirements ledger",
+      evidence: [
+        {
+          kind: "artifact",
+          artifactId: "artifact_ledger_01JTEST",
+          contentHash: ledgerContentHash,
+        },
+        {
+          kind: "artifact",
+          artifactId: "artifact_coverage_01JTEST",
+          contentHash: coverageReportContentHash,
+        },
+      ],
+      payload: {
+        ledgerVersionId: "ledger_01JTEST",
+        coverageReportArtifactId: "artifact_coverage_01JTEST",
+        coverageReportContentHash,
+        approvalGateId: "gate_requirements_approval_01JTEST",
+        approvedBy: ledgerApprovalRequestedInput().actor,
+      },
+    });
+    expect(result.auditFacts[1]).toEqual({
+      type: "command_planned",
+      actor: {
+        kind: "system",
+        component: "domain-transition",
+        version: "0.0.0",
+      },
+      reason: "Render ledger approval evidence",
+      evidence: [
+        {
+          kind: "artifact",
+          artifactId: "artifact_ledger_01JTEST",
+          contentHash: ledgerContentHash,
+        },
+        {
+          kind: "artifact",
+          artifactId: "artifact_coverage_01JTEST",
+          contentHash: coverageReportContentHash,
+        },
+        {
+          kind: "artifact",
+          artifactId: "artifact_source_01JTEST",
+          contentHash: sourceContentHash,
+        },
+      ],
+      payload: {
+        commandId: "command_render_approval_01JTEST",
+        commandKey:
+          "035714a21b3a9498c6d7a3f97ce7071ac06fc0052f4bd575e68f4c4b1c04e9b3",
+        commandType: "render_ledger_approval",
+        reservation: {
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsdMicros: 0,
+        },
+      },
+    });
+  });
+
+  it.each<
+    [string, (validInput: LedgerApprovalRequested) => LedgerApprovalRequested]
+  >([
+    [
+      "a stale state version",
+      (input) => ({ ...input, expectedStateVersion: 2 }),
+    ],
+    [
+      "an invalid ledger schema",
+      (input) => ({ ...input, ledgerSchemaValid: false }),
+    ],
+    ["invalid lineage", (input) => ({ ...input, lineageValid: false })],
+    ["invalid identity", (input) => ({ ...input, identityValid: false })],
+    ["incomplete coverage", (input) => ({ ...input, coverageComplete: false })],
+    [
+      "an unverified coverage report",
+      (input) => ({ ...input, coverageReportVerified: false }),
+    ],
+    [
+      "an empty approval gate ID",
+      (input) => ({ ...input, approvalGateId: "" }),
+    ],
+    [
+      "an invalid audit chain",
+      (input) => ({ ...input, auditChainVerified: false }),
+    ],
+    [
+      "invalid database integrity",
+      (input) => ({ ...input, databaseIntegrityVerified: false }),
+    ],
+    [
+      "an incompatible schema",
+      (input) => ({ ...input, schemaCompatible: false }),
+    ],
+    [
+      "a conflicting mutation lease",
+      (input) => ({ ...input, mutationLeaseAvailable: false }),
+    ],
+    [
+      "a non-human actor",
+      (input) =>
+        ({
+          ...input,
+          actor: {
+            kind: "system",
+            component: "test-runner",
+            version: "1.0.0",
+          },
+        }) as unknown as LedgerApprovalRequested,
+    ],
+    [
+      "an empty actor display name",
+      (input) => ({ ...input, actor: { ...input.actor, displayName: "" } }),
+    ],
+    [
+      "an empty actor OS account",
+      (input) => ({ ...input, actor: { ...input.actor, osAccount: "" } }),
+    ],
+  ])("rejects ledger approval with %s", (_name, makeInvalid) => {
+    expect(() =>
+      transition(
+        approvalReadyDraft(),
+        makeInvalid(ledgerApprovalRequestedInput()),
+        {
+          policyHash,
+        },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it.each<
+    [string, () => unknown, "INVALID_TRANSITION" | "PRECONDITION_FAILED"]
+  >([
+    [
+      "without an active run",
+      () => transition(null, ledgerApprovalRequestedInput(), { policyHash }),
+      "INVALID_TRANSITION",
+    ],
+    [
+      "without a current ledger",
+      () => {
+        const draft = transition(null, runStartedInput(), {
+          policyHash,
+        }).nextState;
+        return transition(
+          draft,
+          { ...ledgerApprovalRequestedInput(), expectedStateVersion: 1 },
+          { policyHash },
+        );
+      },
+      "PRECONDITION_FAILED",
+    ],
+    [
+      "for another run",
+      () =>
+        transition(
+          approvalReadyDraft(),
+          { ...ledgerApprovalRequestedInput(), runId: "run_other" },
+          { policyHash },
+        ),
+      "INVALID_TRANSITION",
+    ],
+    [
+      "outside draft state",
+      () =>
+        transition(
+          advancedRunState("requirements_approved"),
+          { ...ledgerApprovalRequestedInput(), expectedStateVersion: 7 },
+          { policyHash },
+        ),
+      "INVALID_TRANSITION",
+    ],
+    [
+      "with a changed locked policy",
+      () =>
+        transition(
+          { ...approvalReadyDraft(), policyLocked: true },
+          ledgerApprovalRequestedInput(),
+          { policyHash: "1".repeat(64) },
+        ),
+      "PRECONDITION_FAILED",
+    ],
+  ])("rejects ledger approval %s", (_name, approve, expectedCode) => {
+    expect(approve).toThrowError(
+      expect.objectContaining({ code: expectedCode }),
+    );
+  });
+
+  it("makes approval evidence and its gate invalidatable by ledger revision", () => {
+    const approved = transition(
+      approvalReadyDraft(),
+      ledgerApprovalRequestedInput(),
+      { policyHash },
+    );
+    const revision = {
+      ...ledgerSubmittedInput(),
+      expectedStateVersion: 4,
+      ledgerVersionId: "ledger_02JTEST",
+      ledgerArtifactId: "artifact_ledger_02JTEST",
+      validateCommandId: "command_validate_ledger_02JTEST",
+      renderCommandId: "command_render_ledger_02JTEST",
+    };
+
+    const revised = transition(approved.nextState, revision, { policyHash });
+
+    expect(revised.auditFacts[0]).toEqual(
+      expect.objectContaining({
+        type: "downstream_invalidated",
+        payload: {
+          cause: {
+            type: "ledger_revised",
+            previousLedgerVersionId: "ledger_01JTEST",
+            nextLedgerVersionId: "ledger_02JTEST",
+          },
+          affectedArtifactIds: ["artifact_coverage_01JTEST"],
+          affectedGateIds: ["gate_requirements_approval_01JTEST"],
+        },
+      }),
+    );
+  });
+
+  it("adopts an unlocked policy change in approval state and evidence", () => {
+    const revisedPolicyHash = "2".repeat(64);
+
+    const result = transition(
+      approvalReadyDraft(),
+      ledgerApprovalRequestedInput(),
+      { policyHash: revisedPolicyHash },
+    );
+
+    expect(result.nextState).toEqual(
+      expect.objectContaining({
+        state: "requirements_approved",
+        policyHash: revisedPolicyHash,
+        policyLocked: false,
+      }),
+    );
+    expect(result.commands).toEqual([
+      expect.objectContaining({ policyHash: revisedPolicyHash }),
+    ]);
   });
 });

@@ -138,6 +138,26 @@ export type SourceExclusionApproved = {
   actor: HumanActor;
 };
 
+export type LedgerApprovalRequested = {
+  type: "LedgerApprovalRequested";
+  runId: string;
+  expectedStateVersion: number;
+  ledgerSchemaValid: boolean;
+  lineageValid: boolean;
+  identityValid: boolean;
+  coverageComplete: boolean;
+  coverageReportArtifactId: string;
+  coverageReportContentHash: string;
+  coverageReportVerified: boolean;
+  approvalGateId: string;
+  auditChainVerified: boolean;
+  databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
+  renderCommandId: string;
+  actor: HumanActor;
+};
+
 export type BudgetReservation = {
   calls: number;
   inputTokens: number;
@@ -200,6 +220,28 @@ export type RenderLedger = {
   };
 };
 
+export type RenderLedgerApproval = {
+  commandId: string;
+  commandKey: string;
+  commandType: "render_ledger_approval";
+  schemaVersion: 1;
+  runId: string;
+  triggeringStateVersion: number;
+  purposeId: string;
+  inputArtifactHashes: string[];
+  policyHash: string;
+  provider: "local";
+  budgetReservation: BudgetReservation;
+  payload: {
+    ledgerVersionId: string;
+    ledgerArtifactId: string;
+    coverageReportArtifactId: string;
+    approvalGateId: string;
+    sourceExclusions: SourceExclusion[];
+    approvedBy: HumanActor;
+  };
+};
+
 export type RunStartedFact = {
   type: "run_started";
   actor: HumanActor;
@@ -234,7 +276,10 @@ export type CommandPlannedFact = {
     commandId: string;
     commandKey: string;
     commandType:
-      "render_source_registration_report" | "validate_ledger" | "render_ledger";
+      | "render_source_registration_report"
+      | "validate_ledger"
+      | "render_ledger"
+      | "render_ledger_approval";
     reservation: BudgetReservation;
   };
 };
@@ -275,10 +320,27 @@ export type SourceExclusionApprovedFact = {
   payload: SourceExclusion;
 };
 
+export type LedgerApprovedFact = {
+  type: "ledger_approved";
+  actor: HumanActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    ledgerVersionId: string;
+    coverageReportArtifactId: string;
+    coverageReportContentHash: string;
+    approvalGateId: string;
+    approvedBy: HumanActor;
+  };
+};
+
 export type TransitionResult = {
-  nextState: DraftRunState;
+  nextState: NonterminalRunState;
   commands: Array<
-    RenderSourceRegistrationReport | ValidateLedger | RenderLedger
+    | RenderSourceRegistrationReport
+    | ValidateLedger
+    | RenderLedger
+    | RenderLedgerApproval
   >;
   auditFacts: Array<
     | RunStartedFact
@@ -286,6 +348,7 @@ export type TransitionResult = {
     | LedgerSubmittedFact
     | DownstreamInvalidatedFact
     | SourceExclusionApprovedFact
+    | LedgerApprovedFact
     | CommandPlannedFact
   >;
 };
@@ -304,7 +367,11 @@ export class DomainTransitionError extends Error {
 
 export function transition(
   previousState: NonterminalRunState | null,
-  input: RunStarted | LedgerSubmitted | SourceExclusionApproved,
+  input:
+    | RunStarted
+    | LedgerSubmitted
+    | SourceExclusionApproved
+    | LedgerApprovalRequested,
   policy: PinnedRunPolicy,
 ): TransitionResult {
   switch (input.type) {
@@ -314,6 +381,8 @@ export function transition(
       return submitLedger(previousState, input, policy);
     case "SourceExclusionApproved":
       return approveSourceExclusion(previousState, input, policy);
+    case "LedgerApprovalRequested":
+      return approveLedger(previousState, input, policy);
     default:
       throw new DomainTransitionError(
         "INVALID_TRANSITION",
@@ -782,6 +851,153 @@ function approveSourceExclusion(
         },
         reason: "Recompute ledger coverage after source exclusion approval",
         evidence: [sourceEvidence, ledgerEvidence],
+        payload: {
+          commandId: command.commandId,
+          commandKey: command.commandKey,
+          commandType: command.commandType,
+          reservation: command.budgetReservation,
+        },
+      },
+    ],
+  };
+}
+
+function approveLedger(
+  previousState: NonterminalRunState | null,
+  input: LedgerApprovalRequested,
+  policy: PinnedRunPolicy,
+): TransitionResult {
+  if (
+    previousState === null ||
+    previousState.state !== "draft" ||
+    previousState.runId !== input.runId
+  ) {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      "LedgerApprovalRequested requires the matching draft run",
+    );
+  }
+
+  if (
+    previousState.stateVersion !== input.expectedStateVersion ||
+    previousState.currentLedger === undefined ||
+    (previousState.policyLocked &&
+      previousState.policyHash !== policy.policyHash) ||
+    !input.ledgerSchemaValid ||
+    !input.lineageValid ||
+    !input.identityValid ||
+    !input.coverageComplete ||
+    !input.coverageReportVerified ||
+    input.approvalGateId.length === 0 ||
+    !input.auditChainVerified ||
+    !input.databaseIntegrityVerified ||
+    !input.schemaCompatible ||
+    !input.mutationLeaseAvailable ||
+    input.actor.kind !== "human" ||
+    typeof input.actor.displayName !== "string" ||
+    input.actor.displayName.length === 0 ||
+    typeof input.actor.osAccount !== "string" ||
+    input.actor.osAccount.length === 0
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "LedgerApprovalRequested requires validated coverage and human approval",
+    );
+  }
+
+  const nextStateVersion = previousState.stateVersion + 1;
+  const reservation: BudgetReservation = {
+    calls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    costUsdMicros: 0,
+  };
+  const sourceExclusions = previousState.sourceExclusions ?? [];
+  const commandWithoutIdentity = {
+    commandType: "render_ledger_approval" as const,
+    schemaVersion: 1 as const,
+    runId: input.runId,
+    triggeringStateVersion: nextStateVersion,
+    purposeId: `${input.runId}:ledger:${previousState.currentLedger.versionId}:approval`,
+    inputArtifactHashes: [
+      previousState.currentLedger.contentHash,
+      input.coverageReportContentHash,
+      previousState.sourceContentHash,
+    ],
+    policyHash: policy.policyHash,
+    provider: "local" as const,
+    budgetReservation: reservation,
+    payload: {
+      ledgerVersionId: previousState.currentLedger.versionId,
+      ledgerArtifactId: previousState.currentLedger.artifactId,
+      coverageReportArtifactId: input.coverageReportArtifactId,
+      approvalGateId: input.approvalGateId,
+      sourceExclusions,
+      approvedBy: input.actor,
+    },
+  };
+  const command: RenderLedgerApproval = {
+    commandId: input.renderCommandId,
+    commandKey: createHash("sha256")
+      .update(canonicalJson(commandWithoutIdentity))
+      .digest("hex"),
+    ...commandWithoutIdentity,
+  };
+  const ledgerEvidence: ArtifactEvidenceReference = {
+    kind: "artifact",
+    artifactId: previousState.currentLedger.artifactId,
+    contentHash: previousState.currentLedger.contentHash,
+  };
+  const coverageEvidence: ArtifactEvidenceReference = {
+    kind: "artifact",
+    artifactId: input.coverageReportArtifactId,
+    contentHash: input.coverageReportContentHash,
+  };
+  const sourceEvidence: ArtifactEvidenceReference = {
+    kind: "artifact",
+    artifactId: previousState.sourceArtifactId,
+    contentHash: previousState.sourceContentHash,
+  };
+
+  return {
+    nextState: {
+      ...previousState,
+      state: "requirements_approved",
+      stateVersion: nextStateVersion,
+      policyHash: policy.policyHash,
+      currentLedger: {
+        ...previousState.currentLedger,
+        validationStatus: "approved",
+      },
+      downstreamQualification: {
+        artifacts: [coverageEvidence],
+        gateIds: [input.approvalGateId],
+      },
+    },
+    commands: [command],
+    auditFacts: [
+      {
+        type: "ledger_approved",
+        actor: input.actor,
+        reason: "Approve the validated requirements ledger",
+        evidence: [ledgerEvidence, coverageEvidence],
+        payload: {
+          ledgerVersionId: previousState.currentLedger.versionId,
+          coverageReportArtifactId: input.coverageReportArtifactId,
+          coverageReportContentHash: input.coverageReportContentHash,
+          approvalGateId: input.approvalGateId,
+          approvedBy: input.actor,
+        },
+      },
+      {
+        type: "command_planned",
+        actor: {
+          kind: "system",
+          component: "domain-transition",
+          version: "0.0.0",
+        },
+        reason: "Render ledger approval evidence",
+        evidence: [ledgerEvidence, coverageEvidence, sourceEvidence],
         payload: {
           commandId: command.commandId,
           commandKey: command.commandKey,
