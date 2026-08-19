@@ -1337,7 +1337,10 @@ export function transition(
   if (
     previousState?.projectionBlock !== undefined &&
     input.type !== "ProjectionRestored" &&
-    input.type !== "PlanSubmitted"
+    !(
+      input.type === "PlanSubmitted" &&
+      previousState.projectionBlock.projectionKind === "plan"
+    )
   ) {
     throw new DomainTransitionError(
       "INVALID_TRANSITION",

@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -10,6 +18,7 @@ import type {
   PersistableCommand,
   PersistableTransition,
   PersistTransitionRequest,
+  StagedArtifactRegistration,
   ValidatedProjectionData,
 } from "../../application/authority-port.js";
 import { commandIsValid } from "../../application/command-validation.js";
@@ -177,60 +186,7 @@ export class SqliteAuthority implements AuthorityPort {
     this.database.exec("BEGIN IMMEDIATE");
     try {
       this.assertWritable();
-      this.database
-        .prepare(
-          `INSERT OR IGNORE INTO artifacts
-          (artifact_id, kind, content_hash, byte_length, media_type,
-           schema_id, metadata_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          descriptor.artifactId,
-          descriptor.kind,
-          descriptor.contentHash,
-          descriptor.byteLength,
-          descriptor.mediaType,
-          descriptor.schemaId ?? null,
-          canonicalJson({
-            createdBy: descriptor.createdBy,
-            provenance: descriptor.provenance,
-            schemaVersion: descriptor.schemaVersion,
-          }),
-          this.now(),
-        );
-      const metadataJson = canonicalJson({
-        createdBy: descriptor.createdBy,
-        provenance: descriptor.provenance,
-        schemaVersion: descriptor.schemaVersion,
-      });
-      const stored = this.database
-        .prepare(
-          `SELECT kind, content_hash, byte_length, media_type, schema_id, metadata_json
-         FROM artifacts WHERE artifact_id = ?`,
-        )
-        .get(descriptor.artifactId) as
-        | {
-            kind: string;
-            content_hash: string;
-            byte_length: number;
-            media_type: string;
-            schema_id: string | null;
-            metadata_json: string;
-          }
-        | undefined;
-      if (
-        stored === undefined ||
-        stored.kind !== descriptor.kind ||
-        stored.content_hash !== descriptor.contentHash ||
-        stored.byte_length !== descriptor.byteLength ||
-        stored.media_type !== descriptor.mediaType ||
-        stored.schema_id !== (descriptor.schemaId ?? null) ||
-        stored.metadata_json !== metadataJson
-      ) {
-        throw new AuthorityIntegrityError(
-          `Artifact identity is already bound to different metadata: ${descriptor.artifactId}`,
-        );
-      }
+      this.persistArtifactMetadata(descriptor);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -534,6 +490,10 @@ export class SqliteAuthority implements AuthorityPort {
     ) {
       throw new TypeError("Transition output violates authority invariants");
     }
+    for (const artifact of request.stagedArtifacts ?? []) {
+      this.verifyStagedArtifact(artifact);
+      this.persistArtifactMetadata(artifact);
+    }
     const factTypes = new Set(result.auditFacts.map(({ type }) => type));
     const projection = request.validatedProjection?.toPersistenceData();
     if (
@@ -704,5 +664,90 @@ export class SqliteAuthority implements AuthorityPort {
            WHERE workspace_id = ?`,
       )
       .run(sequence + 1, previousEntryHash, this.workspaceId);
+  }
+
+  private verifyStagedArtifact(artifact: StagedArtifactRegistration): void {
+    let handle: number | undefined;
+    try {
+      handle = openSync(
+        artifact.objectPath,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+      const stat = fstatSync(handle);
+      const bytes = readFileSync(handle);
+      const hash = createHash("sha256").update(bytes).digest("hex");
+      if (
+        !stat.isFile() ||
+        stat.size !== artifact.byteLength ||
+        hash !== artifact.contentHash
+      ) {
+        throw new AuthorityIntegrityError(
+          `Staged artifact body is invalid: ${artifact.artifactId}`,
+        );
+      }
+    } catch (error) {
+      if (error instanceof AuthorityIntegrityError) throw error;
+      throw new AuthorityIntegrityError(
+        `Staged artifact body is unavailable: ${artifact.artifactId}`,
+        { cause: error },
+      );
+    } finally {
+      if (handle !== undefined) closeSync(handle);
+    }
+  }
+
+  private persistArtifactMetadata(
+    descriptor: StagedArtifactRegistration,
+  ): void {
+    const metadataJson = canonicalJson({
+      createdBy: descriptor.createdBy,
+      provenance: descriptor.provenance,
+      schemaVersion: descriptor.schemaVersion,
+    });
+    this.database
+      .prepare(
+        `INSERT OR IGNORE INTO artifacts
+          (artifact_id, kind, content_hash, byte_length, media_type,
+           schema_id, metadata_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        descriptor.artifactId,
+        descriptor.kind,
+        descriptor.contentHash,
+        descriptor.byteLength,
+        descriptor.mediaType,
+        descriptor.schemaId ?? null,
+        metadataJson,
+        this.now(),
+      );
+    const stored = this.database
+      .prepare(
+        `SELECT kind, content_hash, byte_length, media_type, schema_id, metadata_json
+           FROM artifacts WHERE artifact_id = ?`,
+      )
+      .get(descriptor.artifactId) as
+      | {
+          kind: string;
+          content_hash: string;
+          byte_length: number;
+          media_type: string;
+          schema_id: string | null;
+          metadata_json: string;
+        }
+      | undefined;
+    if (
+      stored === undefined ||
+      stored.kind !== descriptor.kind ||
+      stored.content_hash !== descriptor.contentHash ||
+      stored.byte_length !== descriptor.byteLength ||
+      stored.media_type !== descriptor.mediaType ||
+      stored.schema_id !== (descriptor.schemaId ?? null) ||
+      stored.metadata_json !== metadataJson
+    ) {
+      throw new AuthorityIntegrityError(
+        `Artifact identity is already bound to different metadata: ${descriptor.artifactId}`,
+      );
+    }
   }
 }

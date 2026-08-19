@@ -74,7 +74,7 @@ describe("deterministic documents", () => {
       ledgerBytes: Buffer.from(canonicalJson(ledger)),
       sourceBytes: source,
       expectedSourceArtifactId: "artifact_source",
-      approvedExclusionIds: [],
+      approvedExclusions: [],
     });
     expect(valid.coverageValid).toBe(true);
     expect(valid.uncoveredRanges).toEqual([]);
@@ -86,7 +86,7 @@ describe("deterministic documents", () => {
         ledgerBytes: Buffer.from(canonicalJson(partial)),
         sourceBytes: source,
         expectedSourceArtifactId: "artifact_source",
-        approvedExclusionIds: [],
+        approvedExclusions: [],
       }).uncoveredRanges,
     ).toEqual([{ startByte: 5, endByte: source.byteLength }]);
   });
@@ -101,7 +101,7 @@ describe("deterministic documents", () => {
         ledgerBytes: Buffer.from(canonicalJson(withoutOptionalPredecessors)),
         sourceBytes: source,
         expectedSourceArtifactId: "artifact_source",
-        approvedExclusionIds: [],
+        approvedExclusions: [],
       }),
     ).not.toThrow();
 
@@ -110,7 +110,7 @@ describe("deterministic documents", () => {
         ledgerBytes: Buffer.from(canonicalJson(ledger)),
         sourceBytes: source,
         expectedSourceArtifactId: "artifact_other",
-        approvedExclusionIds: [],
+        approvedExclusions: [],
       }),
     ).toThrow("source identity");
 
@@ -131,9 +131,37 @@ describe("deterministic documents", () => {
         ledgerBytes: Buffer.from(canonicalJson(excluded)),
         sourceBytes: source,
         expectedSourceArtifactId: "artifact_source",
-        approvedExclusionIds: [],
+        approvedExclusions: [],
       }),
     ).toThrow("human approval");
+    expect(() =>
+      validateLedger({
+        ledgerBytes: Buffer.from(canonicalJson(excluded)),
+        sourceBytes: source,
+        expectedSourceArtifactId: "artifact_source",
+        approvedExclusions: [
+          {
+            exclusionId: "exclusion_all",
+            sourceRange: { startByte: 0, endByte: source.byteLength - 1 },
+            reason: "Not relevant",
+          },
+        ],
+      }),
+    ).toThrow("human approval");
+    expect(
+      validateLedger({
+        ledgerBytes: Buffer.from(canonicalJson(excluded)),
+        sourceBytes: source,
+        expectedSourceArtifactId: "artifact_source",
+        approvedExclusions: [
+          {
+            exclusionId: "exclusion_all",
+            sourceRange: { startByte: 0, endByte: source.byteLength },
+            reason: "Not relevant",
+          },
+        ],
+      }).coverageValid,
+    ).toBe(true);
 
     const cyclic = JSON.parse(canonicalJson(ledger)) as {
       requirements: Array<Record<string, unknown>>;
@@ -144,7 +172,7 @@ describe("deterministic documents", () => {
         ledgerBytes: Buffer.from(canonicalJson(cyclic)),
         sourceBytes: source,
         expectedSourceArtifactId: "artifact_source",
-        approvedExclusionIds: [],
+        approvedExclusions: [],
       }),
     ).toThrow("lineage");
   });

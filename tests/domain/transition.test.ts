@@ -3356,4 +3356,22 @@ describe("transition", () => {
       ),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
+
+  it("does not reconcile an edited ledger projection by submitting a plan", () => {
+    const state = {
+      ...requirementsApprovedState(),
+      blockedReason: "external_projection_edit",
+      projectionBlock: {
+        projectionKind: "ledger" as const,
+        expectedContentHash: ledgerContentHash,
+        editedArtifact: {
+          artifactId: "artifact_external_edit_ledger_01JTEST",
+          contentHash: reviewContentHash,
+        },
+      },
+    };
+    expect(() => transition(state, planSubmittedInput(), pinnedPolicy)).toThrow(
+      expect.objectContaining({ code: "INVALID_TRANSITION" }),
+    );
+  });
 });

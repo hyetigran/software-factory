@@ -1,21 +1,26 @@
-import type { ExternalEditDetected, SystemActor } from "../domain/index.js";
+import {
+  transition,
+  type ExternalEditDetected,
+  type NonterminalRunState,
+  type PinnedRunPolicy,
+  type SystemActor,
+} from "../domain/index.js";
 import type { ContentAddressedArtifactStore } from "../infrastructure/artifacts/object-store.js";
-import type { StagedArtifactDescriptor } from "../infrastructure/artifacts/object-store.js";
+import type { AuthorityPort, PersistableTransition } from "./authority-port.js";
+import { commitTransition } from "./commit-transition.js";
 import { verifyProjection } from "./deterministic-documents.js";
 
 export async function registerExternalEdit(input: {
   store: ContentAddressedArtifactStore;
-  artifactRegistrar: {
-    registerArtifact(descriptor: StagedArtifactDescriptor): Promise<void>;
-  };
+  authority: AuthorityPort;
+  policy: PinnedRunPolicy;
   runId: string;
   expectedStateVersion: number;
   projectionKind: "ledger" | "plan";
-  expectedContentHash: string;
+  expectedProjection: { artifactId: string; contentHash: string };
   workingBytes: Uint8Array;
   artifactId: string;
   sourceArtifactIds: string[];
-  commandId: string;
   actor: SystemActor;
   workspaceEvidence: {
     auditChainVerified: boolean;
@@ -23,37 +28,70 @@ export async function registerExternalEdit(input: {
     schemaCompatible: boolean;
     mutationLeaseAvailable: boolean;
   };
-}): Promise<ExternalEditDetected | null> {
+}): Promise<PersistableTransition<NonterminalRunState> | null> {
   const verification = verifyProjection(
     input.workingBytes,
-    input.expectedContentHash,
+    input.expectedProjection.contentHash,
   );
   if (verification.status === "verified") return null;
   const descriptor = await input.store.stageArtifact(verification.editedBytes, {
     artifactId: input.artifactId,
-    kind: "other",
+    kind: "external_edit",
     mediaType: "text/markdown; charset=utf-8",
     schemaId: "external-edit.v1",
     createdBy: `${input.actor.component}@${input.actor.version}`,
     provenance: {
-      method: "deterministic_render",
+      method: "external_edit",
       sourceArtifactIds: input.sourceArtifactIds,
-      commandId: input.commandId,
+      verifiedRenderArtifactId: input.expectedProjection.artifactId,
     },
   });
-  await input.artifactRegistrar.registerArtifact(descriptor);
-  return {
-    type: "ExternalEditDetected",
+  return commitTransition<NonterminalRunState>(input.authority, {
     runId: input.runId,
     expectedStateVersion: input.expectedStateVersion,
-    projectionKind: input.projectionKind,
-    expectedContentHash: input.expectedContentHash,
-    editedArtifact: {
-      artifactId: descriptor.artifactId,
-      contentHash: descriptor.contentHash,
-      verified: true,
+    stagedArtifacts: [descriptor],
+    transition: (previousState) => {
+      assertExpectedProjection(previousState, input);
+      const detected: ExternalEditDetected = {
+        type: "ExternalEditDetected",
+        runId: input.runId,
+        expectedStateVersion: input.expectedStateVersion,
+        projectionKind: input.projectionKind,
+        expectedContentHash: input.expectedProjection.contentHash,
+        editedArtifact: {
+          artifactId: descriptor.artifactId,
+          contentHash: descriptor.contentHash,
+          verified: true,
+        },
+        ...input.workspaceEvidence,
+        actor: input.actor,
+      };
+      return transition(previousState, detected, input.policy);
     },
-    ...input.workspaceEvidence,
-    actor: input.actor,
-  };
+  });
+}
+
+function assertExpectedProjection(
+  state: NonterminalRunState | null,
+  input: {
+    projectionKind: "ledger" | "plan";
+    expectedProjection: { artifactId: string; contentHash: string };
+  },
+): void {
+  if (state === null)
+    throw new TypeError("External edit requires an active run");
+  if (input.projectionKind === "plan" && "renderedPlan" in state) {
+    if (
+      state.renderedPlan.artifactId !== input.expectedProjection.artifactId ||
+      state.renderedPlan.contentHash !== input.expectedProjection.contentHash
+    ) {
+      throw new TypeError(
+        "External edit must be compared with the authoritative rendered plan",
+      );
+    }
+    return;
+  }
+  throw new TypeError(
+    "The authoritative rendered projection is not recorded in run state",
+  );
 }

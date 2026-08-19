@@ -100,6 +100,19 @@ describe("workspace and content-addressed artifact store", () => {
       }),
     );
     await expect(
+      store.stageArtifact(Buffer.from("edited", "utf8"), {
+        artifactId: "artifact_external_edit_01JTEST",
+        kind: "external_edit",
+        mediaType: "text/markdown",
+        createdBy: "system:projection-watch",
+        provenance: {
+          method: "external_edit",
+          sourceArtifactIds: ["artifact_plan_01JTEST"],
+          verifiedRenderArtifactId: "artifact_rendered_plan_01JTEST",
+        },
+      }),
+    ).resolves.toEqual(expect.objectContaining({ kind: "external_edit" }));
+    await expect(
       store.stageArtifact(Buffer.from("copied", "utf8"), {
         artifactId: "artifact_copied_invalid_01JTEST",
         kind: "raw_requirements",

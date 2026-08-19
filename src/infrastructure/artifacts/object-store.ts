@@ -53,6 +53,11 @@ export type ArtifactProvenance =
       sourceArtifactIds: string[];
       commandId: string;
     }
+  | {
+      method: "external_edit";
+      sourceArtifactIds: string[];
+      verifiedRenderArtifactId: string;
+    }
   | { method: "exported"; sourceArtifactIds: string[] };
 
 export type ArtifactRegistration = {
@@ -158,6 +163,17 @@ function provenanceIsValid(provenance: ArtifactProvenance): boolean {
         identifiersAreValid(provenance.sourceArtifactIds) &&
         typeof provenance.commandId === "string" &&
         provenance.commandId.trim().length > 0
+      );
+    case "external_edit":
+      return (
+        hasExactKeys(provenance, [
+          "method",
+          "sourceArtifactIds",
+          "verifiedRenderArtifactId",
+        ]) &&
+        identifiersAreValid(provenance.sourceArtifactIds) &&
+        typeof provenance.verifiedRenderArtifactId === "string" &&
+        provenance.verifiedRenderArtifactId.trim().length > 0
       );
     case "exported":
       return (

@@ -92,7 +92,11 @@ export function validateLedger(input: {
   ledgerBytes: Uint8Array;
   sourceBytes: Uint8Array;
   expectedSourceArtifactId: string;
-  approvedExclusionIds: string[];
+  approvedExclusions: Array<{
+    exclusionId: string;
+    sourceRange: { startByte: number; endByte: number };
+    reason: string;
+  }>;
 }): LedgerValidationReport {
   const parsed: unknown = JSON.parse(
     Buffer.from(input.ledgerBytes).toString("utf8"),
@@ -149,12 +153,24 @@ export function validateLedger(input: {
         endByte: Number(range.end_byte),
       })),
     );
-  const approvedIds = new Set(input.approvedExclusionIds);
+  const approvedById = new Map(
+    input.approvedExclusions.map((exclusion) => [
+      exclusion.exclusionId,
+      exclusion,
+    ]),
+  );
   if (
-    approvedIds.size !== input.approvedExclusionIds.length ||
-    exclusions.some(
-      ({ exclusion_id }) => !approvedIds.has(String(exclusion_id)),
-    )
+    approvedById.size !== input.approvedExclusions.length ||
+    exclusions.some(({ exclusion_id, source_range, reason }) => {
+      const approved = approvedById.get(String(exclusion_id));
+      const range = source_range as Record<string, unknown>;
+      return (
+        approved === undefined ||
+        approved.reason !== reason ||
+        approved.sourceRange.startByte !== Number(range.start_byte) ||
+        approved.sourceRange.endByte !== Number(range.end_byte)
+      );
+    })
   ) {
     throw new TypeError(
       "Ledger source exclusion lacks authoritative human approval",

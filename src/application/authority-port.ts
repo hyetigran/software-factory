@@ -40,6 +40,20 @@ export type PersistTransitionRequest = {
   causationId?: string;
   correlationId?: string;
   validatedProjection?: ValidatedProjection;
+  stagedArtifacts?: StagedArtifactRegistration[];
+};
+
+export type StagedArtifactRegistration = {
+  schemaVersion: 1;
+  artifactId: string;
+  kind: string;
+  contentHash: string;
+  byteLength: number;
+  mediaType: string;
+  schemaId?: string;
+  createdBy: string;
+  provenance: object;
+  objectPath: string;
 };
 
 export type ValidatedProjectionData = {
