@@ -1,4 +1,4 @@
-import type { ProviderBoundaryDisclosure } from "./request-planning.js";
+import type { ProviderBoundaryDisclosure } from "../domain/index.js";
 
 export type RunSummary = {
   runId: string;

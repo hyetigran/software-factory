@@ -15,6 +15,17 @@ export const CliExit = {
 } as const;
 
 type Writer = (line: string) => void;
+type BoundaryPreview = Awaited<
+  ReturnType<WorkspaceOperations["previewPlanningBoundary"]>
+>;
+
+function formatBoundaryPreview(preview: BoundaryPreview): string {
+  const disclosure = preview.providerBoundaryDisclosure;
+  return disclosure.mode === "live"
+    ? `Provider boundary: ${disclosure.provider}/${disclosure.modelId}; transmits=${disclosure.transmittedArtifactClasses.join(",")}; storage=${disclosure.providerStorage}; retention=${disclosure.retentionApplicability}; disclosureHash=${preview.providerBoundaryDisclosureHash}`
+    : `Replay boundary: no external transmission; cassette=${disclosure.cassetteBoundary}; disclosureHash=${preview.providerBoundaryDisclosureHash}`;
+}
+
 type ParsedCommand =
   | { kind: "init"; publicName: "init"; json: boolean; projectRoot: string }
   | {
@@ -558,12 +569,7 @@ export async function runCliAsync(
           command.runId,
         );
         if (!command.json) {
-          const disclosure = preview.providerBoundaryDisclosure;
-          write(
-            disclosure.mode === "live"
-              ? `Provider boundary: ${disclosure.provider}/${disclosure.modelId}; transmits=${disclosure.transmittedArtifactClasses.join(",")}; storage=${disclosure.providerStorage}; retention=${disclosure.retentionApplicability}; disclosureHash=${preview.providerBoundaryDisclosureHash}`
-              : `Replay boundary: no external transmission; cassette=${disclosure.cassetteBoundary}; disclosureHash=${preview.providerBoundaryDisclosureHash}`,
-          );
+          write(formatBoundaryPreview(preview));
         }
         const planned = await operations.requestPlanning(
           command.projectRoot,
@@ -589,15 +595,7 @@ export async function runCliAsync(
           command.projectRoot,
           command.runId,
         );
-        const disclosure = preview.providerBoundaryDisclosure;
-        writeSuccess(
-          write,
-          command,
-          preview,
-          disclosure.mode === "live"
-            ? `Provider boundary: ${disclosure.provider}/${disclosure.modelId}; transmits=${disclosure.transmittedArtifactClasses.join(",")}; storage=${disclosure.providerStorage}; retention=${disclosure.retentionApplicability}; disclosureHash=${preview.providerBoundaryDisclosureHash}`
-            : `Replay boundary: no external transmission; cassette=${disclosure.cassetteBoundary}; disclosureHash=${preview.providerBoundaryDisclosureHash}`,
-        );
+        writeSuccess(write, command, preview, formatBoundaryPreview(preview));
         return CliExit.success;
       }
       case "execute_next": {

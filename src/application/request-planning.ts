@@ -4,6 +4,7 @@ import {
   transition,
   type HumanActor,
   type NonterminalRunState,
+  type ProviderBoundaryDisclosure,
 } from "../domain/index.js";
 import type { AuthorityPort } from "./authority-port.js";
 import type { ResolvedConfigurationSnapshot } from "./stage-configuration.js";
@@ -12,31 +13,6 @@ import { WorkspaceOperationError } from "./workspace-operations.js";
 import { packagedControlPaths } from "./resolve-configuration.js";
 import { createHash } from "node:crypto";
 import { canonicalJson } from "../domain/canonical-json.js";
-
-export type ProviderBoundaryDisclosure =
-  | {
-      mode: "live";
-      provider: "openai" | "anthropic";
-      modelId: string;
-      externalTransmission: true;
-      transmittedArtifactClasses: [
-        "system_prompt",
-        "requirements_ledger",
-        "output_schema",
-      ];
-      providerStorage: "minimize";
-      retentionApplicability: "provider_terms_apply";
-    }
-  | {
-      mode: "strict_replay";
-      provider: "openai" | "anthropic";
-      modelId: string;
-      externalTransmission: false;
-      transmittedArtifactClasses: [];
-      providerStorage: "minimize";
-      retentionApplicability: "not_applicable_no_network";
-      cassetteBoundary: "local_verified_recording";
-    };
 
 export function providerBoundaryDisclosure(
   configuration: ResolvedConfigurationSnapshot,

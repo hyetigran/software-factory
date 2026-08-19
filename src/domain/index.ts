@@ -339,6 +339,31 @@ export type LedgerValidationCompleted = {
   actor: SystemActor;
 };
 
+export type ProviderBoundaryDisclosure =
+  | {
+      mode: "live";
+      provider: "openai" | "anthropic";
+      modelId: string;
+      externalTransmission: true;
+      transmittedArtifactClasses: [
+        "system_prompt",
+        "requirements_ledger",
+        "output_schema",
+      ];
+      providerStorage: "minimize";
+      retentionApplicability: "provider_terms_apply";
+    }
+  | {
+      mode: "strict_replay";
+      provider: "openai" | "anthropic";
+      modelId: string;
+      externalTransmission: false;
+      transmittedArtifactClasses: [];
+      providerStorage: "minimize";
+      retentionApplicability: "not_applicable_no_network";
+      cassetteBoundary: "local_verified_recording";
+    };
+
 export type PlanningRequested = {
   type: "PlanningRequested";
   runId: string;
@@ -350,30 +375,7 @@ export type PlanningRequested = {
   policyAccepted: boolean;
   budgetsAccepted: boolean;
   providerBoundaryAcknowledged: boolean;
-  providerBoundaryDisclosure:
-    | {
-        mode: "live";
-        provider: "openai" | "anthropic";
-        modelId: string;
-        externalTransmission: true;
-        transmittedArtifactClasses: [
-          "system_prompt",
-          "requirements_ledger",
-          "output_schema",
-        ];
-        providerStorage: "minimize";
-        retentionApplicability: "provider_terms_apply";
-      }
-    | {
-        mode: "strict_replay";
-        provider: "openai" | "anthropic";
-        modelId: string;
-        externalTransmission: false;
-        transmittedArtifactClasses: [];
-        providerStorage: "minimize";
-        retentionApplicability: "not_applicable_no_network";
-        cassetteBoundary: "local_verified_recording";
-      };
+  providerBoundaryDisclosure: ProviderBoundaryDisclosure;
   providerBoundaryDisclosureHash: string;
   promptArtifactId: string;
   promptContentHash: string;
