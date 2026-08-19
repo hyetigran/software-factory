@@ -37,6 +37,22 @@ type AcceptedFailureData = {
   terminalResult?: PersistableTransition<object>;
 };
 
+function immutableCopy<T>(value: T): T {
+  const copy = structuredClone(value);
+  const freeze = (nested: unknown): void => {
+    if (
+      nested === null ||
+      typeof nested !== "object" ||
+      ArrayBuffer.isView(nested)
+    )
+      return;
+    Object.freeze(nested);
+    Object.values(nested).forEach(freeze);
+  };
+  freeze(copy);
+  return copy;
+}
+
 export class AcceptedProviderFailure {
   readonly [acceptedFailureBrand] = true;
 
@@ -64,7 +80,7 @@ export class AcceptedProviderFailure {
             request.terminalInput,
             request.domainPolicy,
           );
-    return new AcceptedProviderFailure({
+    const copied = immutableCopy({
       previousStateHash: createHash("sha256")
         .update(canonicalJson(previousState))
         .digest("hex"),
@@ -86,9 +102,17 @@ export class AcceptedProviderFailure {
       ...(terminalResult === undefined
         ? {}
         : {
-            terminalInput: structuredClone(request.terminalInput),
+            terminalInput: request.terminalInput,
             terminalResult,
           }),
+    });
+    return new AcceptedProviderFailure({
+      ...copied,
+      executionPolicy: request.executionPolicy,
+      completion: Object.freeze({
+        ...copied.completion,
+        execution: request.completion.execution,
+      }),
     });
   }
 

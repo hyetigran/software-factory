@@ -550,6 +550,19 @@ export class SqliteAuthority
         let result: ProviderFailureDisposition | PersistableTransition<object>;
         if (terminal) {
           const terminalInput = data.terminalInput;
+          const authoritativeAttemptIds = this.database
+            .prepare(
+              `SELECT attempt_id FROM command_attempts
+                WHERE command_id = ? ORDER BY attempt_number`,
+            )
+            .all(data.completion.commandId)
+            .map((row) => (row as { attempt_id: string }).attempt_id);
+          const stagedTerminalEvidence = new Map(
+            (data.persistRequest.stagedArtifacts ?? []).map((artifact) => [
+              artifact.artifactId,
+              artifact.contentHash,
+            ]),
+          );
           const expectedClassification =
             completion.failureClass === "refusal"
               ? "refusal"
@@ -564,6 +577,17 @@ export class SqliteAuthority
             terminalInput === undefined ||
             terminalInput.failedCommandId !== data.completion.commandId ||
             !terminalInput.attemptIds.includes(data.completion.attemptId) ||
+            canonicalJson(terminalInput.attemptIds) !==
+              canonicalJson(authoritativeAttemptIds) ||
+            stagedTerminalEvidence.get(
+              terminalInput.terminalPolicyDecisionArtifact.artifactId,
+            ) !== terminalInput.terminalPolicyDecisionArtifact.contentHash ||
+            stagedTerminalEvidence.get(
+              terminalInput.budgetReportArtifact.artifactId,
+            ) !== terminalInput.budgetReportArtifact.contentHash ||
+            stagedTerminalEvidence.get(
+              terminalInput.diagnosticArtifact.artifactId,
+            ) !== terminalInput.diagnosticArtifact.contentHash ||
             terminalInput.outcomeArtifact.artifactId !==
               data.completion.outcomeArtifact.artifactId ||
             terminalInput.outcomeArtifact.contentHash !==
