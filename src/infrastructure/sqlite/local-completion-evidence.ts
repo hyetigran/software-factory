@@ -47,9 +47,29 @@ export class LocalCompletionEvidence {
         "Completed artifacts do not belong to the command attempt",
       );
     const payload = command.payload as Record<string, unknown>;
-    const expectedIds = [payload.ledgerArtifactId, payload.sourceArtifactId]
-      .filter((value): value is string => typeof value === "string")
-      .sort();
+    const fields =
+      command.commandType === "render_source_registration_report"
+        ? ["sourceArtifactId"]
+        : command.commandType === "validate_ledger"
+          ? ["ledgerArtifactId", "sourceArtifactId"]
+          : command.commandType === "render_ledger_approval"
+            ? [
+                "ledgerArtifactId",
+                "coverageReportArtifactId",
+                "sourceArtifactId",
+              ]
+            : [];
+    const expectedIds = fields.map((field) => payload[field]);
+    if (
+      expectedIds.some(
+        (value) => typeof value !== "string" || value.trim().length === 0,
+      ) ||
+      new Set(expectedIds).size !== expectedIds.length
+    )
+      throw new AuthorityIntegrityError(
+        "Local command input artifact identities are invalid",
+      );
+    const controlledIds = (expectedIds as string[]).sort();
     for (const artifact of [
       request.resultArtifact,
       request.nativeUsageArtifact,
@@ -59,23 +79,31 @@ export class LocalCompletionEvidence {
           ? [...artifact.provenance.sourceArtifactIds].sort()
           : [];
       if (
-        actualIds.length !== expectedIds.length ||
-        actualIds.some((id, index) => id !== expectedIds[index])
+        actualIds.length !== controlledIds.length ||
+        actualIds.some((id, index) => id !== controlledIds[index])
       )
         throw new TypeError("Local result provenance inputs are invalid");
     }
-    for (const artifactId of expectedIds) {
+    const expectedHashes: string[] = [];
+    for (const artifactId of controlledIds) {
       const row = this.database
         .prepare("SELECT content_hash FROM artifacts WHERE artifact_id = ?")
         .get(artifactId) as { content_hash: string } | undefined;
-      if (
-        row === undefined ||
-        !command.inputArtifactHashes.includes(row.content_hash)
-      )
+      if (row === undefined)
         throw new AuthorityIntegrityError(
           "Local command input artifact binding is invalid",
         );
+      expectedHashes.push(row.content_hash);
     }
+    const declaredHashes = [...command.inputArtifactHashes].sort();
+    expectedHashes.sort();
+    if (
+      declaredHashes.length !== expectedHashes.length ||
+      declaredHashes.some((hash, index) => hash !== expectedHashes[index])
+    )
+      throw new AuthorityIntegrityError(
+        "Local command input hash set is invalid",
+      );
   }
 
   assertValidationDomain(
