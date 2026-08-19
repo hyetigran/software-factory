@@ -897,6 +897,7 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
           `SELECT c.run_id, c.status AS command_status, c.accepted_attempt_id,
                   c.triggering_state_version, c.specification_json,
                   a.status AS attempt_status, a.correlation_id,
+                  a.result_artifact_id, a.native_usage_artifact_id,
                   l.owner_process, l.attempt_id AS lease_attempt_id,
                   r.state_version
              FROM logical_commands c
@@ -914,30 +915,101 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
             specification_json: string;
             attempt_status: string;
             correlation_id: string;
+            result_artifact_id: string | null;
+            native_usage_artifact_id: string | null;
             owner_process: string | null;
             lease_attempt_id: string | null;
             state_version: number;
           }
         | undefined;
+      if (row === undefined || row.run_id !== request.runId) {
+        throw new TypeError("Command attempt completion is not eligible");
+      }
+      if (["completed", "discarded"].includes(row.attempt_status)) {
+        if (
+          row.correlation_id !== request.correlationId ||
+          row.result_artifact_id !== request.resultArtifact.artifactId ||
+          row.native_usage_artifact_id !==
+            request.nativeUsageArtifact.artifactId
+        ) {
+          throw new TypeError("Completed attempt evidence conflicts");
+        }
+        this.database.exec("COMMIT");
+        return {
+          status: "completed",
+          runId: request.runId,
+          commandId: request.commandId,
+          attemptId: request.attemptId,
+          acceptedAsLogicalResult:
+            row.accepted_attempt_id === request.attemptId,
+        };
+      }
       if (
-        row === undefined ||
-        row.run_id !== request.runId ||
         row.attempt_status !== "started" ||
         row.correlation_id !== request.correlationId ||
         row.lease_attempt_id !== request.attemptId ||
         row.owner_process !== request.ownerProcess
-      ) {
+      )
         throw new TypeError("Command attempt completion is not eligible");
-      }
       const command = parseObject(row.specification_json) as PersistableCommand;
       if (!commandIsValid(command)) {
         throw new AuthorityIntegrityError(
           "Logical command envelope is invalid during completion",
         );
       }
-      const reservation = command.budgetReservation;
+      if (
+        ![
+          "render_source_registration_report",
+          "render_ledger_approval",
+        ].includes(command.commandType) ||
+        command.provider !== "local"
+      ) {
+        throw new TypeError(
+          "State-changing command outcomes require an atomic domain transition",
+        );
+      }
+      const provenanceMatches = (
+        artifact: StagedArtifactRegistration,
+      ): boolean => {
+        const provenance = artifact.provenance;
+        return (
+          provenance.method === "deterministic_render" &&
+          provenance.commandId === request.commandId
+        );
+      };
+      if (
+        !provenanceMatches(request.resultArtifact) ||
+        !provenanceMatches(request.nativeUsageArtifact)
+      ) {
+        throw new TypeError(
+          "Completed artifacts do not belong to the command attempt",
+        );
+      }
+      const reservationRow = this.database
+        .prepare(
+          `SELECT calls, input_tokens, output_tokens, cost_usd_micros
+             FROM usage_ledger
+            WHERE attempt_id = ? AND kind = 'reservation'`,
+        )
+        .get(request.attemptId) as
+        | {
+            calls: number;
+            input_tokens: number;
+            output_tokens: number;
+            cost_usd_micros: number;
+          }
+        | undefined;
+      if (reservationRow === undefined)
+        throw new AuthorityIntegrityError("Attempt reservation is missing");
+      const reservation = {
+        calls: reservationRow.calls,
+        inputTokens: reservationRow.input_tokens,
+        outputTokens: reservationRow.output_tokens,
+        costUsdMicros: reservationRow.cost_usd_micros,
+      };
       const actual = request.actualUsage;
       if (
+        Object.values(actual).some((value) => value !== 0) ||
         actual.calls > reservation.calls ||
         actual.inputTokens > reservation.inputTokens ||
         actual.outputTokens > reservation.outputTokens ||
@@ -948,15 +1020,20 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
       this.persistArtifactMetadata(request.resultArtifact);
       this.persistArtifactMetadata(request.nativeUsageArtifact);
       const completedAt = this.now();
+      const acceptedAsLogicalResult =
+        row.accepted_attempt_id === null &&
+        row.state_version === row.triggering_state_version;
+      const attemptStatus = acceptedAsLogicalResult ? "completed" : "discarded";
       this.database
         .prepare(
           `UPDATE command_attempts
-              SET status = 'completed', provider_request_id = ?,
+              SET status = ?, provider_request_id = ?,
                   provider_response_id = ?, result_artifact_id = ?,
                   native_usage_artifact_id = ?, completed_at = ?
             WHERE attempt_id = ?`,
         )
         .run(
+          attemptStatus,
           request.providerEvidence.providerRequestId ?? null,
           request.providerEvidence.providerResponseId ?? null,
           request.resultArtifact.artifactId,
@@ -964,7 +1041,6 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
           completedAt,
           request.attemptId,
         );
-      const acceptedAsLogicalResult = row.accepted_attempt_id === null;
       if (acceptedAsLogicalResult) {
         this.database
           .prepare(
@@ -1046,6 +1122,34 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
             ],
             payload: { commandId: request.commandId, reservation, actual },
           },
+          ...(acceptedAsLogicalResult
+            ? []
+            : [
+                {
+                  type: "result_discarded",
+                  actor: {
+                    kind: "system",
+                    component: "executor",
+                    version: "0.0.0",
+                  },
+                  reason:
+                    "The command result is stale or a logical result was already accepted",
+                  evidence: [
+                    {
+                      kind: "artifact",
+                      artifactId: request.resultArtifact.artifactId,
+                      contentHash: request.resultArtifact.contentHash,
+                    },
+                  ],
+                  payload: {
+                    commandId: request.commandId,
+                    attemptId: request.attemptId,
+                    acceptedAttemptId: row.accepted_attempt_id,
+                    triggeringStateVersion: row.triggering_state_version,
+                    currentStateVersion: row.state_version,
+                  },
+                },
+              ]),
         ],
         now: this.now,
       });

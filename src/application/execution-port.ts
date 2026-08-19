@@ -275,6 +275,7 @@ export function completeCommandAttempt(
     !artifactRegistrationIsValid(request.resultArtifact) ||
     !/^[a-f0-9]{64}$/u.test(request.resultArtifact.contentHash) ||
     request.nativeUsageArtifact.schemaVersion !== 1 ||
+    request.nativeUsageArtifact.kind !== "native_usage" ||
     !artifactRegistrationIsValid(request.nativeUsageArtifact) ||
     !/^[a-f0-9]{64}$/u.test(request.nativeUsageArtifact.contentHash) ||
     ![

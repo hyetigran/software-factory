@@ -255,10 +255,9 @@ describe("SQLite authority", () => {
       mediaType: "application/json",
       createdBy: "system:test",
       provenance: {
-        method: "provider_generated",
+        method: "deterministic_render",
         sourceArtifactIds: ["artifact_source"],
         commandId: "command_execute",
-        attemptId: "attempt_execute_1",
       },
     });
     await expect(
@@ -279,6 +278,24 @@ describe("SQLite authority", () => {
         providerEvidence: {},
       }),
     ).rejects.toThrow("exceeds the reserved maximum");
+    await expect(
+      authority.completeAttempt({
+        runId: "run_execute",
+        commandId: "command_execute",
+        attemptId: "attempt_execute_1",
+        correlationId: "correlation_execute_1",
+        ownerProcess: "pid:123",
+        resultArtifact: result,
+        nativeUsageArtifact: usage,
+        actualUsage: {
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsdMicros: 0,
+        },
+        providerEvidence: {},
+      }),
+    ).resolves.toMatchObject({ acceptedAsLogicalResult: true });
     await expect(
       authority.completeAttempt({
         runId: "run_execute",
