@@ -3304,13 +3304,21 @@ function haltAfterProviderFailure(
             input.failureKind === "unknown_outcome"
           ? bounds.retriesUsed >= bounds.retryLimit
           : true));
-  const classificationValid = [
-    "refusal",
-    "invalid_output",
-    "transport",
-    "provider_error",
-    "budget",
-  ].includes(input.failureClassification);
+  const expectedClassification =
+    input.failureKind === "refusal"
+      ? "refusal"
+      : input.failureKind === "truncated" ||
+          input.failureKind === "schema_invalid"
+        ? "invalid_output"
+        : input.failureKind === "model_unavailable" ||
+            input.failureKind === "model_mismatch"
+          ? "provider_error"
+          : "transport";
+  const classificationValid =
+    input.failureClassification === expectedClassification &&
+    (input.type !== "PinnedModelUnavailable" ||
+      (input.failureKind === "model_unavailable" &&
+        input.failureClassification === "provider_error"));
   if (
     input.expectedStateVersion !== previousState.stateVersion ||
     activeCommand === undefined ||
@@ -3320,7 +3328,9 @@ function haltAfterProviderFailure(
       (!input.providerConfirmedUnavailable ||
         input.unavailableModelId.trim().length === 0)) ||
     (input.type === "ProviderOutcomeFailed" &&
-      previousState.state !== "planning" &&
+      ["schema_invalid", "transport_retryable", "unknown_outcome"].includes(
+        input.failureKind,
+      ) &&
       !input.retryRepairExhausted) ||
     input.terminalPolicyDecision !== "halt" ||
     !classificationValid ||

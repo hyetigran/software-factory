@@ -3260,7 +3260,7 @@ describe("transition", () => {
         expectedStateVersion: active.stateVersion,
         failedCommandId: command.commandId,
         failedPurposeId: command.purposeId,
-        retryRepairExhausted: true,
+        retryRepairExhausted: false,
         failureKind: "refusal",
         failureClassification: "refusal",
         recoveryBounds: {
@@ -3318,6 +3318,37 @@ describe("transition", () => {
     );
 
     expect(result.nextState.state).toBe("halted");
+  });
+
+  it("rejects contradictory provider failure classification", () => {
+    expect(() =>
+      transition(
+        planningState(),
+        {
+          ...providerOutcomeFailedInput(),
+          failureKind: "refusal",
+          failureClassification: "transport",
+        },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("requires the dedicated unavailable-model kind", () => {
+    expect(() =>
+      transition(
+        planningState(),
+        {
+          ...providerOutcomeFailedInput(),
+          type: "PinnedModelUnavailable",
+          unavailableModelId: configuredPlannerAssignment.modelId,
+          providerConfirmedUnavailable: true,
+          failureKind: "schema_invalid",
+          failureClassification: "invalid_output",
+        },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 
   it("rejects baseline failure before retry and repair bounds are exhausted", () => {

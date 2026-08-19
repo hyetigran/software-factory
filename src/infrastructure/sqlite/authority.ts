@@ -626,14 +626,22 @@ export class SqliteAuthority
           }>;
           const attemptEvidence = this.database
             .prepare(
-              `SELECT attempt_id, result_artifact_id, native_usage_artifact_id
-                 FROM command_attempts
-                WHERE command_id = ? ORDER BY attempt_number`,
+              `SELECT a.attempt_id, a.result_artifact_id,
+                      a.native_usage_artifact_id,
+                      request.artifact_id AS request_artifact_id,
+                      request.content_hash AS request_content_hash
+                 FROM command_attempts a
+                 LEFT JOIN artifacts request
+                   ON json_extract(request.metadata_json, '$.provenance.attemptId') = a.attempt_id
+                  AND request.kind = 'provider_request'
+                WHERE a.command_id = ? ORDER BY a.attempt_number`,
             )
             .all(data.completion.commandId) as Array<{
             attempt_id: string;
             result_artifact_id: string | null;
             native_usage_artifact_id: string | null;
+            request_artifact_id: string | null;
+            request_content_hash: string | null;
           }>;
           const usage = (attemptId: string, kind: "reservation" | "actual") => {
             const row = usageRows.find(
@@ -671,7 +679,9 @@ export class SqliteAuthority
             );
             if (
               evidenceRow === undefined ||
-              evidenceRow.result_artifact_id === null
+              evidenceRow.result_artifact_id === null ||
+              evidenceRow.request_artifact_id === null ||
+              evidenceRow.request_content_hash === null
             ) {
               throw new AuthorityIntegrityError(
                 "Terminal failure attempt evidence is incomplete",
@@ -679,6 +689,8 @@ export class SqliteAuthority
             }
             return {
               attemptId,
+              requestArtifactId: evidenceRow.request_artifact_id,
+              requestContentHash: evidenceRow.request_content_hash,
               outcomeArtifactId: evidenceRow.result_artifact_id,
               nativeUsageArtifactId: evidenceRow.native_usage_artifact_id,
               reserved: usage(attemptId, "reservation"),
@@ -706,6 +718,7 @@ export class SqliteAuthority
                     purpose: "terminal_budget_report" as const,
                     bytes: documents.budgetReport,
                     sources: attempts.flatMap((attempt) => [
+                      attempt.requestArtifactId,
                       attempt.outcomeArtifactId,
                       ...(attempt.nativeUsageArtifactId === null
                         ? []

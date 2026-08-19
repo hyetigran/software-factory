@@ -10,6 +10,8 @@ export function terminalFailureEvidenceDocuments(input: {
   disposition: ProviderFailureDisposition;
   attempts: Array<{
     attemptId: string;
+    requestArtifactId: string;
+    requestContentHash: string;
     outcomeArtifactId: string;
     nativeUsageArtifactId: string | null;
     reserved: BudgetReservation;
