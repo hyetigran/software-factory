@@ -610,21 +610,27 @@ export class SqliteAuthority
           );
           const usageRows = this.database
             .prepare(
-              `SELECT kind, calls, input_tokens, output_tokens, cost_usd_micros
-                 FROM usage_ledger WHERE attempt_id = ?`,
+              `SELECT u.attempt_id, u.kind, u.calls, u.input_tokens,
+                      u.output_tokens, u.cost_usd_micros
+                 FROM usage_ledger u
+                 JOIN command_attempts a ON a.attempt_id = u.attempt_id
+                WHERE a.command_id = ?`,
             )
-            .all(data.completion.attemptId) as Array<{
+            .all(data.completion.commandId) as Array<{
+            attempt_id: string;
             kind: string;
             calls: number;
             input_tokens: number;
             output_tokens: number;
             cost_usd_micros: number;
           }>;
-          const usage = (kind: "reservation" | "actual") => {
-            const row = usageRows.find(({ kind: storedKind }) =>
-              kind === "actual"
-                ? ["actual", "conservative_charge"].includes(storedKind)
-                : storedKind === kind,
+          const usage = (attemptId: string, kind: "reservation" | "actual") => {
+            const row = usageRows.find(
+              ({ attempt_id, kind: storedKind }) =>
+                attempt_id === attemptId &&
+                (kind === "actual"
+                  ? ["actual", "conservative_charge"].includes(storedKind)
+                  : storedKind === kind),
             );
             if (row === undefined) {
               throw new AuthorityIntegrityError(
@@ -638,12 +644,28 @@ export class SqliteAuthority
               costUsdMicros: row.cost_usd_micros,
             };
           };
+          const attempts = authoritativeAttemptIds.map((attemptId) => {
+            const actualRow = usageRows.find(
+              ({ attempt_id, kind }) =>
+                attempt_id === attemptId &&
+                ["actual", "conservative_charge"].includes(kind),
+            );
+            if (actualRow === undefined) {
+              throw new AuthorityIntegrityError(
+                "Terminal failure attempt accounting is incomplete",
+              );
+            }
+            return {
+              attemptId,
+              reserved: usage(attemptId, "reservation"),
+              actual: usage(attemptId, "actual"),
+              actualKind: actualRow.kind as "actual" | "conservative_charge",
+            };
+          });
           const documents = terminalFailureEvidenceDocuments({
             completion: data.completion,
             disposition: completion,
-            attemptIds: authoritativeAttemptIds,
-            reserved: usage("reservation"),
-            actual: usage("actual"),
+            attempts,
           });
           const terminalDescriptors =
             terminalInput === undefined

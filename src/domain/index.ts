@@ -3257,13 +3257,9 @@ function haltAfterProviderFailure(
 ): TerminalTransitionResult {
   if (
     previousState === null ||
-    (input.type === "ProviderOutcomeFailed" &&
-      previousState.state !== "planning" &&
-      previousState.state !== "baseline_review") ||
-    (input.type === "PinnedModelUnavailable" &&
-      !["planning", "baseline_review", "remediation", "closure"].includes(
-        previousState.state,
-      )) ||
+    !["planning", "baseline_review", "remediation", "closure"].includes(
+      previousState.state,
+    ) ||
     previousState.runId !== input.runId
   ) {
     throw new DomainTransitionError(
@@ -3312,7 +3308,7 @@ function haltAfterProviderFailure(
       (!input.providerConfirmedUnavailable ||
         input.unavailableModelId.trim().length === 0)) ||
     (input.type === "ProviderOutcomeFailed" &&
-      previousState.state === "baseline_review" &&
+      previousState.state !== "planning" &&
       !input.retryRepairExhausted) ||
     input.terminalPolicyDecision !== "halt" ||
     !classificationValid ||

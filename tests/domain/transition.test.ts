@@ -3178,6 +3178,94 @@ describe("transition", () => {
     ).toMatchObject({ state: "halted", haltedFrom: "baseline_review" });
   });
 
+  it.each([
+    ["remediation", ["finding_architecture_01JTEST"]],
+    ["closure", []],
+  ] as const)(
+    "halts %s when its pinned provider model is unavailable",
+    (expectedState, findingIds) => {
+      const active = transition(
+        baselineReviewState(),
+        reviewAcceptedInput([...findingIds]),
+        pinnedPolicy,
+      ).nextState;
+      expect(active.state).toBe(expectedState);
+      if (active.state !== "remediation" && active.state !== "closure") {
+        throw new Error("Expected a post-baseline provider state");
+      }
+      const command =
+        active.state === "remediation"
+          ? active.activePlanning
+          : {
+              commandId: active.activeReview.commandId,
+              purposeId: active.activeReview.reviewPurposeId,
+            };
+      const unavailableModelId =
+        active.state === "remediation"
+          ? configuredPlannerAssignment.modelId
+          : configuredReviewerAssignment.modelId;
+      const input: PinnedModelUnavailable = {
+        ...providerOutcomeFailedInput(),
+        type: "PinnedModelUnavailable",
+        expectedStateVersion: active.stateVersion,
+        failedCommandId: command.commandId,
+        failedPurposeId: command.purposeId,
+        retryRepairExhausted: false,
+        recoveryBounds: {
+          retryLimit: 2,
+          repairLimit: 1,
+          retriesUsed: 0,
+          repairsUsed: 0,
+        },
+        unavailableModelId,
+        providerConfirmedUnavailable: true,
+        failureClassification: "provider_error",
+        reason: `Pinned ${expectedState} model is unavailable`,
+      };
+
+      expect(transition(active, input, pinnedPolicy).nextState).toMatchObject({
+        state: "halted",
+        haltedFrom: expectedState,
+      });
+    },
+  );
+
+  it.each([
+    ["remediation", ["finding_architecture_01JTEST"]],
+    ["closure", []],
+  ] as const)(
+    "halts %s after ordinary provider recovery is exhausted",
+    (expectedState, findingIds) => {
+      const active = transition(
+        baselineReviewState(),
+        reviewAcceptedInput([...findingIds]),
+        pinnedPolicy,
+      ).nextState;
+      if (active.state !== "remediation" && active.state !== "closure") {
+        throw new Error("Expected a post-baseline provider state");
+      }
+      const command =
+        active.state === "remediation"
+          ? active.activePlanning
+          : {
+              commandId: active.activeReview.commandId,
+              purposeId: active.activeReview.reviewPurposeId,
+            };
+      const input: ProviderOutcomeFailed = {
+        ...providerOutcomeFailedInput(),
+        expectedStateVersion: active.stateVersion,
+        failedCommandId: command.commandId,
+        failedPurposeId: command.purposeId,
+        retryRepairExhausted: true,
+      };
+
+      expect(transition(active, input, pinnedPolicy).nextState).toMatchObject({
+        state: "halted",
+        haltedFrom: expectedState,
+      });
+    },
+  );
+
   it("halts baseline review against its exact active review command", () => {
     const result = transition(
       baselineReviewState(),

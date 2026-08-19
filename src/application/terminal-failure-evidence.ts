@@ -8,15 +8,26 @@ import type {
 export function terminalFailureEvidenceDocuments(input: {
   completion: CompleteProviderFailureEvidence;
   disposition: ProviderFailureDisposition;
-  attemptIds: string[];
-  reserved: BudgetReservation;
-  actual: BudgetReservation;
+  attempts: Array<{
+    attemptId: string;
+    reserved: BudgetReservation;
+    actual: BudgetReservation;
+    actualKind: "actual" | "conservative_charge";
+  }>;
 }): {
   policyDecision: Buffer;
   budgetReport: Buffer;
   diagnostic: Buffer;
 } {
   const { completion, disposition } = input;
+  const total = (field: keyof BudgetReservation, kind: "reserved" | "actual") =>
+    input.attempts.reduce((sum, attempt) => sum + attempt[kind][field], 0);
+  const totals = (kind: "reserved" | "actual"): BudgetReservation => ({
+    calls: total("calls", kind),
+    inputTokens: total("inputTokens", kind),
+    outputTokens: total("outputTokens", kind),
+    costUsdMicros: total("costUsdMicros", kind),
+  });
   return {
     policyDecision: Buffer.from(
       canonicalJson({
@@ -35,9 +46,11 @@ export function terminalFailureEvidenceDocuments(input: {
         schemaVersion: 1,
         runId: completion.runId,
         commandId: completion.commandId,
-        attemptIds: input.attemptIds,
-        reserved: input.reserved,
-        actual: input.actual,
+        attempts: input.attempts,
+        totals: {
+          reserved: totals("reserved"),
+          actual: totals("actual"),
+        },
         recoveryBounds: disposition.recoveryBounds,
       }),
     ),

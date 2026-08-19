@@ -83,11 +83,21 @@ export class SqliteProviderFailure {
         completion: this.reconcileSettled(request, policy, row),
       };
     }
+    const explicitlyExpected =
+      this.dependencies.database
+        .prepare(
+          `SELECT 1 FROM audit_entries
+            WHERE run_id = ? AND fact_type = 'command_attempt_started'
+              AND json_extract(payload_json, '$.attemptId') = ?
+              AND json_extract(payload_json, '$.attemptKind') = 'human_rerun'
+              AND json_extract(payload_json, '$.humanAuthorizationId') IS NOT NULL`,
+        )
+        .get(request.runId, request.attemptId) !== undefined;
     if (
       row.attempt_status === "started" &&
       row.accepted_attempt_id === null &&
       row.command_status === "running" &&
-      row.state_version === row.triggering_state_version
+      (row.state_version === row.triggering_state_version || explicitlyExpected)
     ) {
       return { status: "eligible" };
     }
