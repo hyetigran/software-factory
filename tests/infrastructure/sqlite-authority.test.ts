@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import {
   mkdir,
@@ -54,6 +55,9 @@ type TestState = Record<string, unknown> & {
 };
 
 const directories: string[] = [];
+const requirementsLedgerSchema = JSON.parse(
+  readFileSync(resolve("schemas/requirements-ledger.v1.schema.json"), "utf8"),
+) as unknown;
 
 const executionConfiguration: ResolvedConfigurationSnapshot = {
   schemaVersion: 1,
@@ -930,6 +934,7 @@ describe("SQLite authority", () => {
         stateVersion: 2,
         ledgerVersionId: ledgerInput.ledgerVersionId,
         sourceArtifactId: input.sourceArtifactId,
+        schema: requirementsLedgerSchema,
       }),
       transition: (previousState) =>
         transition(previousState, ledgerInput, policy),
@@ -1180,6 +1185,7 @@ describe("SQLite authority", () => {
     };
     const bytes = Buffer.from(canonicalJson(valid));
     const capability = ValidatedProjection.fromLedgerArtifact({
+      schema: requirementsLedgerSchema,
       bytes,
       contentHash: createHash("sha256").update(bytes).digest("hex"),
       stateVersion: 2,
@@ -1205,6 +1211,7 @@ describe("SQLite authority", () => {
     );
     expect(() =>
       ValidatedProjection.fromLedgerArtifact({
+        schema: requirementsLedgerSchema,
         bytes: invalidBytes,
         contentHash: createHash("sha256").update(invalidBytes).digest("hex"),
         stateVersion: 2,

@@ -140,7 +140,7 @@ export class ValidatedProjection {
     stateVersion: number;
     ledgerVersionId: string;
     sourceArtifactId: string;
-    schema?: unknown;
+    schema: unknown;
   }): ValidatedProjection {
     const observedHash = createHash("sha256").update(input.bytes).digest("hex");
     if (observedHash !== input.contentHash) {
@@ -159,10 +159,7 @@ export class ValidatedProjection {
       throw new TypeError("Ledger projection requires a valid ledger object");
     }
     const ledger = parsed as Record<string, unknown>;
-    assertJsonSchema(
-      parsed,
-      input.schema ?? schema("requirements-ledger.v1.schema.json"),
-    );
+    assertJsonSchema(parsed, input.schema);
     if (
       ledger.ledger_id !== input.ledgerVersionId ||
       ledger.source_artifact_id !== input.sourceArtifactId ||
