@@ -50,6 +50,7 @@ export type ValidatedProjectionData = {
   planVersionId?: string;
   planContentHash?: string;
   reviewContentHash?: string;
+  reviewedPlanArtifactId?: string;
   schemaValid: boolean;
   controlledIdsValid: boolean;
   referencesComplete: boolean;
@@ -233,6 +234,9 @@ export class ValidatedProjection {
     const transitions = plan.section_transitions as Array<
       Record<string, unknown>
     >;
+    const coverage = plan.requirement_coverage as Array<
+      Record<string, unknown>
+    >;
     const componentIds = new Set(
       components.map(({ component_id }) => String(component_id)),
     );
@@ -256,6 +260,24 @@ export class ValidatedProjection {
     ) {
       throw new TypeError("Plan controlled references are invalid");
     }
+    const sectionIds = new Set(planSections.map(({ sectionId }) => sectionId));
+    const coveredRequirementIds = coverage.map(({ requirement_id }) =>
+      String(requirement_id),
+    );
+    if (
+      new Set(input.allowedRequirementIds).size !==
+        input.allowedRequirementIds.length ||
+      coveredRequirementIds.length !== input.allowedRequirementIds.length ||
+      new Set(coveredRequirementIds).size !== coveredRequirementIds.length ||
+      input.allowedRequirementIds.some(
+        (id) => !coveredRequirementIds.includes(id),
+      ) ||
+      coverage.some(({ section_ids }) =>
+        (section_ids as string[]).some((id) => !sectionIds.has(id)),
+      )
+    ) {
+      throw new TypeError("Plan requirement coverage is incomplete");
+    }
     const sectionTransitions = transitions.map((transition, index) => ({
       transitionId: `transition_${index}_${createHash("sha256").update(JSON.stringify(transition)).digest("hex").slice(0, 16)}`,
       kind: transition.kind as
@@ -271,8 +293,8 @@ export class ValidatedProjection {
         if (kind === "split") return fromIds.length === 1 && toIds.length >= 2;
         if (kind === "merged") return fromIds.length >= 2 && toIds.length === 1;
         if (kind === "retired")
-          return fromIds.length >= 1 && toIds.length === 0;
-        return fromIds.length === 0 && toIds.length >= 1;
+          return fromIds.length === 1 && toIds.length === 0;
+        return fromIds.length === 0 && toIds.length === 1;
       },
     );
     if (!cardinalityValid)
@@ -300,6 +322,11 @@ export class ValidatedProjection {
     contentHash: string;
     stateVersion: number;
     policyHash: string;
+    expectedPlanArtifactId: string;
+    allowedComponentIds: string[];
+    allowedRequirementIds: string[];
+    allowedSectionIds: string[];
+    suppliedEvidenceArtifactIds: string[];
     findings: Array<{ findingId: string; observationId: string }>;
   }): ValidatedProjection {
     if (
@@ -319,9 +346,34 @@ export class ValidatedProjection {
     if (
       review.review_kind !== "baseline" ||
       review.policy_hash !== input.policyHash ||
+      review.plan_artifact_id !== input.expectedPlanArtifactId ||
       concerns.length !== input.findings.length
     ) {
       throw new TypeError("Review artifact is not bound to reconciliation");
+    }
+    const componentIds = new Set(input.allowedComponentIds);
+    const requirementIds = new Set(input.allowedRequirementIds);
+    const sectionIds = new Set(input.allowedSectionIds);
+    const evidenceIds = new Set(input.suppliedEvidenceArtifactIds);
+    if (
+      concerns.some(
+        (concern) =>
+          (concern.component_ids as string[]).some(
+            (id) => !componentIds.has(id),
+          ) ||
+          (concern.requirement_ids as string[]).some(
+            (id) => !requirementIds.has(id),
+          ) ||
+          (concern.evidence as Array<Record<string, unknown>>).some(
+            (evidence) =>
+              !evidenceIds.has(String(evidence.artifact_id)) ||
+              (evidence.section_ids as string[]).some(
+                (id) => !sectionIds.has(id),
+              ),
+          ),
+      )
+    ) {
+      throw new TypeError("Review controlled references are invalid");
     }
     const findingFingerprints = concerns.map((concern, index) => ({
       findingId: input.findings[index]!.findingId,
@@ -351,6 +403,7 @@ export class ValidatedProjection {
         validator: "deterministic-authority-projection-v1",
         stateVersion: input.stateVersion,
         reviewContentHash: input.contentHash,
+        reviewedPlanArtifactId: input.expectedPlanArtifactId,
         schemaValid: true,
         controlledIdsValid: true,
         referencesComplete: true,

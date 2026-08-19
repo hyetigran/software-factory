@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtemp, rm, unlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -86,7 +86,7 @@ function transitionResult(
   forcedCommandKey?: string,
 ): PersistableTransition<TestState> {
   const commandWithoutIdentity = {
-    commandType: "verify_integrity",
+    commandType: "render_source_registration_report",
     schemaVersion: 1,
     runId,
     triggeringStateVersion: stateVersion,
@@ -100,7 +100,7 @@ function transitionResult(
       outputTokens: 0,
       costUsdMicros: 0,
     },
-    payload: {},
+    payload: { sourceArtifactId: "artifact_source" },
   };
   const commandKey =
     forcedCommandKey ??
@@ -514,5 +514,193 @@ describe("SQLite authority", () => {
         sourceArtifactId: "artifact_source",
       }),
     ).toThrow("normative JSON schema");
+  });
+
+  it("binds plan coverage and review references to supplied artifacts", () => {
+    const plan = {
+      schema_version: 1,
+      plan_id: "plan_v1",
+      version: 1,
+      title: "Plan",
+      summary: "Summary",
+      components: [
+        {
+          component_id: "component_api",
+          name: "API",
+          responsibility: "Serve requests",
+        },
+      ],
+      sections: [
+        {
+          section_id: "section_api",
+          kind: "component",
+          title: "API",
+          body: "Build it.",
+          component_ids: ["component_api"],
+          requirement_ids: ["req_1"],
+        },
+      ],
+      requirement_coverage: [
+        {
+          requirement_id: "req_1",
+          section_ids: ["section_api"],
+          justification: "Implemented here",
+        },
+      ],
+      section_transitions: [
+        {
+          kind: "new",
+          from_section_ids: [],
+          to_section_ids: ["section_api"],
+          reason: "Initial plan",
+        },
+      ],
+    };
+    const planBytes = Buffer.from(canonicalJson(plan));
+    expect(() =>
+      ValidatedProjection.fromPlanArtifact({
+        bytes: Buffer.from(
+          canonicalJson({ ...plan, requirement_coverage: [] }),
+        ),
+        contentHash: createHash("sha256")
+          .update(
+            Buffer.from(canonicalJson({ ...plan, requirement_coverage: [] })),
+          )
+          .digest("hex"),
+        stateVersion: 3,
+        planVersionId: "plan_v1",
+        allowedRequirementIds: ["req_1"],
+      }),
+    ).toThrow("coverage is incomplete");
+    expect(() =>
+      ValidatedProjection.fromPlanArtifact({
+        bytes: planBytes,
+        contentHash: createHash("sha256").update(planBytes).digest("hex"),
+        stateVersion: 3,
+        planVersionId: "plan_v1",
+        allowedRequirementIds: ["req_1"],
+      }),
+    ).not.toThrow();
+
+    const policyHash = "a".repeat(64);
+    const review = {
+      schema_version: 1,
+      review_id: "review_v1",
+      review_kind: "baseline",
+      plan_artifact_id: "artifact_plan",
+      policy_hash: policyHash,
+      prior_findings: [],
+      new_concerns: [
+        {
+          rule_id: "rule_architecture",
+          category: "architecture",
+          severity: "high",
+          component_ids: ["component_api"],
+          requirement_ids: ["req_1"],
+          title: "Concern",
+          description: "Needs work",
+          evidence: [
+            {
+              artifact_id: "artifact_plan",
+              section_ids: ["section_api"],
+              explanation: "The section is incomplete",
+            },
+          ],
+        },
+      ],
+      summary: "One concern",
+    };
+    const reviewBytes = Buffer.from(canonicalJson(review));
+    const reviewInput = {
+      bytes: reviewBytes,
+      contentHash: createHash("sha256").update(reviewBytes).digest("hex"),
+      stateVersion: 4,
+      policyHash,
+      expectedPlanArtifactId: "artifact_plan",
+      allowedComponentIds: ["component_api"],
+      allowedRequirementIds: ["req_1"],
+      allowedSectionIds: ["section_api"],
+      suppliedEvidenceArtifactIds: ["artifact_plan"],
+      findings: [{ findingId: "finding_1", observationId: "observation_1" }],
+    };
+    expect(() =>
+      ValidatedProjection.fromBaselineReviewArtifact({
+        ...reviewInput,
+        expectedPlanArtifactId: "artifact_other",
+      }),
+    ).toThrow("not bound");
+    expect(() =>
+      ValidatedProjection.fromBaselineReviewArtifact({
+        ...reviewInput,
+        allowedComponentIds: [],
+      }),
+    ).toThrow("controlled references");
+    expect(() =>
+      ValidatedProjection.fromBaselineReviewArtifact({
+        ...reviewInput,
+        suppliedEvidenceArtifactIds: [],
+      }),
+    ).toThrow("controlled references");
+  });
+
+  it("backs up and migrates a populated schema-v1 database", async () => {
+    const path = await databasePath();
+    await mkdir(resolve(path, ".."), { recursive: true });
+    const raw = new DatabaseSync(path);
+    raw.exec(await readFile(resolve("database/schema.v1.sql"), "utf8"));
+    raw
+      .prepare(
+        `INSERT INTO workspaces
+          (workspace_id, created_at, audit_chain_head, next_audit_sequence)
+         VALUES ('workspace_local', '2026-01-01T00:00:00.000Z', ?, 1)`,
+      )
+      .run("0".repeat(64));
+    for (const artifactId of ["artifact_source", "artifact_configuration"]) {
+      raw
+        .prepare(
+          `INSERT INTO artifacts
+            (artifact_id, kind, content_hash, byte_length, media_type,
+             metadata_json, created_at)
+           VALUES (?, 'other', ?, 0, 'application/octet-stream', '{}',
+                   '2026-01-01T00:00:00.000Z')`,
+        )
+        .run(artifactId, createHash("sha256").update(artifactId).digest("hex"));
+    }
+    raw
+      .prepare(
+        `INSERT INTO runs
+          (run_id, workspace_id, state, state_version, source_artifact_id,
+           configuration_artifact_id, policy_hash, created_at)
+         VALUES ('run_legacy', 'workspace_local', 'draft', 1,
+                 'artifact_source', 'artifact_configuration', ?,
+                 '2026-01-01T00:00:00.000Z')`,
+      )
+      .run("a".repeat(64));
+    raw.close();
+
+    const authority = SqliteAuthority.open(path, {
+      now: () => "2026-01-02T00:00:00.000Z",
+    });
+    authority.close();
+    const migrated = new DatabaseSync(path);
+    expect(
+      migrated.prepare("SELECT schema_version FROM schema_metadata").get(),
+    ).toEqual({ schema_version: 2 });
+    expect(
+      migrated
+        .prepare(
+          "SELECT state_version FROM run_state_snapshots WHERE run_id = 'run_legacy'",
+        )
+        .get(),
+    ).toEqual({ state_version: 1 });
+    const history = migrated
+      .prepare("SELECT backup_manifest_path FROM migration_history")
+      .get() as { backup_manifest_path: string };
+    migrated.close();
+    const manifest = JSON.parse(
+      await readFile(history.backup_manifest_path, "utf8"),
+    ) as { fromSchemaVersion: number; databaseHash: string };
+    expect(manifest.fromSchemaVersion).toBe(1);
+    expect(manifest.databaseHash).toMatch(/^[a-f0-9]{64}$/u);
   });
 });

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -63,6 +63,239 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function hasExactKeys(
+  value: object,
+  required: string[],
+  optional: string[] = [],
+): boolean {
+  const keys = Object.keys(value);
+  return (
+    required.every((key) => keys.includes(key)) &&
+    keys.every((key) => required.includes(key) || optional.includes(key))
+  );
+}
+
+function strings(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.every((item) => typeof item === "string" && item.length > 0)
+  );
+}
+
+function payloadIsValid(commandType: string, value: object): boolean {
+  const payload = value as Record<string, unknown>;
+  const stringFields = (keys: string[]): boolean =>
+    keys.every(
+      (key) =>
+        typeof payload[key] === "string" && String(payload[key]).length > 0,
+    );
+  switch (commandType) {
+    case "render_source_registration_report":
+      return (
+        hasExactKeys(value, ["sourceArtifactId"]) &&
+        stringFields(["sourceArtifactId"])
+      );
+    case "validate_ledger":
+      return (
+        hasExactKeys(
+          value,
+          ["ledgerVersionId", "ledgerArtifactId", "sourceArtifactId"],
+          ["sourceExclusions"],
+        ) &&
+        stringFields([
+          "ledgerVersionId",
+          "ledgerArtifactId",
+          "sourceArtifactId",
+        ]) &&
+        (payload.sourceExclusions === undefined ||
+          Array.isArray(payload.sourceExclusions))
+      );
+    case "render_ledger":
+      return (
+        hasExactKeys(value, ["ledgerVersionId", "ledgerArtifactId"]) &&
+        stringFields(["ledgerVersionId", "ledgerArtifactId"])
+      );
+    case "render_ledger_approval":
+      return (
+        hasExactKeys(value, [
+          "ledgerVersionId",
+          "ledgerArtifactId",
+          "coverageReportArtifactId",
+          "coverageValidatedStateVersion",
+          "coverageValidatedPolicyHash",
+          "approvalGateId",
+          "sourceExclusions",
+          "approvedBy",
+        ]) &&
+        stringFields([
+          "ledgerVersionId",
+          "ledgerArtifactId",
+          "coverageReportArtifactId",
+          "coverageValidatedPolicyHash",
+          "approvalGateId",
+        ]) &&
+        Number.isInteger(payload.coverageValidatedStateVersion) &&
+        Array.isArray(payload.sourceExclusions) &&
+        payload.approvedBy !== null &&
+        typeof payload.approvedBy === "object"
+      );
+    case "generate_plan":
+      return (
+        hasExactKeys(value, [
+          "ledgerVersionId",
+          "ledgerArtifactId",
+          "promptArtifactId",
+          "outputSchemaArtifactId",
+          "providerStorage",
+        ]) &&
+        stringFields([
+          "ledgerVersionId",
+          "ledgerArtifactId",
+          "promptArtifactId",
+          "outputSchemaArtifactId",
+        ]) &&
+        payload.providerStorage === "minimize"
+      );
+    case "render_plan":
+      return (
+        hasExactKeys(value, ["planVersionId", "planArtifactId"]) &&
+        stringFields(["planVersionId", "planArtifactId"])
+      );
+    case "baseline_review":
+      return (
+        hasExactKeys(value, [
+          "ledgerVersionId",
+          "ledgerArtifactId",
+          "planVersionId",
+          "planArtifactId",
+          "renderPlanCommandId",
+          "reviewerPromptArtifactId",
+          "reviewSchemaArtifactId",
+          "taxonomyArtifactId",
+          "componentRegistryArtifactId",
+          "reviewPolicyArtifactId",
+          "evidenceArtifactIds",
+          "independence",
+          "providerStorage",
+        ]) &&
+        stringFields([
+          "ledgerVersionId",
+          "ledgerArtifactId",
+          "planVersionId",
+          "planArtifactId",
+          "renderPlanCommandId",
+          "reviewerPromptArtifactId",
+          "reviewSchemaArtifactId",
+          "taxonomyArtifactId",
+          "componentRegistryArtifactId",
+          "reviewPolicyArtifactId",
+        ]) &&
+        strings(payload.evidenceArtifactIds) &&
+        payload.independence !== null &&
+        typeof payload.independence === "object" &&
+        payload.providerStorage === "minimize"
+      );
+    case "generate_remediation":
+      return (
+        hasExactKeys(value, [
+          "ledgerVersionId",
+          "planVersionId",
+          "planArtifactId",
+          "reviewArtifactId",
+          "blockingFindingIds",
+          "providerStorage",
+        ]) &&
+        stringFields([
+          "ledgerVersionId",
+          "planVersionId",
+          "planArtifactId",
+          "reviewArtifactId",
+        ]) &&
+        strings(payload.blockingFindingIds) &&
+        payload.providerStorage === "minimize"
+      );
+    case "closure_review":
+      return (
+        hasExactKeys(value, [
+          "ledgerVersionId",
+          "planVersionId",
+          "planArtifactId",
+          "baselineReviewArtifactId",
+          "renderedPlanArtifactId",
+          "reviewerPromptArtifactId",
+          "reviewSchemaArtifactId",
+          "taxonomyArtifactId",
+          "componentRegistryArtifactId",
+          "reviewPolicyArtifactId",
+          "evidenceArtifactIds",
+          "findingIds",
+          "independence",
+          "providerStorage",
+        ]) &&
+        stringFields([
+          "ledgerVersionId",
+          "planVersionId",
+          "planArtifactId",
+          "baselineReviewArtifactId",
+          "renderedPlanArtifactId",
+          "reviewerPromptArtifactId",
+          "reviewSchemaArtifactId",
+          "taxonomyArtifactId",
+          "componentRegistryArtifactId",
+          "reviewPolicyArtifactId",
+        ]) &&
+        strings(payload.evidenceArtifactIds) &&
+        Array.isArray(payload.findingIds) &&
+        payload.independence !== null &&
+        typeof payload.independence === "object" &&
+        payload.providerStorage === "minimize"
+      );
+    case "export_terminal":
+      return (
+        hasExactKeys(value, [
+          "haltedFrom",
+          "reason",
+          "failedCommandId",
+          "failureClassification",
+          "attemptIds",
+          "evidenceArtifactIds",
+          "unresolvedFindingIds",
+          "sourceArtifactId",
+          "configurationArtifactId",
+          "ledgerArtifactId",
+          "planArtifactId",
+          "policyHash",
+          "plannerAssignment",
+          "reviewerAssignment",
+          "budgetReportArtifactId",
+          "recoveryBounds",
+          "independence",
+          "lineageArtifactIds",
+          "waiverIds",
+          "outcome",
+        ]) &&
+        stringFields([
+          "haltedFrom",
+          "reason",
+          "failedCommandId",
+          "failureClassification",
+          "sourceArtifactId",
+          "configurationArtifactId",
+          "policyHash",
+          "budgetReportArtifactId",
+        ]) &&
+        strings(payload.attemptIds) &&
+        strings(payload.evidenceArtifactIds) &&
+        Array.isArray(payload.unresolvedFindingIds) &&
+        Array.isArray(payload.lineageArtifactIds) &&
+        Array.isArray(payload.waiverIds) &&
+        payload.outcome === "halted"
+      );
+    default:
+      return false;
+  }
+}
+
 function commandIsValid(command: PersistableCommand): boolean {
   const commandTypes = new Set([
     "render_source_registration_report",
@@ -73,13 +306,8 @@ function commandIsValid(command: PersistableCommand): boolean {
     "render_plan",
     "baseline_review",
     "generate_remediation",
-    "verify_remediation",
     "closure_review",
-    "repair_schema",
     "export_terminal",
-    "attempt_provider_cancel",
-    "backup_workspace",
-    "verify_integrity",
   ]);
   const commandWithoutIdentity = Object.fromEntries(
     Object.entries(command).filter(
@@ -93,16 +321,12 @@ function commandIsValid(command: PersistableCommand): boolean {
     "render_ledger_approval",
     "render_plan",
     "export_terminal",
-    "backup_workspace",
-    "verify_integrity",
   ]);
   const providerTypes = new Set([
     "generate_plan",
     "baseline_review",
     "generate_remediation",
-    "verify_remediation",
     "closure_review",
-    "repair_schema",
   ]);
   const providerShapeValid = localTypes.has(command.commandType)
     ? command.provider === "local" &&
@@ -113,30 +337,30 @@ function commandIsValid(command: PersistableCommand): boolean {
         typeof command.modelId === "string" &&
         command.modelId.length > 0 &&
         command.budgetReservation.calls === 1
-      : command.commandType === "attempt_provider_cancel" &&
-        (command.provider === "openai" || command.provider === "anthropic");
+      : false;
   const prerequisiteShapeValid =
     command.commandType === "baseline_review"
       ? command.prerequisiteCommandIds?.length === 1
       : true;
-  const requiredPayloadKeys: Partial<Record<string, string[]>> = {
-    render_source_registration_report: ["sourceArtifactId"],
-    validate_ledger: ["ledgerVersionId", "ledgerArtifactId"],
-    render_ledger: ["ledgerVersionId", "ledgerArtifactId"],
-    render_ledger_approval: ["ledgerVersionId"],
-    generate_plan: ["ledgerVersionId", "ledgerArtifactId", "promptArtifactId"],
-    render_plan: ["planVersionId", "planArtifactId"],
-    baseline_review: ["ledgerVersionId", "planVersionId", "planArtifactId"],
-    generate_remediation: ["ledgerVersionId", "planVersionId"],
-    verify_remediation: ["ledgerVersionId", "planVersionId"],
-    closure_review: ["ledgerVersionId", "planVersionId"],
-    export_terminal: ["outcome", "policyHash"],
-  };
-  const payload = command.payload as Record<string, unknown>;
-  const payloadShapeValid = (
-    requiredPayloadKeys[command.commandType] ?? []
-  ).every((key) => key in payload);
+  const envelopeRequired = [
+    "commandId",
+    "commandKey",
+    "commandType",
+    "schemaVersion",
+    "runId",
+    "triggeringStateVersion",
+    "purposeId",
+    "inputArtifactHashes",
+    "policyHash",
+    "provider",
+    "budgetReservation",
+    "payload",
+  ];
   return (
+    hasExactKeys(command, envelopeRequired, [
+      "modelId",
+      "prerequisiteCommandIds",
+    ]) &&
     command.schemaVersion === 1 &&
     command.commandId.length > 0 &&
     commandTypes.has(command.commandType) &&
@@ -150,7 +374,7 @@ function commandIsValid(command: PersistableCommand): boolean {
         command.prerequisiteCommandIds.every((id) => id.length > 0))) &&
     providerShapeValid &&
     prerequisiteShapeValid &&
-    payloadShapeValid &&
+    payloadIsValid(command.commandType, command.payload) &&
     Object.values(command.budgetReservation).every(
       (value) => Number.isInteger(value) && value >= 0,
     ) &&
@@ -229,6 +453,7 @@ function auditEntryFromRow(row: AuditRow): AuditEntry {
 export class SqliteAuthority implements AuthorityPort {
   private constructor(
     private readonly database: DatabaseSync,
+    private readonly databasePath: string,
     private readonly now: () => string,
     private readonly workspaceId: string,
     private readonly artifactStore?: ContentAddressedArtifactStore,
@@ -247,6 +472,7 @@ export class SqliteAuthority implements AuthorityPort {
     const now = options.now ?? (() => new Date().toISOString());
     const authority = new SqliteAuthority(
       database,
+      databasePath,
       now,
       "workspace_local",
       options.artifactStore,
@@ -277,14 +503,62 @@ export class SqliteAuthority implements AuthorityPort {
       .prepare("SELECT schema_version FROM schema_metadata WHERE singleton = 1")
       .get() as { schema_version: number } | undefined;
     if (version?.schema_version === 1) {
-      const runCount = this.database
-        .prepare("SELECT count(*) AS count FROM runs")
-        .get() as {
-        count: number;
-      };
-      if (runCount.count > 0) {
+      const integrity = this.database
+        .prepare("PRAGMA integrity_check")
+        .all() as Array<{ integrity_check: string }> | undefined;
+      const foreignKeys = this.database
+        .prepare("PRAGMA foreign_key_check")
+        .all();
+      if (
+        integrity?.length !== 1 ||
+        integrity[0]?.integrity_check !== "ok" ||
+        foreignKeys.length > 0
+      ) {
         throw new AuthorityIntegrityError(
-          "Schema v1 contains runs and requires the backup migration workflow",
+          "Schema v1 failed the pre-migration integrity gate",
+        );
+      }
+      const backupId = `schema-1-to-2-${this.now().replaceAll(/[^0-9A-Za-z]/gu, "")}`;
+      const backupDirectory = resolve(
+        dirname(this.databasePath),
+        "backups",
+        backupId,
+      );
+      mkdirSync(backupDirectory, { recursive: true, mode: 0o700 });
+      const backupPath = resolve(backupDirectory, "state.db");
+      this.database.exec(
+        `VACUUM main INTO '${backupPath.replaceAll("'", "''")}'`,
+      );
+      const backupBytes = readFileSync(backupPath);
+      const objectHashes = (
+        this.database
+          .prepare("SELECT content_hash FROM artifacts ORDER BY content_hash")
+          .all() as Array<{ content_hash: string }>
+      ).map(({ content_hash }) => content_hash);
+      const chain = this.database
+        .prepare(
+          "SELECT audit_chain_head FROM workspaces WHERE workspace_id = ?",
+        )
+        .get(this.workspaceId) as { audit_chain_head: string } | undefined;
+      const manifestPath = resolve(backupDirectory, "manifest.json");
+      const manifest = canonicalJson({
+        backupId,
+        databaseHash: sha256(backupBytes.toString("binary")),
+        fromSchemaVersion: 1,
+        objectHashes,
+        auditChainHead: chain?.audit_chain_head ?? ZERO_HASH,
+        createdAt: this.now(),
+      });
+      writeFileSync(manifestPath, manifest, { mode: 0o600, flag: "wx" });
+      const verifiedManifest = JSON.parse(manifest) as {
+        databaseHash: string;
+      };
+      if (
+        sha256(readFileSync(backupPath).toString("binary")) !==
+        verifiedManifest.databaseHash
+      ) {
+        throw new AuthorityIntegrityError(
+          "Migration backup verification failed",
         );
       }
       const moduleDirectory = dirname(fileURLToPath(import.meta.url));
@@ -293,6 +567,14 @@ export class SqliteAuthority implements AuthorityPort {
         "../../../database/migrations/0002_run_state_snapshots.sql",
       );
       this.database.exec(readFileSync(migrationPath, "utf8"));
+      this.database
+        .prepare(
+          `INSERT INTO migration_history
+            (migration_id, from_schema_version, to_schema_version,
+             backup_manifest_path, completed_at)
+           VALUES (?, 1, 2, ?, ?)`,
+        )
+        .run("0002_run_state_snapshots", manifestPath, this.now());
       version = this.database
         .prepare(
           "SELECT schema_version FROM schema_metadata WHERE singleton = 1",

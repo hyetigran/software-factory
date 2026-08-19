@@ -328,6 +328,9 @@ export function persistValidatedProjection(
       projection.planContentHash !== currentPlan?.contentHash) ||
     (projection.reviewContentHash !== undefined &&
       projection.reviewContentHash !== baselineReview?.contentHash) ||
+    (projection.reviewedPlanArtifactId !== undefined &&
+      projection.reviewedPlanArtifactId !==
+        object(baselineReview?.plan)?.artifactId) ||
     !projection.schemaValid ||
     !projection.controlledIdsValid ||
     !projection.referencesComplete ||
@@ -416,8 +419,13 @@ export function persistValidatedProjection(
         database
           .prepare(
             `SELECT section_id FROM plan_sections
-             JOIN plan_versions USING (plan_version_id)
-             WHERE run_id = ? AND plan_version_id <> ?`,
+             WHERE plan_version_id = (
+               SELECT plan_version_id FROM plan_versions
+               WHERE run_id = ? AND version < (
+                 SELECT version FROM plan_versions WHERE plan_version_id = ?
+               )
+               ORDER BY version DESC LIMIT 1
+             )`,
           )
           .all(runId, projection.planVersionId) as Array<{
           section_id: string;
@@ -431,7 +439,15 @@ export function persistValidatedProjection(
       targetIds.some((id) => !currentSectionIds.has(id)) ||
       transitions.some(({ fromIds }) =>
         fromIds.some((id) => !knownSectionIds.has(id)),
-      )
+      ) ||
+      (knownSectionIds.size > 0 &&
+        (new Set(transitions.flatMap(({ fromIds }) => fromIds)).size !==
+          knownSectionIds.size ||
+          [...knownSectionIds].some(
+            (id) =>
+              transitions.filter(({ fromIds }) => fromIds.includes(id))
+                .length !== 1,
+          )))
     ) {
       throw new TypeError("Section-transition projection is incomplete");
     }
@@ -467,7 +483,39 @@ export function persistValidatedProjection(
         recordedAt,
       );
   }
+  const authoritativeRequirementIds = new Set(
+    (
+      database
+        .prepare(
+          `SELECT requirement_id FROM requirements
+           WHERE ledger_version_id = ?`,
+        )
+        .all(String(currentLedger?.versionId)) as Array<{
+        requirement_id: string;
+      }>
+    ).map(({ requirement_id }) => requirement_id),
+  );
+  const authoritativeComponentIds = new Set<string>();
+  const planVersionId = String(currentPlan?.versionId);
+  const componentRows = database
+    .prepare(
+      `SELECT component_ids_json FROM plan_sections WHERE plan_version_id = ?`,
+    )
+    .all(planVersionId) as Array<{ component_ids_json: string }>;
+  componentRows.forEach(({ component_ids_json }) => {
+    (JSON.parse(component_ids_json) as string[]).forEach((id) =>
+      authoritativeComponentIds.add(id),
+    );
+  });
   for (const association of projection.observationAssociations ?? []) {
+    if (
+      association.requirementIds.some(
+        (id) => !authoritativeRequirementIds.has(id),
+      ) ||
+      association.componentIds.some((id) => !authoritativeComponentIds.has(id))
+    ) {
+      throw new TypeError("Observation controlled association is invalid");
+    }
     const updated = database
       .prepare(
         `UPDATE observations
