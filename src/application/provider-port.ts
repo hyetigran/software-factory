@@ -45,6 +45,7 @@ export type ProviderResult =
       evidence: ProviderEvidence;
     }
   | { kind: "unknown_outcome"; evidence: ProviderEvidence }
+  | { kind: "model_unavailable"; evidence: ProviderEvidence }
   | {
       kind: "model_mismatch";
       returnedModel: string;
@@ -52,7 +53,6 @@ export type ProviderResult =
     };
 
 export type ProviderRecording = {
-  redactedRequestBytes: Uint8Array;
   rawResponseBytes?: Uint8Array;
   nativeUsageBytes?: Uint8Array;
 };
@@ -61,23 +61,12 @@ export type ProviderExecution = ProviderResult & {
   recording: ProviderRecording;
 };
 
+export type PreparedProviderCall = {
+  redactedRequestBytes: Uint8Array;
+  normalizedRequestHash: string;
+  dispatch(): Promise<ProviderExecution>;
+};
+
 export interface ProviderAdapter {
-  execute(request: ProviderRequest): Promise<ProviderExecution>;
-}
-
-export type HttpTransportRequest = {
-  url: string;
-  headers: Record<string, string>;
-  body: Uint8Array;
-  timeoutMs: number;
-};
-
-export type HttpTransportResponse = {
-  status: number;
-  headers: Record<string, string | undefined>;
-  body: Uint8Array;
-};
-
-export interface HttpTransport {
-  send(request: HttpTransportRequest): Promise<HttpTransportResponse>;
+  prepare(request: ProviderRequest): PreparedProviderCall;
 }

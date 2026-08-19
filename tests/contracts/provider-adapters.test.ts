@@ -2,12 +2,17 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type {
-  HttpTransport,
-  ProviderRequest,
-} from "../../src/application/provider-port.js";
+import type { ProviderRequest } from "../../src/application/provider-port.js";
 import { OpenAiResponsesAdapter } from "../../src/infrastructure/providers/openai.js";
 import { AnthropicMessagesAdapter } from "../../src/infrastructure/providers/anthropic.js";
+import {
+  StrictReplayAdapter,
+  UnrecordedRequestError,
+} from "../../src/infrastructure/providers/replay.js";
+import type {
+  HttpTransport,
+  ProviderPreflight,
+} from "../../src/infrastructure/providers/transport.js";
 
 const inputContent = '{"requirements":["traceability"]}';
 const baseRequest: Omit<ProviderRequest, "provider"> = {
@@ -34,6 +39,17 @@ const baseRequest: Omit<ProviderRequest, "provider"> = {
   providerStorage: "minimize",
 };
 
+const preflight: ProviderPreflight = {
+  resolve: (request) => ({
+    canonicalModelId: request.modelId,
+    structuredOutput: true,
+    contextWindowTokens: 100_000,
+    maxOutputTokens: 10_000,
+  }),
+  schemaSupported: () => true,
+  countInputTokens: () => 100,
+};
+
 describe("provider adapter contract", () => {
   it("maps an OpenAI structured response and preserves native evidence", async () => {
     const send = vi.fn<HttpTransport["send"]>().mockResolvedValue({
@@ -54,12 +70,18 @@ describe("provider adapter contract", () => {
         }),
       ),
     });
-    const adapter = new OpenAiResponsesAdapter({ send }, () => "secret");
+    const adapter = new OpenAiResponsesAdapter(
+      { send },
+      () => "secret",
+      preflight,
+    );
 
-    const result = await adapter.execute({
+    const prepared = adapter.prepare({
       ...baseRequest,
       provider: "openai",
     });
+    expect(send).not.toHaveBeenCalled();
+    const result = await prepared.dispatch();
 
     expect(result).toMatchObject({
       kind: "completed",
@@ -76,9 +98,7 @@ describe("provider adapter contract", () => {
       store: false,
       text: { format: { type: "json_schema", strict: true } },
     });
-    expect(String(result.recording.redactedRequestBytes)).not.toContain(
-      "secret",
-    );
+    expect(String(prepared.redactedRequestBytes)).not.toContain("secret");
     expect(JSON.parse(String(result.recording.nativeUsageBytes))).toEqual({
       input_tokens: 12,
       output_tokens: 4,
@@ -106,12 +126,18 @@ describe("provider adapter contract", () => {
         }),
       ),
     });
-    const adapter = new AnthropicMessagesAdapter({ send }, () => "secret");
+    const adapter = new AnthropicMessagesAdapter(
+      { send },
+      () => "secret",
+      preflight,
+    );
 
-    const result = await adapter.execute({
+    const prepared = adapter.prepare({
       ...baseRequest,
       provider: "anthropic",
     });
+    expect(send).not.toHaveBeenCalled();
+    const result = await prepared.dispatch();
 
     expect(result).toMatchObject({
       kind: "completed",
@@ -141,9 +167,9 @@ describe("provider adapter contract", () => {
       };
       const adapter =
         provider === "openai"
-          ? new OpenAiResponsesAdapter(transport, () => "secret")
-          : new AnthropicMessagesAdapter(transport, () => "secret");
-      return adapter.execute({ ...baseRequest, provider });
+          ? new OpenAiResponsesAdapter(transport, () => "secret", preflight)
+          : new AnthropicMessagesAdapter(transport, () => "secret", preflight);
+      return adapter.prepare({ ...baseRequest, provider }).dispatch();
     }
 
     it("classifies refusal, truncation, schema failure, and model drift", async () => {
@@ -178,6 +204,7 @@ describe("provider adapter contract", () => {
               id: "response_short",
               model: "frontier-pinned",
               status: "incomplete",
+              incomplete_details: { reason: "max_output_tokens" },
               output: [],
               usage: {},
             }
@@ -257,12 +284,84 @@ describe("provider adapter contract", () => {
         };
         const adapter =
           provider === "openai"
-            ? new OpenAiResponsesAdapter(transport, () => "secret")
-            : new AnthropicMessagesAdapter(transport, () => "secret");
+            ? new OpenAiResponsesAdapter(transport, () => "secret", preflight)
+            : new AnthropicMessagesAdapter(
+                transport,
+                () => "secret",
+                preflight,
+              );
         await expect(
-          adapter.execute({ ...baseRequest, provider }),
+          adapter.prepare({ ...baseRequest, provider }).dispatch(),
         ).resolves.toMatchObject({ kind });
       }
     });
+  });
+
+  it("strict replay returns a matching cassette without live HTTP", async () => {
+    const send = vi.fn<HttpTransport["send"]>();
+    const formatter = new OpenAiResponsesAdapter(
+      { send },
+      () => "secret",
+      preflight,
+    );
+    const completed = {
+      kind: "completed" as const,
+      structured: { plan: "recorded" },
+      evidence: {
+        requestedModel: "frontier-pinned",
+        endpoint: "https://api.openai.com/v1/responses",
+        behaviorHeaders: {},
+        correlationId: "correlation_1",
+      },
+      recording: {},
+    };
+    const replay = new StrictReplayAdapter(formatter, {
+      lookup: vi.fn().mockResolvedValue(completed),
+    });
+    await expect(
+      replay.prepare({ ...baseRequest, provider: "openai" }).dispatch(),
+    ).resolves.toMatchObject({ structured: { plan: "recorded" } });
+    expect(send).not.toHaveBeenCalled();
+
+    const miss = new StrictReplayAdapter(formatter, {
+      lookup: vi.fn().mockResolvedValue(null),
+    });
+    await expect(
+      miss.prepare({ ...baseRequest, provider: "openai" }).dispatch(),
+    ).rejects.toBeInstanceOf(UnrecordedRequestError);
+  });
+
+  it("rejects unsupported capability before constructing a live call", () => {
+    const send = vi.fn<HttpTransport["send"]>();
+    const adapter = new OpenAiResponsesAdapter({ send }, () => "secret", {
+      ...preflight,
+      resolve: () => null,
+    });
+    expect(() =>
+      adapter.prepare({ ...baseRequest, provider: "openai" }),
+    ).toThrow("Provider request is invalid");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("maps arbitrary HTTP failures before attempting JSON decoding", async () => {
+    for (const provider of ["openai", "anthropic"] as const) {
+      const transport: HttpTransport = {
+        send: vi.fn().mockResolvedValue({
+          status: 502,
+          headers: {},
+          body: Buffer.from("upstream unavailable"),
+        }),
+      };
+      const adapter =
+        provider === "openai"
+          ? new OpenAiResponsesAdapter(transport, () => "secret", preflight)
+          : new AnthropicMessagesAdapter(transport, () => "secret", preflight);
+      await expect(
+        adapter.prepare({ ...baseRequest, provider }).dispatch(),
+      ).resolves.toMatchObject({
+        kind: "transport_failure",
+        retryable: true,
+      });
+    }
   });
 });

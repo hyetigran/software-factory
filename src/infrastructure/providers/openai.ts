@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
+
 import { assertJsonSchema } from "../../application/json-schema-validator.js";
 import type {
-  HttpTransport,
   ProviderAdapter,
   ProviderExecution,
   ProviderRequest,
+  PreparedProviderCall,
 } from "../../application/provider-port.js";
 import {
   assertProviderRequest,
@@ -13,6 +15,7 @@ import {
   objectFromBytes,
   textFromOpenAi,
 } from "./common.js";
+import type { HttpTransport, ProviderPreflight } from "./transport.js";
 
 const endpoint = "https://api.openai.com/v1/responses";
 
@@ -20,10 +23,11 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
   constructor(
     private readonly transport: HttpTransport,
     private readonly credential: () => string,
+    private readonly preflight: ProviderPreflight,
   ) {}
 
-  async execute(request: ProviderRequest): Promise<ProviderExecution> {
-    assertProviderRequest(request, "openai");
+  prepare(request: ProviderRequest): PreparedProviderCall {
+    assertProviderRequest(request, "openai", this.preflight);
     const body = {
       model: request.modelId,
       instructions: request.systemPrompt,
@@ -51,6 +55,19 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
       },
       body,
     });
+    return {
+      redactedRequestBytes,
+      normalizedRequestHash: createHash("sha256")
+        .update(redactedRequestBytes)
+        .digest("hex"),
+      dispatch: () => this.dispatch(request, body),
+    };
+  }
+
+  private async dispatch(
+    request: ProviderRequest,
+    body: object,
+  ): Promise<ProviderExecution> {
     let response;
     try {
       response = await this.transport.send({
@@ -65,11 +82,7 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
       });
     } catch (error) {
       const failure = error as { dispatched?: boolean; retryable?: boolean };
-      const common = evidence({
-        request,
-        endpoint,
-        behaviorHeaders: {},
-      });
+      const common = evidence({ request, endpoint, behaviorHeaders: {} });
       return {
         kind:
           failure.dispatched === true ? "unknown_outcome" : "transport_failure",
@@ -77,11 +90,45 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
           ? {}
           : { retryable: failure.retryable === true }),
         evidence: common,
-        recording: { redactedRequestBytes },
+        recording: {},
       } as ProviderExecution;
     }
     const rawResponseBytes = Buffer.from(response.body);
-    const parsed = objectFromBytes(rawResponseBytes);
+    if (response.status < 200 || response.status >= 300) {
+      return {
+        kind:
+          response.status === 404 ? "model_unavailable" : "transport_failure",
+        ...(response.status === 404
+          ? {}
+          : { retryable: response.status === 429 || response.status >= 500 }),
+        evidence: evidence({
+          request,
+          endpoint,
+          behaviorHeaders: {},
+          ...(response.headers["x-request-id"] === undefined
+            ? {}
+            : { providerRequestId: response.headers["x-request-id"] }),
+          completionStatus: `http_${response.status}`,
+        }),
+        recording: { rawResponseBytes },
+      } as ProviderExecution;
+    }
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = objectFromBytes(rawResponseBytes);
+    } catch {
+      return {
+        kind: "transport_failure",
+        retryable: false,
+        evidence: evidence({
+          request,
+          endpoint,
+          behaviorHeaders: {},
+          completionStatus: "malformed_success",
+        }),
+        recording: { rawResponseBytes },
+      };
+    }
     const common = evidence({
       request,
       endpoint,
@@ -94,20 +141,11 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
       completionStatus: parsed.status,
     });
     const recording = {
-      redactedRequestBytes,
       rawResponseBytes,
       ...(parsed.usage === undefined
         ? {}
         : { nativeUsageBytes: bytes(parsed.usage) }),
     };
-    if (response.status < 200 || response.status >= 300) {
-      return {
-        kind: "transport_failure",
-        retryable: response.status === 429 || response.status >= 500,
-        evidence: common,
-        recording,
-      };
-    }
     if (typeof parsed.model === "string" && parsed.model !== request.modelId) {
       return {
         kind: "model_mismatch",
@@ -121,7 +159,29 @@ export class OpenAiResponsesAdapter implements ProviderAdapter {
       return { kind: "refused", evidence: common, recording };
     }
     if (parsed.status === "incomplete") {
-      return { kind: "truncated", evidence: common, recording };
+      const details =
+        parsed.incomplete_details !== null &&
+        typeof parsed.incomplete_details === "object" &&
+        !Array.isArray(parsed.incomplete_details)
+          ? (parsed.incomplete_details as Record<string, unknown>)
+          : {};
+      const reason = details.reason;
+      if (
+        reason === "max_output_tokens" ||
+        reason === "max_tokens" ||
+        reason === "context_length_exceeded"
+      ) {
+        return { kind: "truncated", evidence: common, recording };
+      }
+      if (reason === "content_filter") {
+        return { kind: "refused", evidence: common, recording };
+      }
+      return {
+        kind: "transport_failure",
+        retryable: false,
+        evidence: common,
+        recording,
+      };
     }
     if (extracted.text === undefined) {
       return {
