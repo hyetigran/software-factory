@@ -39,6 +39,23 @@ export type ArtifactKind =
   | "backup_manifest"
   | "other";
 
+const artifactKinds = new Set<ArtifactKind>([
+  "raw_requirements",
+  "requirements_ledger",
+  "coverage_report",
+  "structured_plan",
+  "rendered_plan",
+  "external_edit",
+  "review",
+  "provider_request",
+  "provider_response",
+  "native_usage",
+  "terminal_manifest",
+  "terminal_report",
+  "backup_manifest",
+  "other",
+]);
+
 export type ArtifactProvenance =
   | { method: "copied"; sourcePath: string }
   | { method: "human_submitted"; sourceArtifactIds?: string[] }
@@ -188,6 +205,7 @@ export function artifactRegistrationIsValid(
 ): boolean {
   return (
     /^[A-Za-z][A-Za-z0-9_-]{2,127}$/u.test(registration.artifactId) &&
+    artifactKinds.has(registration.kind) &&
     registration.mediaType.trim().length > 0 &&
     registration.createdBy.trim().length > 0 &&
     provenanceIsValid(registration.provenance)

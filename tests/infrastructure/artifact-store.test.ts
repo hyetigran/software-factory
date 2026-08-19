@@ -122,6 +122,15 @@ describe("workspace and content-addressed artifact store", () => {
       }),
     ).rejects.toThrow("registration is invalid");
     await expect(
+      store.stageArtifact(Buffer.from("unknown", "utf8"), {
+        artifactId: "artifact_unknown_kind_01JTEST",
+        kind: "invented_kind" as never,
+        mediaType: "application/octet-stream",
+        createdBy: "system:test",
+        provenance: { method: "human_submitted" },
+      }),
+    ).rejects.toThrow("registration is invalid");
+    await expect(
       store.stageArtifact(Buffer.from("provider", "utf8"), {
         artifactId: "artifact_provider_invalid_01JTEST",
         kind: "review",
