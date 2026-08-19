@@ -54,47 +54,48 @@ Evidence references use stable artifact, requirement, section, finding, observat
 
 ## Fact catalog
 
-| Fact type | Required payload |
+| Fact type                       | Required payload                                             |
 |---|---|
-| `run_started` | source artifact, configuration hash, parent run if any |
-| `source_registered` | artifact ID, content hash, provenance path |
-| `ledger_submitted` | ledger version and artifact hash |
-| `source_exclusion_approved` | source range and reason |
-| `ledger_approved` | ledger version, coverage report, human actor |
-| `downstream_invalidated` | cause and affected artifact/gate IDs |
-| `planning_requested` | plan purpose and Planner assignment |
-| `plan_version_accepted` | plan artifact, section transition map, provenance |
-| `external_edit_detected` | expected and observed hashes, preserved artifact |
-| `projection_restored` | projection kind, verified render hash, restored working hash |
-| `review_accepted` | review artifact, cycle, policy, model, observation IDs |
-| `finding_created` | finding ID and initial observation |
-| `finding_transitioned` | prior and next status, controlling evidence |
-| `reconciliation_ambiguous` | candidate finding IDs and reason |
-| `remediation_proposed` | finding claims, plan version, changed sections |
-| `waiver_granted` | finding, exact evidence versions, reason |
-| `waiver_invalidated` | waiver and changed evidence |
-| `waiver_reaffirmed` | waiver, current evidence, human actor |
-| `independence_override_granted` | normal policy, override, reason |
-| `plan_qualified` | gate evidence and waiver set |
-| `plan_rejected` | reason and resulting planning purpose |
-| `plan_approved` | plan version, manifest, waiver acknowledgments |
-| `command_planned` | command ID, key, type, reservation |
-| `command_attempt_started` | command and attempt IDs, correlation ID |
-| `command_attempt_completed` | result and native-usage artifact IDs |
-| `command_attempt_unknown` | known dispatch evidence and reserved usage |
-| `duplicate_call_possible` | related attempts and accounting |
-| `result_discarded` | attempt, reason, accepted result if any |
-| `budget_reserved` | command and resource maxima |
-| `budget_reconciled` | reservation and provider-native actuals |
-| `budget_reduced` | old and new ceilings |
-| `hard_bound_reached` | resource, ceiling, actual, reserved |
-| `cancellation_requested` | human actor and in-flight attempt if any |
-| `run_cancelled` | terminal manifest reference |
-| `run_halted` | reason, bounds, unresolved findings, manifest |
-| `child_run_created` | parent, child, inherited evidence, changed conditions |
-| `integrity_failure_detected` | check type and diagnostic evidence |
-| `migration_completed` | from/to schema, backup manifest, migration IDs |
-| `purge_completed` | explicit targets, hashes, confirmation actor |
+| `run_started`                   | source artifact, configuration hash, parent run if any       |
+| `source_registered`             | artifact ID, content hash, provenance path                   |
+| `ledger_submitted`              | ledger version and artifact hash                             |
+| `source_exclusion_approved`     | source range and reason                                      |
+| `ledger_approved`               | ledger version, coverage report, human actor                 |
+| `downstream_invalidated`        | cause and affected artifact/gate IDs                         |
+| `planning_requested`            | plan purpose and Planner assignment                          |
+| `plan_version_accepted`         | plan artifact, section transition map, provenance            |
+| `external_edit_detected`        | expected and observed hashes, preserved artifact             |
+| `projection_restored`           | projection kind, verified render hash, restored working hash |
+| `review_accepted`               | review artifact, cycle, policy, model, observation IDs       |
+| `finding_created`               | finding ID and initial observation                           |
+| `finding_transitioned`          | prior and next status, controlling evidence                  |
+| `reconciliation_ambiguous`      | candidate finding IDs and reason                             |
+| `remediation_proposed`          | finding claims, plan version, changed sections               |
+| `waiver_granted`                | finding, exact evidence versions, reason                     |
+| `waiver_invalidated`            | waiver and changed evidence                                  |
+| `waiver_reaffirmed`             | waiver, current evidence, human actor                        |
+| `independence_override_granted` | normal policy, override, reason                              |
+| `plan_qualified`                | gate evidence and waiver set                                 |
+| `plan_rejected`                 | reason and resulting planning purpose                        |
+| `plan_approved`                 | plan version, manifest, waiver acknowledgments               |
+| `command_planned`               | command ID, key, type, reservation                           |
+| `command_attempt_started`       | command and attempt IDs, correlation ID                      |
+| `command_attempt_completed`     | result and native-usage artifact IDs                         |
+| `command_attempt_unknown`       | known dispatch evidence and reserved usage                   |
+| `duplicate_call_possible`       | related attempts and accounting                              |
+| `result_discarded`              | attempt, reason, accepted result if any                      |
+| `budget_reserved`               | command and resource maxima                                  |
+| `budget_reconciled`             | reservation and provider-native actuals                      |
+| `budget_reduced`                | old and new ceilings                                         |
+| `rerun_authorized`              | decision, command, attempt, correlation, reason              |
+| `hard_bound_reached`            | resource, ceiling, actual, reserved                          |
+| `cancellation_requested`        | human actor and in-flight attempt if any                     |
+| `run_cancelled`                 | terminal manifest reference                                  |
+| `run_halted`                    | reason, bounds, unresolved findings, manifest                |
+| `child_run_created`             | parent, child, inherited evidence, changed conditions        |
+| `integrity_failure_detected`    | check type and diagnostic evidence                           |
+| `migration_completed`           | from/to schema, backup manifest, migration IDs               |
+| `purge_completed`               | explicit targets, hashes, confirmation actor                 |
 
 The readiness review must reject implementation-only fact types that lack domain or operational audit value.
 

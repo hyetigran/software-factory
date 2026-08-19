@@ -16,6 +16,7 @@ import {
   type SourceExclusionApproved,
   type ExternalEditDetected,
   type ProjectionRestored,
+  type RerunAuthorized,
 } from "../../src/domain/index.js";
 import { createProvisionalBaselineExport } from "../../src/reporting/provisional-baseline.js";
 
@@ -3373,5 +3374,43 @@ describe("transition", () => {
     expect(() => transition(state, planSubmittedInput(), pinnedPolicy)).toThrow(
       expect.objectContaining({ code: "INVALID_TRANSITION" }),
     );
+  });
+
+  it("records a human rerun authorization bound to one attempt and correlation", () => {
+    const started = transition(null, runStartedInput(), pinnedPolicy).nextState;
+    const input: RerunAuthorized = {
+      type: "RerunAuthorized",
+      runId: started.runId,
+      expectedStateVersion: started.stateVersion,
+      decisionId: "decision_rerun_01JTEST",
+      commandId: "command_provider_01JTEST",
+      attemptId: "attempt_rerun_01JTEST",
+      correlationId: "correlation_rerun_01JTEST",
+      reason: "Reproduce the provider result with current evidence",
+      auditChainVerified: true,
+      databaseIntegrityVerified: true,
+      schemaCompatible: true,
+      mutationLeaseAvailable: true,
+      actor: { kind: "human", displayName: "Tigran", osAccount: "tig" },
+    };
+    const result = transition(started, input, pinnedPolicy);
+    expect(result.nextState.stateVersion).toBe(started.stateVersion + 1);
+    expect(result.auditFacts[0]).toMatchObject({
+      type: "rerun_authorized",
+      evidence: [
+        {
+          kind: "rerun_authorization",
+          commandId: input.commandId,
+          attemptId: input.attemptId,
+          correlationId: input.correlationId,
+        },
+      ],
+      payload: {
+        decisionId: input.decisionId,
+        commandId: input.commandId,
+        attemptId: input.attemptId,
+        correlationId: input.correlationId,
+      },
+    });
   });
 });

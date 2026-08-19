@@ -54,15 +54,15 @@ Authorization headers and credential values are removed before request recording
 
 ## Error mapping
 
-| Condition | Common result |
+| Condition                                                       | Common result                         |
 |---|---|
-| Valid complete structured output | `completed` |
-| Provider safety/policy refusal | `refused` |
-| Maximum output or context limit reached | `truncated` |
-| Complete response fails local schema validation | `schema_invalid` |
-| Explicit retryable HTTP/network error before ambiguous dispatch | `transport_failure` |
-| Timeout or disconnect after dispatch may have occurred | `unknown_outcome` |
-| Model ID absent or retired | domain input `PinnedModelUnavailable` |
+| Valid complete structured output                                | `completed`                           |
+| Provider safety/policy refusal                                  | `refused`                             |
+| Maximum output or context limit reached                         | `truncated`                           |
+| Complete response fails local schema validation                 | `schema_invalid`                      |
+| Explicit retryable HTTP/network error before ambiguous dispatch | `transport_failure`                   |
+| Timeout or disconnect after dispatch may have occurred          | `unknown_outcome`                     |
+| Model ID absent or retired                                      | domain input `PinnedModelUnavailable` |
 
 Refusal and truncation never enter blind schema repair. Adapter exceptions never bypass this mapping.
 

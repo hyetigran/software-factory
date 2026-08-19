@@ -293,7 +293,9 @@ export function projectAuthoritativeState(
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        `${runId}:${String(state.stateVersion)}:${fact.type}:${index}`,
+        typeof (fact.payload as State).decisionId === "string"
+          ? String((fact.payload as State).decisionId)
+          : `${runId}:${String(state.stateVersion)}:${fact.type}:${index}`,
         runId,
         fact.type,
         String(actor.displayName),

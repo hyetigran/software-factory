@@ -29,23 +29,23 @@ A command with `prerequisiteCommandIds` is ineligible until every referenced log
 
 ## Command types
 
-| Command | Effect | Success input |
+| Command                             | Effect                                                       | Success input                                   |
 |---|---|---|
-| `render_source_registration_report` | deterministic source-registration receipt | operational evidence only; no domain transition |
-| `validate_ledger` | deterministic schema, coverage, identity, and lineage checks | `LedgerValidationCompleted` |
-| `render_ledger` | deterministic Markdown and coverage projection | `LedgerRendered` |
-| `render_ledger_approval` | deterministic ledger-approval receipt with coverage evidence | operational evidence only; no domain transition |
-| `generate_plan` | Planner provider request | `PlanGenerated` |
-| `render_plan` | deterministic anchored Markdown | `PlanRendered` |
-| `baseline_review` | full Reviewer evaluation | `ReviewAccepted` |
-| `generate_remediation` | Planner revision and claims | `RemediationGenerated` |
-| `verify_remediation` | Reviewer evaluates claims and full diff context | `RemediationReviewAccepted` |
-| `closure_review` | full Reviewer evaluation after blockers clear | `ClosureReviewAccepted` |
-| `repair_schema` | same provider repairs invalid structured response | original success input |
-| `export_terminal` | manifest, report, and eligible plan projections | `TerminalExportCompleted` |
-| `attempt_provider_cancel` | best-effort cancellation where supported | operational evidence only |
-| `backup_workspace` | SQLite backup and referenced-object manifest | `BackupCompleted` |
-| `verify_integrity` | database, object, and audit-chain checks | `IntegrityCheckCompleted` |
+| `render_source_registration_report` | deterministic source-registration receipt                    | operational evidence only; no domain transition |
+| `validate_ledger`                   | deterministic schema, coverage, identity, and lineage checks | `LedgerValidationCompleted`                     |
+| `render_ledger`                     | deterministic Markdown and coverage projection               | `LedgerRendered`                                |
+| `render_ledger_approval`            | deterministic ledger-approval receipt with coverage evidence | operational evidence only; no domain transition |
+| `generate_plan`                     | Planner provider request                                     | `PlanGenerated`                                 |
+| `render_plan`                       | deterministic anchored Markdown                              | `PlanRendered`                                  |
+| `baseline_review`                   | full Reviewer evaluation                                     | `ReviewAccepted`                                |
+| `generate_remediation`              | Planner revision and claims                                  | `RemediationGenerated`                          |
+| `verify_remediation`                | Reviewer evaluates claims and full diff context              | `RemediationReviewAccepted`                     |
+| `closure_review`                    | full Reviewer evaluation after blockers clear                | `ClosureReviewAccepted`                         |
+| `repair_schema`                     | same provider repairs invalid structured response            | original success input                          |
+| `export_terminal`                   | manifest, report, and eligible plan projections              | `TerminalExportCompleted`                       |
+| `attempt_provider_cancel`           | best-effort cancellation where supported                     | operational evidence only                       |
+| `backup_workspace`                  | SQLite backup and referenced-object manifest                 | `BackupCompleted`                               |
+| `verify_integrity`                  | database, object, and audit-chain checks                     | `IntegrityCheckCompleted`                       |
 
 ## Physical attempts
 

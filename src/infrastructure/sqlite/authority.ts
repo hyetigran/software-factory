@@ -617,14 +617,22 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
         (() => {
           const decision = this.database
             .prepare(
-              `SELECT evidence_json FROM human_decisions
+              `SELECT 1 FROM human_decisions
                 WHERE decision_id = ? AND run_id = ?
-                  AND decision_type = 'rerun_authorized'`,
+                  AND decision_type = 'rerun_authorized'
+                  AND json_extract(evidence_json, '$[0].kind') = 'rerun_authorization'
+                  AND json_extract(evidence_json, '$[0].commandId') = ?
+                  AND json_extract(evidence_json, '$[0].attemptId') = ?
+                  AND json_extract(evidence_json, '$[0].correlationId') = ?`,
             )
-            .get(request.humanAuthorizationId, request.runId) as
-            { evidence_json: string } | undefined;
+            .get(
+              request.humanAuthorizationId,
+              request.runId,
+              request.commandId,
+              request.attemptId,
+              request.correlationId,
+            );
           if (decision === undefined) return false;
-          const evidence = parseObject(decision.evidence_json);
           const alreadyUsed = this.database
             .prepare(
               `SELECT 1 FROM audit_entries
@@ -633,12 +641,7 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
                 LIMIT 1`,
             )
             .get(request.runId, request.humanAuthorizationId);
-          return (
-            evidence.commandId === request.commandId &&
-            evidence.attemptId === request.attemptId &&
-            evidence.correlationId === request.correlationId &&
-            alreadyUsed === undefined
-          );
+          return alreadyUsed === undefined;
         })();
       const strictReplayVerified =
         request.strictReplay !== undefined &&

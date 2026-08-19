@@ -437,6 +437,22 @@ export type IndependenceOverrideGranted = {
   actor: HumanActor;
 };
 
+export type RerunAuthorized = {
+  type: "RerunAuthorized";
+  runId: string;
+  expectedStateVersion: number;
+  decisionId: string;
+  commandId: string;
+  attemptId: string;
+  correlationId: string;
+  reason: string;
+  auditChainVerified: boolean;
+  databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
+  actor: HumanActor;
+};
+
 export type ReviewFindingInput = {
   findingId: string;
   observationId: string;
@@ -1016,6 +1032,24 @@ export type IndependenceOverrideGrantedFact = {
   };
 };
 
+export type RerunAuthorizedFact = {
+  type: "rerun_authorized";
+  actor: HumanActor;
+  reason: string;
+  evidence: Array<{
+    kind: "rerun_authorization";
+    commandId: string;
+    attemptId: string;
+    correlationId: string;
+  }>;
+  payload: {
+    decisionId: string;
+    commandId: string;
+    attemptId: string;
+    correlationId: string;
+  };
+};
+
 export type ExternalEditFact = {
   type: "external_edit_detected" | "projection_restored";
   actor: SystemActor;
@@ -1053,6 +1087,7 @@ export type TransitionResult = {
     | ReviewAcceptedFact
     | FindingCreatedFact
     | IndependenceOverrideGrantedFact
+    | RerunAuthorizedFact
     | ExternalEditFact
     | CommandPlannedFact
   >;
@@ -1202,6 +1237,7 @@ type NonterminalDomainInput =
   | PlanSubmitted
   | ReviewAccepted
   | IndependenceOverrideGranted
+  | RerunAuthorized
   | ExternalEditDetected
   | ProjectionRestored;
 
@@ -1221,6 +1257,61 @@ function editInputIsTrusted(
     input.actor.component.length > 0 &&
     input.actor.version.length > 0
   );
+}
+
+function authorizeRerun(
+  previousState: NonterminalRunState | null,
+  input: RerunAuthorized,
+): TransitionResult {
+  if (
+    previousState === null ||
+    previousState.runId !== input.runId ||
+    previousState.stateVersion !== input.expectedStateVersion ||
+    input.decisionId.trim().length === 0 ||
+    input.commandId.trim().length === 0 ||
+    input.attemptId.trim().length === 0 ||
+    input.correlationId.trim().length === 0 ||
+    input.reason.trim().length === 0 ||
+    !input.auditChainVerified ||
+    !input.databaseIntegrityVerified ||
+    !input.schemaCompatible ||
+    !input.mutationLeaseAvailable ||
+    input.actor.kind !== "human" ||
+    input.actor.displayName.trim().length === 0 ||
+    input.actor.osAccount.trim().length === 0
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "Rerun authorization requires a matching run and explicit human authority",
+    );
+  }
+  const authorization = {
+    kind: "rerun_authorization" as const,
+    commandId: input.commandId,
+    attemptId: input.attemptId,
+    correlationId: input.correlationId,
+  };
+  return {
+    nextState: {
+      ...previousState,
+      stateVersion: previousState.stateVersion + 1,
+    },
+    commands: [],
+    auditFacts: [
+      {
+        type: "rerun_authorized",
+        actor: input.actor,
+        reason: input.reason,
+        evidence: [authorization],
+        payload: {
+          decisionId: input.decisionId,
+          commandId: input.commandId,
+          attemptId: input.attemptId,
+          correlationId: input.correlationId,
+        },
+      },
+    ],
+  };
 }
 
 function recordExternalEdit(
@@ -1368,6 +1459,8 @@ export function transition(
       return haltAfterProviderFailure(previousState, input, policy);
     case "IndependenceOverrideGranted":
       return grantIndependenceOverride(previousState, input, policy);
+    case "RerunAuthorized":
+      return authorizeRerun(previousState, input);
     case "ExternalEditDetected":
       return recordExternalEdit(previousState, input);
     case "ProjectionRestored":
