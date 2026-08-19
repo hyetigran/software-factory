@@ -2,8 +2,10 @@ import type { ProviderRequestPolicy } from "../domain/index.js";
 import type { AcceptedProviderCompletion } from "./complete-provider-attempt.js";
 import type { AcceptedProviderFailure } from "./complete-provider-failure.js";
 import type {
+  CompleteProviderFailureEvidence,
   CompleteProviderAttemptEvidence,
   CompletedCommandAttempt,
+  ExecutionPolicy,
   ProviderFailureDisposition,
 } from "./execution-port.js";
 
@@ -473,6 +475,12 @@ export interface AuthorityTransaction {
   persistProviderCompletion<TState extends object>(
     completion: AcceptedProviderCompletion,
   ): PersistableTransition<TState>;
+  settleProviderFailure(
+    completion: CompleteProviderFailureEvidence,
+    policy: ExecutionPolicy,
+  ):
+    | { status: "eligible" }
+    | { status: "settled"; disposition: ProviderFailureDisposition };
   persistProviderFailure(
     failure: AcceptedProviderFailure,
   ): ProviderFailureDisposition | PersistableTransition<object>;

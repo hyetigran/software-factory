@@ -3152,6 +3152,32 @@ describe("transition", () => {
     );
   });
 
+  it("halts immediately when the pinned baseline reviewer is unavailable", () => {
+    const input: PinnedModelUnavailable = {
+      ...providerOutcomeFailedInput(),
+      type: "PinnedModelUnavailable",
+      expectedStateVersion: 6,
+      failedCommandId: "command_baseline_review_01JTEST",
+      failedPurposeId:
+        "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
+      retryRepairExhausted: false,
+      recoveryBounds: {
+        retryLimit: 2,
+        repairLimit: 1,
+        retriesUsed: 0,
+        repairsUsed: 0,
+      },
+      unavailableModelId: configuredReviewerAssignment.modelId,
+      providerConfirmedUnavailable: true,
+      failureClassification: "provider_error",
+      reason: "Pinned reviewer model is unavailable",
+    };
+
+    expect(
+      transition(baselineReviewState(), input, pinnedPolicy).nextState,
+    ).toMatchObject({ state: "halted", haltedFrom: "baseline_review" });
+  });
+
   it("halts baseline review against its exact active review command", () => {
     const result = transition(
       baselineReviewState(),
@@ -3491,6 +3517,7 @@ describe("transition", () => {
           work({
             loadRun: <TState extends object>() => state as unknown as TState,
             settleProviderCompletion: () => ({ status: "eligible" as const }),
+            settleProviderFailure: () => ({ status: "eligible" as const }),
             persistProviderFailure: () => {
               throw new Error("unexpected provider failure");
             },
@@ -3602,6 +3629,7 @@ describe("transition", () => {
               status: "settled" as const,
               completion,
             }),
+            settleProviderFailure: () => ({ status: "eligible" as const }),
             persistProviderCompletion: () => {
               throw new Error("late evidence must not persist a transition");
             },

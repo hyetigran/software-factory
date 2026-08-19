@@ -608,24 +608,25 @@ describe("SQLite authority", () => {
         },
       },
     );
-    await expect(
-      completeProviderFailure(authority, {
+    const failureRequest = {
+      runId: repairAttempt.runId,
+      expectedStateVersion: 1,
+      completion: {
         runId: repairAttempt.runId,
-        expectedStateVersion: 1,
-        completion: {
-          runId: repairAttempt.runId,
-          commandId: repairAttempt.commandId,
-          attemptId: repairAttempt.attemptId,
-          ownerProcess: "pid:provider",
-          correlationId: repairAttempt.correlationId,
-          requestArtifactId: repairRequestArtifact.artifactId,
-          requestContentHash: repairRequestArtifact.contentHash,
-          outcomeArtifact: failedResponse,
-          nativeUsageArtifact: failedUsage,
-          execution: repairExecution,
-        },
-        executionPolicy: policy,
-      }),
+        commandId: repairAttempt.commandId,
+        attemptId: repairAttempt.attemptId,
+        ownerProcess: "pid:provider",
+        correlationId: repairAttempt.correlationId,
+        requestArtifactId: repairRequestArtifact.artifactId,
+        requestContentHash: repairRequestArtifact.contentHash,
+        outcomeArtifact: failedResponse,
+        nativeUsageArtifact: failedUsage,
+        execution: repairExecution,
+      },
+      executionPolicy: policy,
+    };
+    await expect(
+      completeProviderFailure(authority, failureRequest),
     ).resolves.toMatchObject({
       status: "failed",
       failureClass: "schema_invalid",
@@ -645,6 +646,15 @@ describe("SQLite authority", () => {
         .slice(-2)
         .map(({ factType }) => factType),
     ).toEqual(["command_attempt_completed", "budget_reconciled"]);
+    const auditCount = authority.listAuditEntries().length;
+    await expect(
+      completeProviderFailure(authority, failureRequest),
+    ).resolves.toMatchObject({
+      status: "failed",
+      failureClass: "schema_invalid",
+      recovery: "schema_repair",
+    });
+    expect(authority.listAuditEntries()).toHaveLength(auditCount);
   });
 
   it("atomically reserves budget, acquires the lease, and starts one attempt", async () => {

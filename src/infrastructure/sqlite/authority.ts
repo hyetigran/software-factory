@@ -526,6 +526,49 @@ export class SqliteAuthority
           completion: settlement.completion,
         };
       },
+      settleProviderFailure: (completionRequest, policy) => {
+        assertActive();
+        if (persisted) {
+          throw new Error("Authority transaction accepts exactly one input");
+        }
+        const settlement = this.providerFailure.settle(
+          completionRequest,
+          policy,
+        );
+        if (settlement.status === "eligible") return settlement;
+        if (settlement.completion.auditFacts.length > 0) {
+          appendAuditEntries({
+            database: this.database,
+            workspaceId: this.workspaceId,
+            runId: completionRequest.runId,
+            stateVersionBefore: settlement.completion.stateVersion,
+            stateVersionAfter: settlement.completion.stateVersion,
+            correlationId: completionRequest.correlationId,
+            facts: settlement.completion.auditFacts,
+            now: this.now,
+          });
+          this.database
+            .prepare(
+              "DELETE FROM mutation_lease WHERE singleton = 1 AND attempt_id = ?",
+            )
+            .run(completionRequest.attemptId);
+        }
+        persisted = true;
+        const completed = settlement.completion;
+        return {
+          status: "settled" as const,
+          disposition: {
+            status: completed.status,
+            runId: completed.runId,
+            commandId: completed.commandId,
+            attemptId: completed.attemptId,
+            failureClass: completed.failureClass,
+            failureKind: completed.failureKind,
+            recovery: completed.recovery,
+            recoveryBounds: completed.recoveryBounds,
+          },
+        };
+      },
       persistProviderFailure: (accepted: AcceptedProviderFailure) => {
         assertActive();
         if (persisted) {
@@ -572,6 +615,9 @@ export class SqliteAuthority
             (completion.recovery === "pinned_model_unavailable"
               ? terminalInput.type !== "PinnedModelUnavailable"
               : terminalInput.type !== "ProviderOutcomeFailed") ||
+            (terminalInput.type === "PinnedModelUnavailable" &&
+              terminalInput.unavailableModelId !==
+                data.completion.execution.evidence.requestedModel) ||
             terminalInput.failedCommandId !== data.completion.commandId ||
             !terminalInput.attemptIds.includes(data.completion.attemptId) ||
             canonicalJson(terminalInput.attemptIds) !==

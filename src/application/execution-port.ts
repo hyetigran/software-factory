@@ -283,7 +283,7 @@ export type CompleteProviderFailureEvidence = Omit<
 };
 
 export type ProviderFailureDisposition = {
-  status: "failed" | "unknown";
+  status: "failed" | "unknown" | "discarded";
   runId: string;
   commandId: string;
   attemptId: string;
@@ -300,7 +300,8 @@ export type ProviderFailureDisposition = {
     | "transport_retry"
     | "schema_repair"
     | "pinned_model_unavailable"
-    | "terminal";
+    | "terminal"
+    | "none";
   recoveryBounds: {
     retryLimit: number;
     repairLimit: number;

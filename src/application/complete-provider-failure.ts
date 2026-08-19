@@ -172,6 +172,11 @@ export async function completeProviderFailure(
   request: CompleteProviderFailureRequest,
 ): Promise<ProviderFailureDisposition | PersistableTransition<object>> {
   return authority.transaction((transaction) => {
+    const settlement = transaction.settleProviderFailure(
+      request.completion,
+      request.executionPolicy,
+    );
+    if (settlement.status === "settled") return settlement.disposition;
     const previousState = transaction.loadRun<NonterminalRunState>(
       request.runId,
     );

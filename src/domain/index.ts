@@ -3285,6 +3285,7 @@ function haltAfterProviderFailure(
       bounds.repairsUsed,
     ].every((value) => Number.isInteger(value) && value >= 0) &&
     (previousState.state === "planning" ||
+      input.type === "PinnedModelUnavailable" ||
       (bounds.retriesUsed >= bounds.retryLimit &&
         bounds.repairsUsed >= bounds.repairLimit));
   const classificationValid = [
@@ -3301,7 +3302,8 @@ function haltAfterProviderFailure(
     (input.type === "PinnedModelUnavailable" &&
       (!input.providerConfirmedUnavailable ||
         input.unavailableModelId.trim().length === 0)) ||
-    (previousState.state === "baseline_review" &&
+    (input.type === "ProviderOutcomeFailed" &&
+      previousState.state === "baseline_review" &&
       !input.retryRepairExhausted) ||
     input.terminalPolicyDecision !== "halt" ||
     !classificationValid ||
