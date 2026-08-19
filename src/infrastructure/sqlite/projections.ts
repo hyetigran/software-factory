@@ -417,9 +417,11 @@ export function persistValidatedProjection(
           .prepare(
             `SELECT section_id FROM plan_sections
              JOIN plan_versions USING (plan_version_id)
-             WHERE run_id = ?`,
+             WHERE run_id = ? AND plan_version_id <> ?`,
           )
-          .all(runId) as Array<{ section_id: string }>
+          .all(runId, projection.planVersionId) as Array<{
+          section_id: string;
+        }>
       ).map(({ section_id }) => section_id),
     );
     if (

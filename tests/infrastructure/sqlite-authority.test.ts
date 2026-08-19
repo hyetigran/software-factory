@@ -231,6 +231,7 @@ describe("SQLite authority", () => {
         contentHash: ledger.contentHash,
         stateVersion: 2,
         ledgerVersionId: ledgerInput.ledgerVersionId,
+        sourceArtifactId: input.sourceArtifactId,
       }),
       transition: (previousState) =>
         transition(previousState, ledgerInput, policy),
@@ -458,5 +459,60 @@ describe("SQLite authority", () => {
       "different metadata",
     );
     authority.close();
+  });
+
+  it("keeps validated projection data immutable and rejects schema drift", () => {
+    const valid = {
+      schema_version: 1,
+      ledger_id: "ledger_v1",
+      version: 1,
+      source_artifact_id: "artifact_source",
+      requirements: [
+        {
+          requirement_id: "req_1",
+          display_id: "REQ-001",
+          statement: "Persist atomically.",
+          status: "active",
+          source_ranges: [{ start_byte: 0, end_byte: 1 }],
+          lineage_roots: ["req_1"],
+          predecessor_ids: [],
+        },
+      ],
+      source_exclusions: [],
+    };
+    const bytes = Buffer.from(canonicalJson(valid));
+    const capability = ValidatedProjection.fromLedgerArtifact({
+      bytes,
+      contentHash: createHash("sha256").update(bytes).digest("hex"),
+      stateVersion: 2,
+      ledgerVersionId: "ledger_v1",
+      sourceArtifactId: "artifact_source",
+    });
+    const exposed = capability.toPersistenceData();
+    expect(() => {
+      exposed.requirements?.push({
+        requirementId: "req_forged",
+        displayId: "REQ-X",
+        status: "active",
+        statement: "forged",
+        sourceRanges: [],
+        lineageRoots: [],
+        predecessorIds: [],
+      });
+    }).toThrow();
+    expect(capability.toPersistenceData().requirements).toHaveLength(1);
+
+    const invalidBytes = Buffer.from(
+      canonicalJson({ ...valid, credential: "opaque-secret" }),
+    );
+    expect(() =>
+      ValidatedProjection.fromLedgerArtifact({
+        bytes: invalidBytes,
+        contentHash: createHash("sha256").update(invalidBytes).digest("hex"),
+        stateVersion: 2,
+        ledgerVersionId: "ledger_v1",
+        sourceArtifactId: "artifact_source",
+      }),
+    ).toThrow("normative JSON schema");
   });
 });

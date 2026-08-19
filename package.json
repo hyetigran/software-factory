@@ -9,7 +9,8 @@
   },
   "files": [
     "dist",
-    "database"
+    "database",
+    "schemas"
   ],
   "engines": {
     "node": ">=22"
