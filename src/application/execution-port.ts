@@ -177,6 +177,47 @@ export class StrictReplayEvidence {
   }
 }
 
+export type SchemaRepairOverlay = {
+  promptArtifactId: string;
+  promptContentHash: string;
+  outputSchemaArtifactId: string;
+  outputSchemaContentHash: string;
+  invalidResponseArtifactId: string;
+  invalidResponseContentHash: string;
+};
+
+export function schemaRepairOverlayFromUnknown(
+  value: unknown,
+): SchemaRepairOverlay {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Schema repair policy is invalid");
+  }
+  const overlay = value as Record<string, unknown>;
+  const keys: Array<keyof SchemaRepairOverlay> = [
+    "promptArtifactId",
+    "promptContentHash",
+    "outputSchemaArtifactId",
+    "outputSchemaContentHash",
+    "invalidResponseArtifactId",
+    "invalidResponseContentHash",
+  ];
+  const hash = /^[a-f0-9]{64}$/u;
+  if (
+    Object.keys(overlay).sort().join(",") !== [...keys].sort().join(",") ||
+    !keys.every(
+      (key) => typeof overlay[key] === "string" && overlay[key].length > 0,
+    ) ||
+    ![
+      overlay.promptContentHash,
+      overlay.outputSchemaContentHash,
+      overlay.invalidResponseContentHash,
+    ].every((candidate) => hash.test(candidate as string))
+  ) {
+    throw new TypeError("Schema repair policy is invalid");
+  }
+  return overlay as SchemaRepairOverlay;
+}
+
 export type BeginAttemptRequest = {
   runId: string;
   commandId: string;
@@ -193,14 +234,7 @@ export type BeginAttemptRequest = {
     | "human_rerun";
   humanAuthorizationId?: string;
   strictReplay?: StrictReplayEvidence;
-  schemaRepair?: {
-    promptArtifactId: string;
-    promptContentHash: string;
-    outputSchemaArtifactId: string;
-    outputSchemaContentHash: string;
-    invalidResponseArtifactId: string;
-    invalidResponseContentHash: string;
-  };
+  schemaRepair?: SchemaRepairOverlay;
 };
 
 export type CompleteAttemptRequest = {
@@ -233,15 +267,12 @@ export interface CommandExecutionPort {
 function schemaRepairPolicyIsValid(
   repair: NonNullable<BeginAttemptRequest["schemaRepair"]>,
 ): boolean {
-  const hash = /^[a-f0-9]{64}$/u;
-  return (
-    repair.promptArtifactId.trim().length > 0 &&
-    hash.test(repair.promptContentHash) &&
-    repair.outputSchemaArtifactId.trim().length > 0 &&
-    hash.test(repair.outputSchemaContentHash) &&
-    repair.invalidResponseArtifactId.trim().length > 0 &&
-    hash.test(repair.invalidResponseContentHash)
-  );
+  try {
+    schemaRepairOverlayFromUnknown(repair);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function beginEligibleCommandAttempt(

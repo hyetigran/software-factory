@@ -4,7 +4,11 @@ import type { DatabaseSync } from "node:sqlite";
 import type { StagedArtifactRegistration } from "../../application/artifact-port.js";
 import type { PersistableCommand } from "../../application/authority-port.js";
 import { commandIsValid } from "../../application/command-validation.js";
-import type { StartedCommandAttempt } from "../../application/execution-port.js";
+import {
+  schemaRepairOverlayFromUnknown,
+  type SchemaRepairOverlay,
+  type StartedCommandAttempt,
+} from "../../application/execution-port.js";
 import type { ProviderRequest } from "../../application/provider-port.js";
 import {
   resolvedConfigurationIsValid,
@@ -90,15 +94,6 @@ function configuredRequestPolicy(
   return null;
 }
 
-type SchemaRepairOverlay = {
-  promptArtifactId: string;
-  promptContentHash: string;
-  outputSchemaArtifactId: string;
-  outputSchemaContentHash: string;
-  invalidResponseArtifactId: string;
-  invalidResponseContentHash: string;
-};
-
 type EffectiveProviderRequestPolicy = Omit<
   NonNullable<PersistableCommand["providerRequestPolicy"]>,
   "role"
@@ -108,31 +103,11 @@ function parseSchemaRepairOverlay(
   value: string | null,
 ): SchemaRepairOverlay | null {
   if (value === null) return null;
-  const parsed: unknown = JSON.parse(value);
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+  try {
+    return schemaRepairOverlayFromUnknown(JSON.parse(value));
+  } catch {
     throw new AuthorityIntegrityError("Schema repair audit policy is invalid");
   }
-  const overlay = parsed as Record<string, unknown>;
-  const keys = [
-    "promptArtifactId",
-    "promptContentHash",
-    "outputSchemaArtifactId",
-    "outputSchemaContentHash",
-    "invalidResponseArtifactId",
-    "invalidResponseContentHash",
-  ];
-  if (
-    Object.keys(overlay).sort().join(",") !== keys.sort().join(",") ||
-    !keys.every((key) => typeof overlay[key] === "string") ||
-    ![
-      overlay.promptContentHash,
-      overlay.outputSchemaContentHash,
-      overlay.invalidResponseContentHash,
-    ].every((hash) => /^[a-f0-9]{64}$/u.test(hash as string))
-  ) {
-    throw new AuthorityIntegrityError("Schema repair audit policy is invalid");
-  }
-  return overlay as SchemaRepairOverlay;
 }
 
 export class SqlitePreparedRequestRegistration {
@@ -361,6 +336,18 @@ export class SqlitePreparedRequestRegistration {
     repairOverlay: SchemaRepairOverlay | null,
     originalPromptHash: string,
   ): void {
+    if (
+      repairOverlay !== null &&
+      !request.inputArtifacts.some(
+        ({ artifactId, contentHash }) =>
+          artifactId === repairOverlay.invalidResponseArtifactId &&
+          contentHash === repairOverlay.invalidResponseContentHash,
+      )
+    ) {
+      throw new TypeError(
+        "Schema repair request does not contain the failed response",
+      );
+    }
     if (
       createHash("sha256").update(request.systemPrompt).digest("hex") !==
         request.systemPromptContentHash ||

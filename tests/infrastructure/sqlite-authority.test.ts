@@ -469,6 +469,48 @@ describe("SQLite authority", () => {
         },
       },
     );
+    const invalidResponseAliasId = "artifact_invalid_response_alias";
+    const aliasedRepairArtifact = await store.stageArtifact(
+      Buffer.from('{"request":"repair-alias"}'),
+      {
+        artifactId: "artifact_provider_repair_request_alias",
+        kind: "provider_request",
+        mediaType: "application/json",
+        schemaId: "provider-request-recording.v1",
+        createdBy: "pid:provider",
+        provenance: {
+          method: "application_generated",
+          purpose: "provider_request",
+          sourceArtifactIds: [
+            repairPrompt.artifactId,
+            "artifact_schema",
+            "artifact_source",
+            invalidResponseAliasId,
+          ],
+          commandId: "command_provider",
+          attemptId: repairAttempt.attemptId,
+        },
+      },
+    );
+    await expect(
+      authority.registerPreparedProviderRequest({
+        attempt: repairAttempt,
+        providerRequest: {
+          ...repairRequest,
+          inputArtifacts: [
+            ...providerRequest.inputArtifacts,
+            {
+              artifactId: invalidResponseAliasId,
+              kind: "invalid_response",
+              content: "invalid",
+              contentHash: invalidResponse.contentHash,
+            },
+          ],
+        },
+        normalizedRequestHash: aliasedRepairArtifact.contentHash,
+        artifact: aliasedRepairArtifact,
+      }),
+    ).rejects.toThrow("does not contain the failed response");
     await expect(
       authority.registerPreparedProviderRequest({
         attempt: repairAttempt,
