@@ -1,4 +1,8 @@
 import type { ProviderRequestPolicy } from "../domain/index.js";
+import type {
+  CompleteAttemptRequest,
+  CompletedCommandAttempt,
+} from "./execution-port.js";
 
 export type PersistableCommand = {
   commandId: string;
@@ -458,6 +462,9 @@ export class ValidatedProjection {
 
 export interface AuthorityTransaction {
   loadRun<TState extends object>(runId: string): TState | null;
+  completeProviderAttempt(
+    request: CompleteAttemptRequest,
+  ): CompletedCommandAttempt & { auditFacts: PersistableAuditFact[] };
   persist<TState extends object>(
     request: PersistTransitionRequest,
     result: PersistableTransition<TState>,

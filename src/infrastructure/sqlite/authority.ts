@@ -45,6 +45,7 @@ import { decodeAuditEntry, type AuditRow } from "./audit-codec.js";
 import { appendAuditEntries } from "./audit-journal.js";
 import { AuthorityIntegrityError, StaleStateError } from "./errors.js";
 import { SqliteOperationalCompletion } from "./operational-completion.js";
+import { SqliteProviderCompletion } from "./provider-completion.js";
 import { SqlitePreparedRequestRegistration } from "./prepared-request-registration.js";
 
 export { AuthorityIntegrityError, StaleStateError } from "./errors.js";
@@ -130,6 +131,7 @@ export class SqliteAuthority
     PreparedProviderRequestRegistrationPort
 {
   private readonly operationalCompletion: SqliteOperationalCompletion;
+  private readonly providerCompletion: SqliteProviderCompletion;
   private readonly preparedRequestRegistration?: SqlitePreparedRequestRegistration;
 
   private constructor(
@@ -149,6 +151,13 @@ export class SqliteAuthority
       persistArtifactMetadata: (artifact) =>
         this.persistArtifactMetadata(artifact),
       quarantine: (reason) => this.quarantine(reason),
+    });
+    this.providerCompletion = new SqliteProviderCompletion({
+      database,
+      now,
+      verifyStagedArtifact: (artifact) => this.verifyStagedArtifact(artifact),
+      persistArtifactMetadata: (artifact) =>
+        this.persistArtifactMetadata(artifact),
     });
     if (artifactStore !== undefined) {
       this.preparedRequestRegistration = new SqlitePreparedRequestRegistration({
@@ -461,6 +470,7 @@ export class SqliteAuthority
     this.database.exec("BEGIN IMMEDIATE");
     let active = true;
     let persisted = false;
+    let providerAttemptCompleted = false;
     const assertActive = (): void => {
       if (!active) throw new Error("Authority transaction is no longer active");
     };
@@ -468,6 +478,17 @@ export class SqliteAuthority
       loadRun: <TState extends object>(runId: string): TState | null => {
         assertActive();
         return this.loadRun<TState>(runId);
+      },
+      completeProviderAttempt: (request) => {
+        assertActive();
+        if (providerAttemptCompleted || persisted) {
+          throw new Error(
+            "Authority transaction accepts one provider completion before persistence",
+          );
+        }
+        const completion = this.providerCompletion.complete(request);
+        providerAttemptCompleted = true;
+        return completion;
       },
       persist: <TState extends object>(
         request: PersistTransitionRequest,
