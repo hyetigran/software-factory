@@ -17,6 +17,9 @@ const configuration: ResolvedConfigurationSnapshot = {
   plannerAssignment: { provider: "openai", modelId: "planner" },
   reviewerAssignment: { provider: "anthropic", modelId: "reviewer" },
   artifactHashes: {
+    projectConfigurationSchema: "0".repeat(64),
+    resolvedConfigurationSchema: "0".repeat(64),
+    providerSettingsDefaults: "0".repeat(64),
     runConfigurationSchema: "0".repeat(64),
     requirementsSchema: "1".repeat(64),
     artifactSchema: "2".repeat(64),
@@ -44,6 +47,7 @@ const configuration: ResolvedConfigurationSnapshot = {
   recordingMode: "record",
   humanActorDisplayName: "Test User",
   providerStorage: "minimize",
+  budgetAcceptanceRequired: true,
   hardCeilings: {
     calls: 8,
     physicalAttempts: 12,

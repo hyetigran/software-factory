@@ -252,6 +252,48 @@ export class SqliteAuthority
     }
   }
 
+  async registerArtifacts(
+    descriptors: StagedArtifactRegistration[],
+  ): Promise<void> {
+    this.assertWritable();
+    if (this.artifactStore === undefined || descriptors.length === 0) {
+      throw new TypeError(
+        "Artifact batch registration requires staged artifacts",
+      );
+    }
+    for (const descriptor of descriptors) {
+      const bytes = await this.artifactStore.readVerified(
+        descriptor.contentHash,
+      );
+      if (bytes.byteLength !== descriptor.byteLength) {
+        throw new AuthorityIntegrityError(
+          `Artifact byte length does not match staged object: ${descriptor.artifactId}`,
+        );
+      }
+    }
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.assertWritable();
+      for (const descriptor of descriptors) {
+        const bytes = await this.artifactStore.readVerified(
+          descriptor.contentHash,
+        );
+        if (bytes.byteLength !== descriptor.byteLength) {
+          throw new AuthorityIntegrityError(
+            `Artifact byte length does not match staged object: ${descriptor.artifactId}`,
+          );
+        }
+      }
+      descriptors.forEach((descriptor) =>
+        this.persistArtifactMetadata(descriptor),
+      );
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   async registerPreparedProviderRequest(input: {
     attempt: StartedCommandAttempt;
     providerRequest: ProviderRequest;
@@ -1345,6 +1387,34 @@ export class SqliteAuthority
     ) {
       throw new TypeError(
         "Accepted transition requires a bound deterministic projection",
+      );
+    }
+
+    const assertStateArtifact = (
+      artifactIdField: "sourceArtifactId" | "configurationArtifactId",
+      contentHashField: "sourceContentHash" | "configurationContentHash",
+    ): void => {
+      const artifactId = nextState[artifactIdField];
+      const contentHash = nextState[contentHashField];
+      if (typeof artifactId !== "string" || typeof contentHash !== "string") {
+        throw new AuthorityIntegrityError(
+          `Run state is missing ${artifactIdField}/${contentHashField}`,
+        );
+      }
+      const artifact = this.database
+        .prepare("SELECT content_hash FROM artifacts WHERE artifact_id = ?")
+        .get(artifactId) as { content_hash: string } | undefined;
+      if (artifact?.content_hash !== contentHash) {
+        throw new AuthorityIntegrityError(
+          `Run state artifact identity is invalid: ${artifactId}`,
+        );
+      }
+    };
+    if (actualVersion === 0) {
+      assertStateArtifact("sourceArtifactId", "sourceContentHash");
+      assertStateArtifact(
+        "configurationArtifactId",
+        "configurationContentHash",
       );
     }
 

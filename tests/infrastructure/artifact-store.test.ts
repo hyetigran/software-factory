@@ -170,6 +170,9 @@ describe("workspace and content-addressed artifact store", () => {
         modelId: "claude-pinned",
       },
       artifactHashes: {
+        projectConfigurationSchema: "0".repeat(64),
+        resolvedConfigurationSchema: "0".repeat(64),
+        providerSettingsDefaults: "0".repeat(64),
         runConfigurationSchema: "0".repeat(64),
         requirementsSchema: "b".repeat(64),
         artifactSchema: "c".repeat(64),
@@ -197,6 +200,7 @@ describe("workspace and content-addressed artifact store", () => {
       recordingMode: "record" as const,
       humanActorDisplayName: "Test User",
       providerStorage: "minimize" as const,
+      budgetAcceptanceRequired: true,
       hardCeilings: {
         calls: 4,
         physicalAttempts: 6,

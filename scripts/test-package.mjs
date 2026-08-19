@@ -54,6 +54,24 @@ try {
   if (output !== "0.0.0") {
     throw new Error(`Unexpected factory version: ${output}`);
   }
+  const projectDirectory = join(temporaryDirectory, "project");
+  mkdirSync(projectDirectory);
+  const executable = join(installDirectory, "node_modules", ".bin", "factory");
+  execFileSync(executable, ["init"], {
+    cwd: projectDirectory,
+    env: npmEnvironment,
+    stdio: "pipe",
+  });
+  const configured = JSON.parse(
+    execFileSync(executable, ["configure", "--json"], {
+      cwd: projectDirectory,
+      env: npmEnvironment,
+      encoding: "utf8",
+    }),
+  );
+  if (configured.ok !== true || configured.command !== "configure") {
+    throw new Error("Packed CLI could not resolve packaged controls");
+  }
 } finally {
   rmSync(temporaryDirectory, { recursive: true, force: true });
 }

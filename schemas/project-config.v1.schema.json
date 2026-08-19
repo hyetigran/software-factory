@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://software-factory.local/schemas/project-config.v1.schema.json",
+  "title": "Software Factory Project Configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "planner": { "$ref": "#/$defs/worker" },
+    "reviewer": { "$ref": "#/$defs/worker" },
+    "budgets": { "$ref": "#/$defs/budgets" },
+    "request_settings": { "$ref": "#/$defs/request_settings" },
+    "recording_mode": { "enum": ["record", "strict_replay"] },
+    "provider_storage": { "const": "minimize" },
+    "human_actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["display_name"],
+      "properties": { "display_name": { "type": "string", "minLength": 1 } }
+    }
+  },
+  "$defs": {
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model_id"],
+      "properties": {
+        "provider": { "enum": ["openai", "anthropic"] },
+        "model_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_live_calls": { "type": "integer", "minimum": 1 },
+        "max_physical_attempts": { "type": "integer", "minimum": 1 },
+        "max_schema_repairs_per_command": { "type": "integer", "minimum": 0 },
+        "max_transport_retries_per_command": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_remediation_cycles": { "type": "integer", "minimum": 0 },
+        "max_closure_cycles": { "type": "integer", "minimum": 1 },
+        "max_input_tokens": { "type": "integer", "minimum": 1 },
+        "max_output_tokens": { "type": "integer", "minimum": 1 },
+        "max_cost_usd": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "setting": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeout_ms": { "type": "integer", "minimum": 1 },
+        "reasoning": { "type": ["string", "null"] }
+      }
+    },
+    "request_settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "planner": { "$ref": "#/$defs/setting" },
+        "reviewer": { "$ref": "#/$defs/setting" },
+        "remediation": { "$ref": "#/$defs/setting" },
+        "schema_repair": { "$ref": "#/$defs/setting" }
+      }
+    }
+  }
+}

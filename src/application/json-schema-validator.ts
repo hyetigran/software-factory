@@ -35,6 +35,15 @@ function validateNode(value: unknown, schema: Schema, root: Schema): boolean {
   ) {
     return false;
   }
+  if (Array.isArray(schema.type)) {
+    return schema.type.some(
+      (type) =>
+        typeof type === "string" &&
+        validateNode(value, { ...schema, type }, root),
+    );
+  }
+  if (schema.type === "null") return value === null;
+  if (schema.type === "boolean") return typeof value === "boolean";
   if (schema.type === "object") {
     const record = object(value);
     if (record === null) return false;

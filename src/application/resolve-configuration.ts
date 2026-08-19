@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { canonicalJson } from "../domain/canonical-json.js";
 import type { ProviderModelAssignment } from "../domain/index.js";
 import type {
-  ArtifactRegistrationPort,
+  ArtifactBatchRegistrationPort,
   ArtifactStagingPort,
   StagedArtifactRegistration,
 } from "./artifact-port.js";
@@ -23,140 +23,158 @@ export type PackagedControl = {
   schemaId?: string;
 };
 
-type RunConfigurationInput = {
+type Worker = { provider: "openai" | "anthropic"; model_id: string };
+type Settings = { timeout_ms: number; reasoning: string | null };
+type PartialConfiguration = {
   schema_version: 1;
-  planner: {
-    provider: "openai" | "anthropic";
-    model_id: string;
-    reasoning?: string;
-  };
-  reviewer: {
-    provider: "openai" | "anthropic";
-    model_id: string;
-    reasoning?: string;
-  };
-  policy: {
-    taxonomy_hash: string;
-    component_registry_hash: string;
-    prompt_hashes: Record<string, string>;
-    schema_hashes: Record<string, string>;
-    rubric_hash: string;
-    frontier_allowlist_hash: string;
-  };
-  budgets: {
-    max_live_calls: number;
-    max_physical_attempts: number;
-    max_schema_repairs_per_command: number;
-    max_transport_retries_per_command: number;
-    max_remediation_cycles: number;
-    max_closure_cycles: number;
-    max_input_tokens: number;
-    max_output_tokens: number;
-    max_cost_usd: number;
-  };
-  recording_mode: "record" | "strict_replay";
-  provider_storage: "minimize" | "required_feature_opt_in";
-  human_actor: { display_name: string };
+  planner?: Worker;
+  reviewer?: Worker;
+  budgets?: Partial<Budgets>;
+  request_settings?: Partial<
+    Record<
+      "planner" | "reviewer" | "remediation" | "schema_repair",
+      Partial<Settings>
+    >
+  >;
+  recording_mode?: "record" | "strict_replay";
+  provider_storage?: "minimize";
+  human_actor?: { display_name: string };
+};
+type Budgets = {
+  requires_explicit_acceptance_before_live_run: boolean;
+  max_live_calls: number;
+  max_physical_attempts: number;
+  max_schema_repairs_per_command: number;
+  max_transport_retries_per_command: number;
+  max_remediation_cycles: number;
+  max_closure_cycles: number;
+  max_input_tokens: number;
+  max_output_tokens: number;
+  max_cost_usd: number;
 };
 
-function hash(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
+const digest = (bytes: Uint8Array) =>
+  createHash("sha256").update(bytes).digest("hex");
+const id = (prefix: string, hash: string) => `${prefix}_${hash.slice(0, 24)}`;
+const json = <T>(bytes: Uint8Array): T =>
+  JSON.parse(Buffer.from(bytes).toString("utf8")) as T;
 
-function artifactId(prefix: string, contentHash: string): string {
-  return `${prefix}_${contentHash.slice(0, 24)}`.replaceAll(
-    /[^A-Za-z0-9_-]/gu,
-    "_",
-  );
+function merge(
+  base: PartialConfiguration,
+  update: PartialConfiguration,
+): PartialConfiguration {
+  return {
+    ...base,
+    ...update,
+    budgets: { ...base.budgets, ...update.budgets },
+    request_settings: {
+      ...base.request_settings,
+      ...Object.fromEntries(
+        Object.entries(update.request_settings ?? {}).map(([key, value]) => [
+          key,
+          {
+            ...base.request_settings?.[
+              key as keyof NonNullable<PartialConfiguration["request_settings"]>
+            ],
+            ...value,
+          },
+        ]),
+      ),
+    },
+  };
 }
 
 export async function resolveAndRegisterConfiguration(input: {
-  configurationBytes: Uint8Array;
+  projectConfigurationBytes?: Uint8Array;
+  overrideConfigurationBytes?: Uint8Array;
   configurationSchema: unknown;
   controls: PackagedControl[];
   staging: ArtifactStagingPort;
-  registration: ArtifactRegistrationPort;
+  registration: ArtifactBatchRegistrationPort;
   packageVersion: string;
   createdBy: string;
+  defaultActorDisplayName: string;
 }): Promise<{
   configuration: ResolvedConfigurationSnapshot;
   artifact: StagedArtifactRegistration;
   controlArtifacts: StagedArtifactRegistration[];
 }> {
-  const parsed: unknown = JSON.parse(
-    Buffer.from(input.configurationBytes).toString("utf8"),
-  );
-  assertJsonSchema(parsed, input.configurationSchema);
-  const source = parsed as RunConfigurationInput;
-  if (source.provider_storage !== "minimize") {
-    throw new TypeError(
-      "Resolved configuration v1 supports provider storage minimization only",
-    );
-  }
-  const controlArtifacts: StagedArtifactRegistration[] = [];
-  const artifactsByHash = new Map<string, StagedArtifactRegistration>();
-  const hashes = {} as ResolvedArtifactPins;
-  for (const control of input.controls) {
-    const contentHash = hash(control.bytes);
-    let artifact = artifactsByHash.get(contentHash);
-    if (artifact === undefined) {
-      artifact = await input.staging.stageArtifact(control.bytes, {
-        artifactId: artifactId("control", contentHash),
-        kind: "other",
-        mediaType: control.mediaType,
-        ...(control.schemaId === undefined
-          ? {}
-          : { schemaId: control.schemaId }),
-        createdBy: `system:software-factory@${input.packageVersion}`,
-        provenance: {
-          method: "packaged",
-          packagePath: control.packagePath,
-          packageVersion: input.packageVersion,
-        },
-      });
-      await input.registration.registerArtifact(artifact);
-      artifactsByHash.set(contentHash, artifact);
-      controlArtifacts.push(artifact);
-    }
-    hashes[control.key] = contentHash;
-  }
-  const expectedPolicy = {
-    taxonomy_hash: hashes.taxonomy,
-    component_registry_hash: hashes.componentRegistry,
-    prompt_hashes: {
-      planner: hashes.plannerPrompt,
-      reviewer: hashes.reviewerPrompt,
-      remediation: hashes.remediationPrompt,
-      schema_repair: hashes.schemaRepairPrompt,
-    },
-    schema_hashes: {
-      requirements: hashes.requirementsSchema,
-      artifact: hashes.artifactSchema,
-      plan: hashes.planSchema,
-      review: hashes.reviewSchema,
-      remediation: hashes.remediationSchema,
-    },
-    rubric_hash: hashes.reviewPolicy,
-    frontier_allowlist_hash: hashes.frontierAllowlist,
+  const control = (key: PackagedControl["key"]) => {
+    const found = input.controls.find((item) => item.key === key);
+    if (found === undefined)
+      throw new TypeError(`Packaged control is missing: ${key}`);
+    return found;
   };
-  if (canonicalJson(source.policy) !== canonicalJson(expectedPolicy)) {
-    throw new TypeError(
-      "Run configuration policy hashes do not match packaged controls",
-    );
-  }
-  const allowlistControl = input.controls.find(
-    (control) => control.key === "frontierAllowlist",
-  );
-  if (allowlistControl === undefined)
-    throw new TypeError("Frontier allowlist is missing");
-  const allowlist = JSON.parse(
-    Buffer.from(allowlistControl.bytes).toString("utf8"),
-  ) as {
-    models?: Array<{ provider?: unknown; model_id?: unknown }>;
+  const allowlist = json<{
+    default_assignments: { planner: Worker; reviewer: Worker };
+    models: Worker[];
+  }>(control("frontierAllowlist").bytes);
+  const budgetDefaults = json<Budgets>(control("budgetDefaults").bytes);
+  const providerDefaults = json<{
+    planner: Settings;
+    reviewer: Settings;
+    remediation: Settings;
+    schema_repair: Settings;
+    recording_mode: "record" | "strict_replay";
+    provider_storage: "minimize";
+  }>(control("providerSettingsDefaults").bytes);
+  let resolved: PartialConfiguration = {
+    schema_version: 1,
+    planner: allowlist.default_assignments.planner,
+    reviewer: allowlist.default_assignments.reviewer,
+    budgets: budgetDefaults,
+    request_settings: {
+      planner: providerDefaults.planner,
+      reviewer: providerDefaults.reviewer,
+      remediation: providerDefaults.remediation,
+      schema_repair: providerDefaults.schema_repair,
+    },
+    recording_mode: providerDefaults.recording_mode,
+    provider_storage: providerDefaults.provider_storage,
+    human_actor: { display_name: input.defaultActorDisplayName },
   };
-  for (const worker of [source.planner, source.reviewer]) {
+  const submitted: Array<{ bytes: Uint8Array; role: string }> = [];
+  for (const [bytes, role] of [
+    [input.projectConfigurationBytes, "project"],
+    [input.overrideConfigurationBytes, "override"],
+  ] as const) {
+    if (bytes === undefined) continue;
+    const value = json<PartialConfiguration>(bytes);
+    assertJsonSchema(value, input.configurationSchema);
+    resolved = merge(resolved, value);
+    submitted.push({ bytes, role });
+  }
+  const planner = resolved.planner;
+  const reviewer = resolved.reviewer;
+  const budgets = resolved.budgets as Budgets;
+  const settings = resolved.request_settings;
+  if (planner === undefined || reviewer === undefined)
+    throw new TypeError("Provider assignments are incomplete");
+  if (
+    settings?.planner === undefined ||
+    settings.reviewer === undefined ||
+    settings.remediation === undefined ||
+    settings.schema_repair === undefined
+  ) {
+    throw new TypeError("Provider request settings are incomplete");
+  }
+  const completeSettings = (value: Partial<Settings>): Settings => {
     if (
-      !allowlist.models?.some(
+      !Number.isInteger(value.timeout_ms) ||
+      (value.timeout_ms ?? 0) < 1 ||
+      !(value.reasoning === null || typeof value.reasoning === "string")
+    ) {
+      throw new TypeError("Provider request settings are invalid");
+    }
+    return value as Settings;
+  };
+  const plannerSettings = completeSettings(settings.planner);
+  const reviewerSettings = completeSettings(settings.reviewer);
+  const remediationSettings = completeSettings(settings.remediation);
+  const repairSettings = completeSettings(settings.schema_repair);
+  for (const worker of [planner, reviewer]) {
+    if (
+      !allowlist.models.some(
         (model) =>
           model.provider === worker.provider &&
           model.model_id === worker.model_id,
@@ -168,127 +186,140 @@ export async function resolveAndRegisterConfiguration(input: {
     }
   }
   if (
-    source.planner.provider === source.reviewer.provider ||
-    source.planner.model_id === source.reviewer.model_id
+    planner.provider === reviewer.provider ||
+    planner.model_id === reviewer.model_id
   ) {
     throw new TypeError(
-      "Default Planner and Reviewer assignments must use different providers and models",
+      "Planner and Reviewer must use different providers and models",
     );
   }
-  const assignment = (
-    worker: RunConfigurationInput["planner"],
-  ): ProviderModelAssignment => ({
+  const costUsdMicros = budgets.max_cost_usd * 1_000_000;
+  if (!Number.isSafeInteger(costUsdMicros) || costUsdMicros < 1) {
+    throw new TypeError(
+      "Cost ceiling must have at most six decimal places and fit safely",
+    );
+  }
+
+  const staged: StagedArtifactRegistration[] = [];
+  const controlsByHash = new Map<string, StagedArtifactRegistration>();
+  const hashes = {} as ResolvedArtifactPins;
+  for (const item of input.controls) {
+    const hash = digest(item.bytes);
+    let artifact = controlsByHash.get(hash);
+    if (artifact === undefined) {
+      artifact = await input.staging.stageArtifact(item.bytes, {
+        artifactId: id("control", hash),
+        kind: "other",
+        mediaType: item.mediaType,
+        ...(item.schemaId === undefined ? {} : { schemaId: item.schemaId }),
+        createdBy: `system:software-factory@${input.packageVersion}`,
+        provenance: {
+          method: "packaged",
+          packagePath: item.packagePath,
+          packageVersion: input.packageVersion,
+        },
+      });
+      controlsByHash.set(hash, artifact);
+      staged.push(artifact);
+    }
+    hashes[item.key] = hash;
+  }
+  const sourceArtifacts: StagedArtifactRegistration[] = [];
+  for (const source of submitted) {
+    const hash = digest(source.bytes);
+    const artifact = await input.staging.stageArtifact(source.bytes, {
+      artifactId: id(`configuration_${source.role}`, hash),
+      kind: "other",
+      mediaType: "application/json",
+      schemaId: "software-factory/project-config.v1",
+      createdBy: input.createdBy,
+      provenance: { method: "human_submitted" },
+    });
+    sourceArtifacts.push(artifact);
+    staged.push(artifact);
+  }
+  const assignment = (worker: Worker): ProviderModelAssignment => ({
     provider: worker.provider,
     modelId: worker.model_id,
   });
   const configuration: ResolvedConfigurationSnapshot = {
     schemaVersion: 1,
     policyHash: "0".repeat(64),
-    plannerAssignment: assignment(source.planner),
-    reviewerAssignment: assignment(source.reviewer),
-    artifactHashes: {
-      runConfigurationSchema: hashes.runConfigurationSchema,
-      requirementsSchema: hashes.requirementsSchema,
-      artifactSchema: hashes.artifactSchema,
-      planSchema: hashes.planSchema,
-      reviewSchema: hashes.reviewSchema,
-      terminalManifestSchema: hashes.terminalManifestSchema,
-      taxonomy: hashes.taxonomy,
-      componentRegistry: hashes.componentRegistry,
-      plannerPrompt: hashes.plannerPrompt,
-      reviewerPrompt: hashes.reviewerPrompt,
-      remediationPrompt: hashes.remediationPrompt,
-      remediationSchema: hashes.remediationSchema,
-      schemaRepairPrompt: hashes.schemaRepairPrompt,
-      reviewPolicy: hashes.reviewPolicy,
-      frontierAllowlist: hashes.frontierAllowlist,
-      budgetDefaults: hashes.budgetDefaults,
-      productDefaults: hashes.productDefaults,
-    },
+    plannerAssignment: assignment(planner),
+    reviewerAssignment: assignment(reviewer),
+    artifactHashes: hashes,
     providerRequestSettings: {
       planner: {
-        timeoutMs: 120_000,
-        reasoning: source.planner.reasoning ?? null,
+        timeoutMs: plannerSettings.timeout_ms,
+        reasoning: plannerSettings.reasoning,
       },
       reviewer: {
-        timeoutMs: 120_000,
-        reasoning: source.reviewer.reasoning ?? null,
+        timeoutMs: reviewerSettings.timeout_ms,
+        reasoning: reviewerSettings.reasoning,
       },
       remediation: {
-        timeoutMs: 120_000,
-        reasoning: source.planner.reasoning ?? null,
+        timeoutMs: remediationSettings.timeout_ms,
+        reasoning: remediationSettings.reasoning,
       },
       schemaRepair: {
-        timeoutMs: 60_000,
-        reasoning: source.planner.reasoning ?? null,
+        timeoutMs: repairSettings.timeout_ms,
+        reasoning: repairSettings.reasoning,
       },
     },
-    recordingMode: source.recording_mode,
-    humanActorDisplayName: source.human_actor.display_name,
+    recordingMode: resolved.recording_mode ?? "record",
+    humanActorDisplayName:
+      resolved.human_actor?.display_name ?? input.defaultActorDisplayName,
     providerStorage: "minimize",
+    budgetAcceptanceRequired:
+      budgets.requires_explicit_acceptance_before_live_run,
     hardCeilings: {
-      calls: source.budgets.max_live_calls,
-      physicalAttempts: source.budgets.max_physical_attempts,
-      inputTokens: source.budgets.max_input_tokens,
-      outputTokens: source.budgets.max_output_tokens,
-      costUsdMicros: Math.round(source.budgets.max_cost_usd * 1_000_000),
-      retries: source.budgets.max_transport_retries_per_command,
-      repairs: source.budgets.max_schema_repairs_per_command,
-      remediationCycles: source.budgets.max_remediation_cycles,
-      closureCycles: source.budgets.max_closure_cycles,
+      calls: budgets.max_live_calls,
+      physicalAttempts: budgets.max_physical_attempts,
+      inputTokens: budgets.max_input_tokens,
+      outputTokens: budgets.max_output_tokens,
+      costUsdMicros,
+      retries: budgets.max_transport_retries_per_command,
+      repairs: budgets.max_schema_repairs_per_command,
+      remediationCycles: budgets.max_remediation_cycles,
+      closureCycles: budgets.max_closure_cycles,
     },
     credentialReferences: Object.fromEntries(
-      [...new Set([source.planner.provider, source.reviewer.provider])].map(
-        (provider) => [
-          provider,
-          {
-            kind: "environment" as const,
-            reference:
-              provider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY",
-          },
-        ],
-      ),
+      [...new Set([planner.provider, reviewer.provider])].map((provider) => [
+        provider,
+        {
+          kind: "environment" as const,
+          reference:
+            provider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY",
+        },
+      ]),
     ),
   };
-  if (!Number.isSafeInteger(configuration.hardCeilings.costUsdMicros)) {
-    throw new TypeError(
-      "Configured cost ceiling cannot be represented exactly",
-    );
-  }
   configuration.policyHash = resolvedConfigurationPolicyHash(configuration);
-  const sourceArtifact = await input.staging.stageArtifact(
-    input.configurationBytes,
-    {
-      artifactId: artifactId(
-        "configuration_input",
-        hash(input.configurationBytes),
-      ),
-      kind: "other",
-      mediaType: "application/json",
-      schemaId: "software-factory/run-config.v1",
-      createdBy: input.createdBy,
-      provenance: { method: "human_submitted" },
-    },
-  );
-  await input.registration.registerArtifact(sourceArtifact);
-  if (!resolvedConfigurationIsValid(configuration)) {
+  if (!resolvedConfigurationIsValid(configuration))
     throw new TypeError("Resolved configuration is invalid");
-  }
-  const configurationBytes = Buffer.from(canonicalJson(configuration));
-  const artifact = await input.staging.stageArtifact(configurationBytes, {
-    artifactId: artifactId("configuration", hash(configurationBytes)),
+  assertJsonSchema(
+    configuration,
+    json(control("resolvedConfigurationSchema").bytes),
+  );
+  const bytes = Buffer.from(canonicalJson(configuration));
+  const artifact = await input.staging.stageArtifact(bytes, {
+    artifactId: id("configuration", digest(bytes)),
     kind: "other",
     mediaType: "application/json",
     schemaId: "software-factory/resolved-configuration.v1",
     createdBy: input.createdBy,
     provenance: {
       method: "resolved_configuration",
-      sourceArtifactIds: [
-        sourceArtifact.artifactId,
-        ...controlArtifacts.map((item) => item.artifactId),
-      ],
+      sourceArtifactIds: [...controlsByHash.values(), ...sourceArtifacts].map(
+        (item) => item.artifactId,
+      ),
     },
   });
-  await input.registration.registerArtifact(artifact);
-  return { configuration, artifact, controlArtifacts };
+  staged.push(artifact);
+  await input.registration.registerArtifacts(staged);
+  return {
+    configuration,
+    artifact,
+    controlArtifacts: [...controlsByHash.values()],
+  };
 }

@@ -22,7 +22,8 @@ type ParsedCommand =
       publicName: "configure";
       json: boolean;
       projectRoot: string;
-      configurationPath: string;
+      configurationPath?: string;
+      overrideConfigurationPath?: string;
     }
   | {
       kind: "run_list";
@@ -68,7 +69,7 @@ type ParsedCommand =
     };
 
 const usage =
-  "Usage: factory init | configure <run-config.json> | run start <source.md> <configuration-artifact-id> | run list | run status <run-id> | inspect <state|findings|usage|gates> <run-id> | inspect <audit|artifacts> [run-id] [--json] [--project <path>]";
+  "Usage: factory init | configure [project-config.json] [overrides.json] | run start <source.md> <configuration-artifact-id> | run list | run status <run-id> | inspect <state|findings|usage|gates> <run-id> | inspect <audit|artifacts> [run-id] [--json] [--project <path>]";
 
 export function runCli(args: string[], write: Writer): number {
   if (args.includes("--version")) {
@@ -125,13 +126,22 @@ function parseArgs(args: string[], cwd: string): ParsedCommand {
   if (positional.length === 1 && positional[0] === "init") {
     return { kind: "init", publicName: "init", json, projectRoot };
   }
-  if (positional.length === 2 && positional[0] === "configure") {
+  if (
+    positional[0] === "configure" &&
+    positional.length >= 1 &&
+    positional.length <= 3
+  ) {
     return {
       kind: "configure",
       publicName: "configure",
       json,
       projectRoot,
-      configurationPath: positional[1] ?? "",
+      ...(positional[1] === undefined
+        ? {}
+        : { configurationPath: positional[1] }),
+      ...(positional[2] === undefined
+        ? {}
+        : { overrideConfigurationPath: positional[2] }),
     };
   }
   if (
@@ -249,7 +259,10 @@ function exitFor(error: WorkspaceOperationError): number {
   switch (error.code) {
     case "WORKSPACE_NOT_FOUND":
     case "RUN_NOT_FOUND":
+    case "INPUT_NOT_FOUND":
       return CliExit.notFound;
+    case "INVALID_INPUT":
+      return CliExit.usage;
     case "SCHEMA_INCOMPATIBLE":
     case "INTEGRITY_ERROR":
       return CliExit.integrity;
@@ -301,6 +314,7 @@ export async function runCliAsync(
         const configured = await operations.configure(
           command.projectRoot,
           command.configurationPath,
+          command.overrideConfigurationPath,
         );
         writeSuccess(
           write,

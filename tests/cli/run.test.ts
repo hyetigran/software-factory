@@ -1,9 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { mkdtemp, readdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { createHash } from "node:crypto";
 
 import { CliExit, runCli, runCliAsync } from "../../src/cli/run.js";
 import { createWorkspaceOperations } from "../../src/infrastructure/platform/workspace-operations.js";
@@ -43,54 +42,14 @@ describe("factory executable", () => {
 
   it("resolves and registers a pinned run configuration", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "factory-cli-"));
-    const digest = async (path: string) =>
-      createHash("sha256")
-        .update(await readFile(resolve(path)))
-        .digest("hex");
-    const policy = {
-      taxonomy_hash: await digest("config/review-taxonomy.v1.json"),
-      component_registry_hash: await digest(
-        "config/component-registry.v1.json",
-      ),
-      prompt_hashes: {
-        planner: await digest("config/prompts/planner.v1.md"),
-        reviewer: await digest("config/prompts/reviewer.v1.md"),
-        remediation: await digest("config/prompts/remediation.v1.md"),
-        schema_repair: await digest("config/prompts/schema-repair.v1.md"),
-      },
-      schema_hashes: {
-        requirements: await digest(
-          "schemas/requirements-ledger.v1.schema.json",
-        ),
-        artifact: await digest("schemas/artifact.v1.schema.json"),
-        plan: await digest("schemas/plan.v1.schema.json"),
-        review: await digest("schemas/review.v1.schema.json"),
-        remediation: await digest("schemas/plan.v1.schema.json"),
-      },
-      rubric_hash: await digest("config/review-rubric.v1.md"),
-      frontier_allowlist_hash: await digest("config/frontier-models.v1.json"),
-    };
     const configurationPath = join(projectRoot, "run-config.json");
     await writeFile(
       configurationPath,
       JSON.stringify({
         schema_version: 1,
-        planner: { provider: "openai", model_id: "gpt-5.6-terra" },
-        reviewer: { provider: "anthropic", model_id: "claude-sonnet-5" },
-        policy,
         budgets: {
-          max_live_calls: 12,
-          max_physical_attempts: 18,
-          max_schema_repairs_per_command: 2,
-          max_transport_retries_per_command: 2,
-          max_remediation_cycles: 3,
-          max_closure_cycles: 2,
-          max_input_tokens: 1_000_000,
-          max_output_tokens: 150_000,
-          max_cost_usd: 25,
+          max_cost_usd: 10,
         },
-        recording_mode: "record",
-        provider_storage: "minimize",
         human_actor: { display_name: "Test User" },
       }),
     );
@@ -151,6 +110,106 @@ describe("factory executable", () => {
     expect(started.command).toBe("run start");
     expect(started.data.runId).toMatch(/^run_/u);
     expect(started.data.state.state).toBe("draft");
+  });
+
+  it("merges defaults, project configuration, and explicit overrides", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "factory-cli-"));
+    await writeFile(
+      join(projectRoot, "project.json"),
+      JSON.stringify({
+        schema_version: 1,
+        budgets: { max_cost_usd: 10 },
+        request_settings: { planner: { timeout_ms: 90000 } },
+      }),
+    );
+    await writeFile(
+      join(projectRoot, "override.json"),
+      JSON.stringify({
+        schema_version: 1,
+        budgets: { max_cost_usd: 7 },
+        recording_mode: "strict_replay",
+      }),
+    );
+    const operations = createWorkspaceOperations();
+    await operations.initialize(projectRoot);
+
+    const configured = await operations.configure(
+      projectRoot,
+      "project.json",
+      "override.json",
+    );
+    const objectBytes = await import("node:fs/promises").then(({ readFile }) =>
+      readFile(
+        join(
+          projectRoot,
+          ".factory",
+          "objects",
+          configured.configurationContentHash,
+        ),
+      ),
+    );
+    const resolved = JSON.parse(objectBytes.toString("utf8")) as {
+      recordingMode: string;
+      budgetAcceptanceRequired: boolean;
+      hardCeilings: { costUsdMicros: number };
+      providerRequestSettings: {
+        planner: { timeoutMs: number };
+        reviewer: { timeoutMs: number };
+      };
+    };
+    expect(resolved).toMatchObject({
+      recordingMode: "strict_replay",
+      budgetAcceptanceRequired: true,
+      hardCeilings: { costUsdMicros: 7_000_000 },
+      providerRequestSettings: {
+        planner: { timeoutMs: 90000 },
+        reviewer: { timeoutMs: 120000 },
+      },
+    });
+  });
+
+  it("rejects inexact cost policy without registering partial metadata", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "factory-cli-"));
+    const operations = createWorkspaceOperations();
+    await operations.initialize(projectRoot);
+    await writeFile(
+      join(projectRoot, "invalid.json"),
+      JSON.stringify({
+        schema_version: 1,
+        budgets: { max_cost_usd: 0.0000014 },
+      }),
+    );
+    const databasePath = join(projectRoot, ".factory", "state.db");
+    const count = () => {
+      const database = new DatabaseSync(databasePath);
+      try {
+        return (
+          database.prepare("SELECT COUNT(*) AS count FROM artifacts").get() as {
+            count: number;
+          }
+        ).count;
+      } finally {
+        database.close();
+      }
+    };
+    const before = count();
+    const lines: string[] = [];
+
+    await expect(
+      runCliAsync(
+        ["configure", "invalid.json", "--json"],
+        (line) => lines.push(line),
+        operations,
+        projectRoot,
+      ),
+    ).resolves.toBe(CliExit.usage);
+
+    expect(count()).toBe(before);
+    expect(JSON.parse(lines[0] ?? "null")).toMatchObject({
+      ok: false,
+      command: "configure",
+      error: { code: "INVALID_INPUT" },
+    });
   });
 
   it("supports stable JSON run-list and not-found responses", async () => {

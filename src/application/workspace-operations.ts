@@ -111,7 +111,9 @@ export class WorkspaceOperationError extends Error {
       | "RUN_NOT_FOUND"
       | "SCHEMA_INCOMPATIBLE"
       | "INTEGRITY_ERROR"
-      | "CONFLICT",
+      | "CONFLICT"
+      | "INVALID_INPUT"
+      | "INPUT_NOT_FOUND",
     message: string,
     readonly details: Record<string, unknown> = {},
   ) {
@@ -124,7 +126,8 @@ export interface WorkspaceOperations {
   initialize(projectRoot: string): Promise<{ workspaceRoot: string }>;
   configure(
     projectRoot: string,
-    configurationPath: string,
+    configurationPath?: string,
+    overrideConfigurationPath?: string,
   ): Promise<{
     configurationArtifactId: string;
     configurationContentHash: string;

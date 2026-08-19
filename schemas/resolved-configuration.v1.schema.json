@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://software-factory.local/schemas/resolved-configuration.v1.schema.json",
+  "title": "Resolved Software Factory Configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "policyHash",
+    "plannerAssignment",
+    "reviewerAssignment",
+    "artifactHashes",
+    "providerRequestSettings",
+    "recordingMode",
+    "humanActorDisplayName",
+    "providerStorage",
+    "budgetAcceptanceRequired",
+    "hardCeilings",
+    "credentialReferences"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "policyHash": { "$ref": "#/$defs/hash" },
+    "plannerAssignment": { "$ref": "#/$defs/assignment" },
+    "reviewerAssignment": { "$ref": "#/$defs/assignment" },
+    "artifactHashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projectConfigurationSchema",
+        "resolvedConfigurationSchema",
+        "runConfigurationSchema",
+        "requirementsSchema",
+        "artifactSchema",
+        "planSchema",
+        "reviewSchema",
+        "terminalManifestSchema",
+        "taxonomy",
+        "componentRegistry",
+        "plannerPrompt",
+        "reviewerPrompt",
+        "remediationPrompt",
+        "remediationSchema",
+        "schemaRepairPrompt",
+        "reviewPolicy",
+        "frontierAllowlist",
+        "budgetDefaults",
+        "productDefaults",
+        "providerSettingsDefaults"
+      ],
+      "properties": {
+        "projectConfigurationSchema": { "$ref": "#/$defs/hash" },
+        "resolvedConfigurationSchema": { "$ref": "#/$defs/hash" },
+        "runConfigurationSchema": { "$ref": "#/$defs/hash" },
+        "requirementsSchema": { "$ref": "#/$defs/hash" },
+        "artifactSchema": { "$ref": "#/$defs/hash" },
+        "planSchema": { "$ref": "#/$defs/hash" },
+        "reviewSchema": { "$ref": "#/$defs/hash" },
+        "terminalManifestSchema": { "$ref": "#/$defs/hash" },
+        "taxonomy": { "$ref": "#/$defs/hash" },
+        "componentRegistry": { "$ref": "#/$defs/hash" },
+        "plannerPrompt": { "$ref": "#/$defs/hash" },
+        "reviewerPrompt": { "$ref": "#/$defs/hash" },
+        "remediationPrompt": { "$ref": "#/$defs/hash" },
+        "remediationSchema": { "$ref": "#/$defs/hash" },
+        "schemaRepairPrompt": { "$ref": "#/$defs/hash" },
+        "reviewPolicy": { "$ref": "#/$defs/hash" },
+        "frontierAllowlist": { "$ref": "#/$defs/hash" },
+        "budgetDefaults": { "$ref": "#/$defs/hash" },
+        "productDefaults": { "$ref": "#/$defs/hash" },
+        "providerSettingsDefaults": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "providerRequestSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["planner", "reviewer", "remediation", "schemaRepair"],
+      "properties": {
+        "planner": { "$ref": "#/$defs/setting" },
+        "reviewer": { "$ref": "#/$defs/setting" },
+        "remediation": { "$ref": "#/$defs/setting" },
+        "schemaRepair": { "$ref": "#/$defs/setting" }
+      }
+    },
+    "recordingMode": { "enum": ["record", "strict_replay"] },
+    "humanActorDisplayName": { "type": "string", "minLength": 1 },
+    "providerStorage": { "const": "minimize" },
+    "budgetAcceptanceRequired": { "type": "boolean" },
+    "hardCeilings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "calls",
+        "physicalAttempts",
+        "inputTokens",
+        "outputTokens",
+        "costUsdMicros",
+        "retries",
+        "repairs",
+        "remediationCycles",
+        "closureCycles"
+      ],
+      "properties": {
+        "calls": { "type": "integer", "minimum": 1 },
+        "physicalAttempts": { "type": "integer", "minimum": 1 },
+        "inputTokens": { "type": "integer", "minimum": 1 },
+        "outputTokens": { "type": "integer", "minimum": 1 },
+        "costUsdMicros": { "type": "integer", "minimum": 1 },
+        "retries": { "type": "integer", "minimum": 0 },
+        "repairs": { "type": "integer", "minimum": 0 },
+        "remediationCycles": { "type": "integer", "minimum": 0 },
+        "closureCycles": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "credentialReferences": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/credential" }
+    }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "modelId"],
+      "properties": {
+        "provider": { "enum": ["openai", "anthropic"] },
+        "modelId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "setting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timeoutMs", "reasoning"],
+      "properties": {
+        "timeoutMs": { "type": "integer", "minimum": 1 },
+        "reasoning": { "type": ["string", "null"] }
+      }
+    },
+    "credential": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "reference"],
+      "properties": {
+        "kind": { "enum": ["environment", "os_credential_store"] },
+        "reference": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

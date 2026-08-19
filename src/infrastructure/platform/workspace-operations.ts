@@ -20,6 +20,7 @@ import {
   resolveAndRegisterConfiguration,
   type PackagedControl,
 } from "../../application/resolve-configuration.js";
+import { assertJsonSchema } from "../../application/json-schema-validator.js";
 
 const packageRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -39,6 +40,16 @@ async function packagedControls(): Promise<{
       [
         "runConfigurationSchema",
         "schemas/run-config.v1.schema.json",
+        "application/schema+json",
+      ],
+      [
+        "projectConfigurationSchema",
+        "schemas/project-config.v1.schema.json",
+        "application/schema+json",
+      ],
+      [
+        "resolvedConfigurationSchema",
+        "schemas/resolved-configuration.v1.schema.json",
         "application/schema+json",
       ],
       [
@@ -105,12 +116,17 @@ async function packagedControls(): Promise<{
       ],
       ["budgetDefaults", "config/default-budgets.v1.json", "application/json"],
       ["productDefaults", "config/product.v1.json", "application/json"],
+      [
+        "providerSettingsDefaults",
+        "config/default-provider-settings.v1.json",
+        "application/json",
+      ],
     ];
   return {
     version: packageMetadata.version,
     schema: JSON.parse(
       await readFile(
-        join(packageRoot, "schemas/run-config.v1.schema.json"),
+        join(packageRoot, "schemas/project-config.v1.schema.json"),
         "utf8",
       ),
     ) as unknown,
@@ -150,7 +166,7 @@ export function createWorkspaceOperations(): WorkspaceOperations {
       authority.close();
       return { workspaceRoot: store.workspace.root };
     },
-    async configure(projectRoot, configurationPath) {
+    async configure(projectRoot, configurationPath, overrideConfigurationPath) {
       const store = await ContentAddressedArtifactStore.open(projectRoot);
       const authority = SqliteAuthority.open(
         join(store.workspace.root, "state.db"),
@@ -161,145 +177,266 @@ export function createWorkspaceOperations(): WorkspaceOperations {
       try {
         const packaged = await packagedControls();
         const result = await resolveAndRegisterConfiguration({
-          configurationBytes: await readFile(
-            resolve(projectRoot, configurationPath),
-          ),
+          ...(configurationPath === undefined
+            ? {}
+            : {
+                projectConfigurationBytes: await readFile(
+                  resolve(projectRoot, configurationPath),
+                ),
+              }),
+          ...(overrideConfigurationPath === undefined
+            ? {}
+            : {
+                overrideConfigurationBytes: await readFile(
+                  resolve(projectRoot, overrideConfigurationPath),
+                ),
+              }),
           configurationSchema: packaged.schema,
           controls: packaged.controls,
           staging: store,
           registration: authority,
           packageVersion: packaged.version,
           createdBy: `human:${userInfo().username}`,
+          defaultActorDisplayName: userInfo().username,
         });
         return {
           configurationArtifactId: result.artifact.artifactId,
           configurationContentHash: result.artifact.contentHash,
           policyHash: result.configuration.policyHash,
         };
+      } catch (error) {
+        if (error instanceof WorkspaceOperationError) throw error;
+        if (
+          error !== null &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === "ENOENT"
+        ) {
+          throw new WorkspaceOperationError(
+            "INPUT_NOT_FOUND",
+            "Configuration input file was not found",
+          );
+        }
+        if (error instanceof SyntaxError || error instanceof TypeError) {
+          throw new WorkspaceOperationError(
+            "INVALID_INPUT",
+            `Configuration input is invalid: ${error.message}`,
+          );
+        }
+        throw error;
       } finally {
         authority.close();
       }
     },
     async startRun(projectRoot, sourcePath, configurationArtifactId) {
-      const configurationMetadata = await withReadModel(projectRoot, (model) =>
-        model
-          .listArtifacts()
-          .find((artifact) => artifact.artifactId === configurationArtifactId),
-      );
-      if (
-        configurationMetadata === undefined ||
-        configurationMetadata.schemaId !==
-          "software-factory/resolved-configuration.v1" ||
-        (
-          configurationMetadata.metadata as {
-            provenance?: { method?: unknown };
-          }
-        ).provenance?.method !== "resolved_configuration"
-      ) {
-        throw new WorkspaceOperationError(
-          "RUN_NOT_FOUND",
-          `Configuration artifact not found: ${configurationArtifactId}`,
-          { configurationArtifactId },
+      try {
+        const configurationMetadata = await withReadModel(
+          projectRoot,
+          (model) =>
+            model
+              .listArtifacts()
+              .find(
+                (artifact) => artifact.artifactId === configurationArtifactId,
+              ),
         );
-      }
-      const store = await ContentAddressedArtifactStore.open(projectRoot);
-      const configurationBytes = await store.readVerified(
-        configurationMetadata.contentHash,
-      );
-      const configuration = JSON.parse(
-        configurationBytes.toString("utf8"),
-      ) as ResolvedConfigurationSnapshot;
-      if (!resolvedConfigurationIsValid(configuration)) {
-        throw new WorkspaceOperationError(
-          "INTEGRITY_ERROR",
-          `Resolved configuration is invalid: ${configurationArtifactId}`,
-        );
-      }
-      if (
-        configuration.policyHash !==
-        resolvedConfigurationPolicyHash(configuration)
-      ) {
-        throw new WorkspaceOperationError(
-          "INTEGRITY_ERROR",
-          `Resolved configuration policy identity is invalid: ${configurationArtifactId}`,
-        );
-      }
-      const registeredArtifacts = await withReadModel(projectRoot, (model) =>
-        model.listArtifacts(),
-      );
-      const registeredHashes = new Set(
-        registeredArtifacts.map((artifact) => artifact.contentHash),
-      );
-      for (const contentHash of Object.values(configuration.artifactHashes)) {
-        if (!registeredHashes.has(contentHash)) {
+        if (
+          configurationMetadata === undefined ||
+          configurationMetadata.schemaId !==
+            "software-factory/resolved-configuration.v1" ||
+          (
+            configurationMetadata.metadata as {
+              provenance?: { method?: unknown };
+            }
+          ).provenance?.method !== "resolved_configuration"
+        ) {
           throw new WorkspaceOperationError(
-            "INTEGRITY_ERROR",
-            `Configured control artifact is not registered: ${contentHash}`,
+            "RUN_NOT_FOUND",
+            `Configuration artifact not found: ${configurationArtifactId}`,
+            { configurationArtifactId },
           );
         }
-        await store.readVerified(contentHash);
-      }
-      const productBytes = await store.readVerified(
-        configuration.artifactHashes.productDefaults,
-      );
-      const product = JSON.parse(productBytes.toString("utf8")) as {
-        source_input?: { max_bytes?: unknown };
-      };
-      const maximumSourceBytes = product.source_input?.max_bytes;
-      if (
-        !Number.isInteger(maximumSourceBytes) ||
-        (maximumSourceBytes as number) < 1
-      ) {
-        throw new WorkspaceOperationError(
-          "INTEGRITY_ERROR",
-          "Source artifact violates the pinned source-size policy",
+        const store = await ContentAddressedArtifactStore.open(projectRoot);
+        const configurationBytes = await store.readVerified(
+          configurationMetadata.contentHash,
         );
-      }
-      const copied = await store.copySource(resolve(projectRoot, sourcePath));
-      if (
-        copied.byteLength < 1 ||
-        copied.byteLength > (maximumSourceBytes as number)
-      ) {
-        throw new WorkspaceOperationError(
-          "INTEGRITY_ERROR",
-          "Source artifact violates the pinned source-size policy",
+        const configuration = JSON.parse(
+          configurationBytes.toString("utf8"),
+        ) as ResolvedConfigurationSnapshot;
+        if (!resolvedConfigurationIsValid(configuration)) {
+          throw new WorkspaceOperationError(
+            "INTEGRITY_ERROR",
+            `Resolved configuration is invalid: ${configurationArtifactId}`,
+          );
+        }
+        if (
+          configuration.policyHash !==
+          resolvedConfigurationPolicyHash(configuration)
+        ) {
+          throw new WorkspaceOperationError(
+            "INTEGRITY_ERROR",
+            `Resolved configuration policy identity is invalid: ${configurationArtifactId}`,
+          );
+        }
+        const registeredArtifacts = await withReadModel(projectRoot, (model) =>
+          model.listArtifacts(),
         );
-      }
-      const sourceArtifact = {
-        schemaVersion: 1 as const,
-        artifactId: `source_${copied.contentHash.slice(0, 24)}`,
-        kind: "raw_requirements" as const,
-        contentHash: copied.contentHash,
-        byteLength: copied.byteLength,
-        mediaType: "text/markdown; charset=utf-8",
-        createdBy: `human:${userInfo().username}`,
-        provenance: {
-          method: "copied" as const,
-          sourcePath: copied.provenancePath,
-        },
-      };
-      const authority = SqliteAuthority.open(
-        join(store.workspace.root, "state.db"),
-        {
-          artifactStore: store,
-        },
-      );
-      try {
-        return await startRun({
-          authority,
-          sourceArtifact,
-          sourceProvenancePath: copied.provenancePath,
-          configurationArtifactId,
-          configurationContentHash: configurationMetadata.contentHash,
+        const configurationProvenance = (
+          configurationMetadata.metadata as {
+            provenance?: { method?: unknown; sourceArtifactIds?: unknown };
+          }
+        ).provenance;
+        if (
+          configurationProvenance?.method !== "resolved_configuration" ||
+          !Array.isArray(configurationProvenance.sourceArtifactIds) ||
+          !configurationProvenance.sourceArtifactIds.every(
+            (value): value is string => typeof value === "string",
+          )
+        ) {
+          throw new WorkspaceOperationError(
+            "INTEGRITY_ERROR",
+            `Resolved configuration provenance is invalid: ${configurationArtifactId}`,
+          );
+        }
+        const sourceIds = new Set(configurationProvenance.sourceArtifactIds);
+        for (const contentHash of Object.values(configuration.artifactHashes)) {
+          const controlArtifact = registeredArtifacts.find(
+            (artifact) => artifact.contentHash === contentHash,
+          );
+          if (
+            controlArtifact === undefined ||
+            !sourceIds.has(controlArtifact.artifactId) ||
+            (
+              controlArtifact.metadata as {
+                provenance?: { method?: unknown };
+              }
+            ).provenance?.method !== "packaged"
+          ) {
+            throw new WorkspaceOperationError(
+              "INTEGRITY_ERROR",
+              `Configured control artifact is not authority-bound: ${contentHash}`,
+            );
+          }
+          await store.readVerified(contentHash);
+        }
+        const resolvedSchemaBytes = await store.readVerified(
+          configuration.artifactHashes.resolvedConfigurationSchema,
+        );
+        assertJsonSchema(
           configuration,
-          actor: {
-            kind: "human",
-            displayName: configuration.humanActorDisplayName,
-            osAccount: userInfo().username,
+          JSON.parse(resolvedSchemaBytes.toString("utf8")) as unknown,
+        );
+        const allowlistBytes = await store.readVerified(
+          configuration.artifactHashes.frontierAllowlist,
+        );
+        const allowlist = JSON.parse(allowlistBytes.toString("utf8")) as {
+          models?: Array<{ provider?: unknown; model_id?: unknown }>;
+        };
+        const assignmentAllowed = (assignment: {
+          provider: string;
+          modelId: string;
+        }) =>
+          Array.isArray(allowlist.models) &&
+          allowlist.models.some(
+            (model) =>
+              model.provider === assignment.provider &&
+              model.model_id === assignment.modelId,
+          );
+        if (
+          !assignmentAllowed(configuration.plannerAssignment) ||
+          !assignmentAllowed(configuration.reviewerAssignment) ||
+          configuration.plannerAssignment.provider ===
+            configuration.reviewerAssignment.provider ||
+          configuration.plannerAssignment.modelId ===
+            configuration.reviewerAssignment.modelId
+        ) {
+          throw new WorkspaceOperationError(
+            "INTEGRITY_ERROR",
+            "Resolved configuration assignments violate the pinned allowlist",
+          );
+        }
+        const productBytes = await store.readVerified(
+          configuration.artifactHashes.productDefaults,
+        );
+        const product = JSON.parse(productBytes.toString("utf8")) as {
+          source_input?: { max_bytes?: unknown };
+        };
+        const maximumSourceBytes = product.source_input?.max_bytes;
+        if (
+          !Number.isInteger(maximumSourceBytes) ||
+          (maximumSourceBytes as number) < 1
+        ) {
+          throw new WorkspaceOperationError(
+            "INTEGRITY_ERROR",
+            "Source artifact violates the pinned source-size policy",
+          );
+        }
+        const copied = await store.copySource(resolve(projectRoot, sourcePath));
+        if (
+          copied.byteLength < 1 ||
+          copied.byteLength > (maximumSourceBytes as number)
+        ) {
+          throw new WorkspaceOperationError(
+            "INTEGRITY_ERROR",
+            "Source artifact violates the pinned source-size policy",
+          );
+        }
+        const sourceArtifact = {
+          schemaVersion: 1 as const,
+          artifactId: `source_${copied.contentHash.slice(0, 24)}`,
+          kind: "raw_requirements" as const,
+          contentHash: copied.contentHash,
+          byteLength: copied.byteLength,
+          mediaType: "text/markdown; charset=utf-8",
+          createdBy: `human:${userInfo().username}`,
+          provenance: {
+            method: "copied" as const,
+            sourcePath: copied.provenancePath,
           },
-        });
-      } finally {
-        authority.close();
+        };
+        const authority = SqliteAuthority.open(
+          join(store.workspace.root, "state.db"),
+          {
+            artifactStore: store,
+          },
+        );
+        try {
+          return await startRun({
+            authority,
+            sourceArtifact,
+            sourceProvenancePath: copied.provenancePath,
+            configurationArtifactId,
+            configurationContentHash: configurationMetadata.contentHash,
+            configuration,
+            actor: {
+              kind: "human",
+              displayName: configuration.humanActorDisplayName,
+              osAccount: userInfo().username,
+            },
+          });
+        } finally {
+          authority.close();
+        }
+      } catch (error) {
+        if (error instanceof WorkspaceOperationError) throw error;
+        if (
+          error !== null &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === "ENOENT"
+        ) {
+          throw new WorkspaceOperationError(
+            "INPUT_NOT_FOUND",
+            `Source input was not found: ${sourcePath}`,
+            { sourcePath },
+          );
+        }
+        if (error instanceof SyntaxError || error instanceof TypeError) {
+          throw new WorkspaceOperationError(
+            "INVALID_INPUT",
+            `Run input is invalid: ${error.message}`,
+          );
+        }
+        throw error;
       }
     },
     async listRuns(projectRoot) {

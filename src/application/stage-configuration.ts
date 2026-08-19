@@ -13,6 +13,8 @@ export type CredentialReference =
   | { kind: "os_credential_store"; reference: string };
 
 export type ResolvedArtifactPins = {
+  projectConfigurationSchema: string;
+  resolvedConfigurationSchema: string;
   runConfigurationSchema: string;
   requirementsSchema: string;
   artifactSchema: string;
@@ -30,6 +32,7 @@ export type ResolvedArtifactPins = {
   frontierAllowlist: string;
   budgetDefaults: string;
   productDefaults: string;
+  providerSettingsDefaults: string;
 };
 
 export type ProviderRequestSettings = {
@@ -66,6 +69,7 @@ export type ResolvedConfigurationSnapshot = {
   recordingMode: "record" | "strict_replay";
   humanActorDisplayName: string;
   providerStorage: "minimize";
+  budgetAcceptanceRequired: boolean;
   hardCeilings: HardCeilings;
   credentialReferences: Record<string, CredentialReference>;
 };
@@ -88,6 +92,7 @@ const allowedKeys = new Set([
   "recordingMode",
   "humanActorDisplayName",
   "providerStorage",
+  "budgetAcceptanceRequired",
   "hardCeilings",
   "credentialReferences",
 ]);
@@ -151,6 +156,8 @@ export function resolvedConfigurationIsValid(
     hasExactKeys(value.reviewerAssignment, ["provider", "modelId"]) &&
     assignmentIsValid(value.reviewerAssignment) &&
     hasExactKeys(value.artifactHashes, [
+      "projectConfigurationSchema",
+      "resolvedConfigurationSchema",
       "runConfigurationSchema",
       "requirementsSchema",
       "artifactSchema",
@@ -168,6 +175,7 @@ export function resolvedConfigurationIsValid(
       "frontierAllowlist",
       "budgetDefaults",
       "productDefaults",
+      "providerSettingsDefaults",
     ]) &&
     Object.values(value.artifactHashes).every((hash) =>
       /^[a-f0-9]{64}$/u.test(hash),
@@ -191,6 +199,7 @@ export function resolvedConfigurationIsValid(
       value.recordingMode === "strict_replay") &&
     value.humanActorDisplayName.trim().length > 0 &&
     value.providerStorage === "minimize" &&
+    typeof value.budgetAcceptanceRequired === "boolean" &&
     hasExactKeys(value.hardCeilings, [
       "calls",
       "physicalAttempts",
