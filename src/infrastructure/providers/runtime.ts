@@ -65,11 +65,9 @@ export class FetchHttpTransport implements HttpTransport {
       if (url.protocol !== "https:")
         throw new TypeError("Provider URL must use HTTPS");
       preparedRequest = new Request(url, {
-        method: request.method ?? "POST",
+        method: "POST",
         headers: request.headers,
-        ...((request.method ?? "POST") === "GET"
-          ? {}
-          : { body: Buffer.from(request.body) }),
+        body: Buffer.from(request.body),
         signal: controller.signal,
       });
     } catch (error) {

@@ -7,7 +7,6 @@ export const artifactKinds = [
   "external_edit",
   "review",
   "provider_request",
-  "provider_catalog",
   "provider_response",
   "native_usage",
   "terminal_manifest",
@@ -23,12 +22,6 @@ export type ArtifactProvenance =
   | { method: "packaged"; packagePath: string; packageVersion: string }
   | { method: "human_submitted"; sourceArtifactIds?: string[] }
   | { method: "resolved_configuration"; sourceArtifactIds: string[] }
-  | {
-      method: "provider_catalog";
-      sourceArtifactIds: string[];
-      provider: "openai" | "anthropic";
-      modelId: string;
-    }
   | {
       method: "provider_generated";
       sourceArtifactIds: string[];
@@ -133,19 +126,6 @@ export function artifactRegistrationIsValid(
         return (
           exactKeys(provenance, ["method", "sourceArtifactIds"]) &&
           identifiers(provenance.sourceArtifactIds)
-        );
-      case "provider_catalog":
-        return (
-          exactKeys(provenance, [
-            "method",
-            "sourceArtifactIds",
-            "provider",
-            "modelId",
-          ]) &&
-          identifiers(provenance.sourceArtifactIds) &&
-          (provenance.provider === "openai" ||
-            provenance.provider === "anthropic") &&
-          provenance.modelId.trim().length > 0
         );
       case "human_submitted":
         return (
