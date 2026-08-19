@@ -80,7 +80,10 @@ describe("provider adapter contract", () => {
           output: [
             {
               type: "message",
-              content: [{ type: "output_text", text: '{"plan":"ok"}' }],
+              content: [
+                { type: "output_text", text: '{"plan":' },
+                { type: "output_text", text: '"ok"}' },
+              ],
             },
           ],
           usage: { input_tokens: 12, output_tokens: 4, total_tokens: 16 },
@@ -149,7 +152,10 @@ describe("provider adapter contract", () => {
           type: "message",
           model: "frontier-pinned",
           stop_reason: "end_turn",
-          content: [{ type: "text", text: '{"plan":"ok"}' }],
+          content: [
+            { type: "text", text: '{"plan":' },
+            { type: "text", text: '"ok"}' },
+          ],
           usage: {
             input_tokens: 10,
             output_tokens: 3,

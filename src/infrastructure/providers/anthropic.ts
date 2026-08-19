@@ -17,6 +17,7 @@ import {
   semanticModelUnavailable,
 } from "./common.js";
 import type { HttpTransport, ProviderPreflight } from "./transport.js";
+import { structuredTextFromProviderResponse } from "./recording-codec.js";
 
 const endpoint = "https://api.anthropic.com/v1/messages";
 const apiVersion = "2023-06-01";
@@ -221,17 +222,7 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
     ) {
       return { kind: "truncated", evidence: common, recording };
     }
-    const content = Array.isArray(parsed.content) ? parsed.content : [];
-    const text = content
-      .filter(
-        (item): item is Record<string, unknown> =>
-          item !== null && typeof item === "object" && !Array.isArray(item),
-      )
-      .filter(
-        ({ type, text: value }) => type === "text" && typeof value === "string",
-      )
-      .map(({ text: value }) => value as string)
-      .join("");
+    const text = structuredTextFromProviderResponse("anthropic", parsed) ?? "";
     let structured: unknown;
     try {
       structured = JSON.parse(text) as unknown;

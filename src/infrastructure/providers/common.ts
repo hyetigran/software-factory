@@ -7,6 +7,7 @@ import type {
 } from "../../application/provider-port.js";
 import { canonicalJson } from "../../domain/canonical-json.js";
 import type { ProviderPreflight } from "./transport.js";
+import { structuredTextFromProviderResponse } from "./recording-codec.js";
 
 export function assertProviderRequest(
   request: ProviderRequest,
@@ -200,17 +201,9 @@ export function textFromOpenAi(response: Record<string, unknown>): {
       !Array.isArray(item) &&
       (item as Record<string, unknown>).type === "refusal",
   );
-  const texts = content
-    .filter(
-      (item): item is Record<string, unknown> =>
-        item !== null && typeof item === "object" && !Array.isArray(item),
-    )
-    .filter(
-      ({ type, text }) => type === "output_text" && typeof text === "string",
-    )
-    .map(({ text }) => text as string);
+  const text = structuredTextFromProviderResponse("openai", response);
   return {
-    ...(texts.length === 0 ? {} : { text: texts.join("") }),
+    ...(text === undefined ? {} : { text }),
     refused: refusal,
   };
 }

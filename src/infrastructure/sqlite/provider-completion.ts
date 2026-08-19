@@ -12,6 +12,7 @@ import type {
 import type { ProviderEvidence } from "../../application/provider-port.js";
 import { canonicalJson } from "../../domain/canonical-json.js";
 import type { StagedArtifactRegistration } from "../../application/artifact-port.js";
+import { structuredTextFromProviderResponse } from "../providers/recording-codec.js";
 import { AuthorityIntegrityError } from "./errors.js";
 
 type Dependencies = {
@@ -88,41 +89,8 @@ export function structuredOutputMatchesRawResponse(
     const raw = JSON.parse(
       Buffer.from(rawResponseBytes).toString("utf8"),
     ) as Record<string, unknown>;
-    let text: unknown;
-    if (provider === "openai") {
-      const output = raw.output;
-      if (!Array.isArray(output)) return false;
-      text = output
-        .flatMap((item) =>
-          item !== null && typeof item === "object"
-            ? ((item as { content?: unknown }).content ?? [])
-            : [],
-        )
-        .find(
-          (item) =>
-            item !== null &&
-            typeof item === "object" &&
-            (item as { type?: unknown }).type === "output_text",
-        );
-      text =
-        text !== null && typeof text === "object"
-          ? (text as { text?: unknown }).text
-          : undefined;
-    } else {
-      const content = raw.content;
-      if (!Array.isArray(content)) return false;
-      const block = (content as unknown[]).find(
-        (item) =>
-          item !== null &&
-          typeof item === "object" &&
-          (item as { type?: unknown }).type === "text",
-      );
-      text =
-        block !== null && typeof block === "object"
-          ? (block as { text?: unknown }).text
-          : undefined;
-    }
-    if (typeof text !== "string") return false;
+    const text = structuredTextFromProviderResponse(provider, raw);
+    if (text === undefined) return false;
     return (
       Buffer.from(outputBytes).toString("utf8") ===
       canonicalJson(JSON.parse(text))
@@ -326,9 +294,13 @@ export class SqliteProviderCompletion {
       (acceptLogicalResult && row.accepted_attempt_id !== null) ||
       row.attempt_status !== "started" ||
       row.correlation_id !== request.correlationId ||
-      (row.owner_process !== null &&
+      (acceptLogicalResult && row.owner_process !== request.ownerProcess) ||
+      (!acceptLogicalResult &&
+        row.owner_process !== null &&
         row.owner_process !== request.ownerProcess) ||
-      (row.lease_attempt_id !== null &&
+      (acceptLogicalResult && row.lease_attempt_id !== request.attemptId) ||
+      (!acceptLogicalResult &&
+        row.lease_attempt_id !== null &&
         row.lease_attempt_id !== request.attemptId) ||
       (acceptLogicalResult &&
         row.state_version !== row.triggering_state_version &&
