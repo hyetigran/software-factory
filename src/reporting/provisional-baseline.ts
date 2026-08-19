@@ -3,6 +3,7 @@ import {
   type ActiveFinding,
   type ActiveReview,
   type ArtifactEvidenceReference,
+  type CurrentPlan,
   type NonterminalRunState,
   type ProviderModelAssignment,
   type ReviewContext,
@@ -26,12 +27,14 @@ export type ProvisionalBaselineExport = {
   reviewArtifact: Omit<ArtifactEvidenceReference, "kind">;
   reviewCycle: number;
   policyHash: string;
-  plannerAssignment: ProviderModelAssignment;
+  planOrigin: CurrentPlan["origin"];
+  plannerAssignment: ProviderModelAssignment | null;
   reviewerAssignment: ProviderModelAssignment;
   independence: ActiveReview["independence"];
   reviewContext: ReviewContext;
   reviewRequestArtifact: Omit<ArtifactEvidenceReference, "kind">;
   providerUsageArtifact: Omit<ArtifactEvidenceReference, "kind">;
+  acceptedAttemptId: string;
   findings: Array<
     Pick<
       ActiveFinding,
@@ -77,12 +80,14 @@ export function createProvisionalBaselineExport(
     },
     reviewCycle: snapshot.cycle,
     policyHash: snapshot.policyHash,
+    planOrigin: snapshot.planOrigin,
     plannerAssignment: snapshot.plannerAssignment,
     reviewerAssignment: snapshot.reviewerAssignment,
     independence: snapshot.independence,
     reviewContext: snapshot.reviewContext,
     reviewRequestArtifact: snapshot.request,
     providerUsageArtifact: snapshot.usage,
+    acceptedAttemptId: snapshot.acceptedAttemptId,
     findings: snapshot.findings.map(
       ({
         findingId,

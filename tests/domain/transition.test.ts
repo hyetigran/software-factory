@@ -438,6 +438,17 @@ function reviewAcceptedInput(blockingFindingIds: string[]): ReviewAccepted {
       contentHash: "3".repeat(64),
       verified: true,
     },
+    acceptedAttempt: {
+      validator: "accepted-provider-attempt-v1",
+      commandId: "command_baseline_review_01JTEST",
+      attemptId: "attempt_baseline_review_01JTEST_1",
+      requestArtifactId: "artifact_review_request_01JTEST",
+      requestContentHash: "0".repeat(64),
+      responseArtifactId: "artifact_review_baseline_01JTEST",
+      responseContentHash: reviewContentHash,
+      nativeUsageArtifactId: "artifact_review_usage_01JTEST",
+      nativeUsageContentHash: "3".repeat(64),
+    },
     renderedPlanArtifact: {
       artifactId: "artifact_rendered_plan_01JTEST",
       contentHash: "2".repeat(64),
@@ -621,6 +632,11 @@ function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
         provenance: {
           artifactId: "artifact_plan_provenance_01JTEST",
           contentHash: reviewContentHash,
+        },
+        origin: {
+          kind: "planner",
+          assignment: configuredPlannerAssignment,
+          originatingCommandId: "command_generate_plan_01JTEST",
         },
       },
       activeReview: {
@@ -2300,6 +2316,11 @@ describe("transition", () => {
             artifactId: "artifact_plan_provenance_01JTEST",
             contentHash: reviewContentHash,
           },
+          origin: {
+            kind: "planner",
+            assignment: configuredPlannerAssignment,
+            originatingCommandId: "command_generate_plan_01JTEST",
+          },
         },
         activeReview: {
           cycle: 1,
@@ -2875,6 +2896,59 @@ describe("transition", () => {
       artifactId: "artifact_plan_01JTEST",
       contentHash: planContentHash,
     });
+  });
+
+  it("reports human plan origin without implying Planner authorship", () => {
+    const submitted = transition(
+      requirementsApprovedState(),
+      planSubmittedInput(),
+      pinnedPolicy,
+    ).nextState;
+    if (submitted.state !== "baseline_review") {
+      throw new Error("Expected submitted plan baseline review");
+    }
+    const reviewed = transition(
+      submitted,
+      {
+        ...reviewAcceptedInput([]),
+        expectedStateVersion: 5,
+        originatingCommandId: "command_review_submitted_plan_01JTEST",
+        renderedPlanResolution: {
+          ...reviewAcceptedInput([]).renderedPlanResolution,
+          renderCommandId: "command_render_submitted_plan_01JTEST",
+          consumingReviewCommandId: "command_review_submitted_plan_01JTEST",
+        },
+        acceptedAttempt: {
+          ...reviewAcceptedInput([]).acceptedAttempt,
+          commandId: "command_review_submitted_plan_01JTEST",
+        },
+      },
+      pinnedPolicy,
+    ).nextState;
+
+    const exported = createProvisionalBaselineExport(reviewed);
+
+    expect(exported.plannerAssignment).toBeNull();
+    expect(exported.planOrigin).toEqual({
+      kind: "human",
+      actor: planSubmittedInput().actor,
+    });
+  });
+
+  it("rejects review evidence resolved from a different physical attempt", () => {
+    expect(() =>
+      transition(
+        baselineReviewState(),
+        {
+          ...reviewAcceptedInput([]),
+          acceptedAttempt: {
+            ...reviewAcceptedInput([]).acceptedAttempt,
+            commandId: "command_other_review_01JTEST",
+          },
+        },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 
   it("routes an accepted baseline review without blockers to closure", () => {

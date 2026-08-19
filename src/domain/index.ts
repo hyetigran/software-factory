@@ -88,6 +88,13 @@ export type CurrentPlan = {
   contentHash: string;
   sectionTransitionMap: Omit<ArtifactEvidenceReference, "kind">;
   provenance: Omit<ArtifactEvidenceReference, "kind">;
+  origin:
+    | {
+        kind: "planner";
+        assignment: ProviderModelAssignment;
+        originatingCommandId: string;
+      }
+    | { kind: "human"; actor: HumanActor };
 };
 
 export type ActiveReview = {
@@ -151,13 +158,15 @@ export type AcceptedBaselineReview = {
   plan: Omit<ArtifactEvidenceReference, "kind">;
   renderedPlan: Omit<ArtifactEvidenceReference, "kind">;
   policyHash: string;
-  plannerAssignment: ProviderModelAssignment;
+  planOrigin: CurrentPlan["origin"];
+  plannerAssignment: ProviderModelAssignment | null;
   reviewerAssignment: ProviderModelAssignment;
   independence: ActiveReview["independence"];
   reviewContext: ReviewContext;
   request: Omit<ArtifactEvidenceReference, "kind">;
   usage: Omit<ArtifactEvidenceReference, "kind">;
   findings: ActiveFinding[];
+  acceptedAttemptId: string;
 };
 
 export type ReviewIndependenceOverride = {
@@ -451,6 +460,18 @@ export type ReviewOutputValidation = {
   evidenceReferencesSupplied: boolean;
 };
 
+export type AcceptedAttemptResolution = {
+  validator: "accepted-provider-attempt-v1";
+  commandId: string;
+  attemptId: string;
+  requestArtifactId: string;
+  requestContentHash: string;
+  responseArtifactId: string;
+  responseContentHash: string;
+  nativeUsageArtifactId: string;
+  nativeUsageContentHash: string;
+};
+
 export type RenderedPlanResolution = {
   validator: "verified-command-dependency-resolution-v1";
   renderCommandId: string;
@@ -469,6 +490,7 @@ export type ReviewAccepted = {
   reviewArtifact: VerifiedArtifactInput;
   reviewRequestArtifact: VerifiedArtifactInput;
   providerUsageArtifact: VerifiedArtifactInput;
+  acceptedAttempt: AcceptedAttemptResolution;
   renderedPlanArtifact: VerifiedArtifactInput;
   renderedPlanResolution: RenderedPlanResolution;
   reviewedPlanVersionId: string;
@@ -2197,6 +2219,14 @@ function acceptPlanForBaseline(
           artifactId: input.provenanceArtifact.artifactId,
           contentHash: input.provenanceArtifact.contentHash,
         },
+        origin:
+          input.type === "PlanGenerated"
+            ? {
+                kind: "planner",
+                assignment: policy.plannerAssignment,
+                originatingCommandId: input.originatingCommandId,
+              }
+            : { kind: "human", actor: input.actor },
       },
       activeReview: {
         cycle: 1,
@@ -2507,7 +2537,11 @@ function evolveAfterBaselineReview(
     },
     renderedPlan,
     policyHash: policy.policyHash,
-    plannerAssignment: policy.plannerAssignment,
+    planOrigin: state.currentPlan.origin,
+    plannerAssignment:
+      state.currentPlan.origin.kind === "planner"
+        ? state.currentPlan.origin.assignment
+        : null,
     reviewerAssignment: state.activeReview.reviewerAssignment,
     independence: state.activeReview.independence,
     reviewContext: state.reviewContext,
@@ -2520,6 +2554,7 @@ function evolveAfterBaselineReview(
       contentHash: input.providerUsageArtifact.contentHash,
     },
     findings,
+    acceptedAttemptId: input.acceptedAttempt.attemptId,
   };
 
   return command.commandType === "generate_remediation"
@@ -2624,6 +2659,21 @@ function acceptBaselineReview(
       input.renderedPlanArtifact.contentHash &&
     renderedPlanResolution.canonicalPlanContentHash ===
       previousState.currentPlan.contentHash;
+  const acceptedAttempt = input.acceptedAttempt;
+  const acceptedAttemptValid =
+    acceptedAttempt.validator === "accepted-provider-attempt-v1" &&
+    acceptedAttempt.commandId === previousState.activeReview.commandId &&
+    acceptedAttempt.attemptId.length > 0 &&
+    acceptedAttempt.requestArtifactId ===
+      input.reviewRequestArtifact.artifactId &&
+    acceptedAttempt.requestContentHash ===
+      input.reviewRequestArtifact.contentHash &&
+    acceptedAttempt.responseArtifactId === input.reviewArtifact.artifactId &&
+    acceptedAttempt.responseContentHash === input.reviewArtifact.contentHash &&
+    acceptedAttempt.nativeUsageArtifactId ===
+      input.providerUsageArtifact.artifactId &&
+    acceptedAttempt.nativeUsageContentHash ===
+      input.providerUsageArtifact.contentHash;
   const reviewerAuthorized =
     input.actor.provider ===
       previousState.activeReview.reviewerAssignment.provider &&
@@ -2638,6 +2688,7 @@ function acceptBaselineReview(
     !verifiedArtifactInputIsValid(input.reviewArtifact) ||
     !verifiedArtifactInputIsValid(input.reviewRequestArtifact) ||
     !verifiedArtifactInputIsValid(input.providerUsageArtifact) ||
+    !acceptedAttemptValid ||
     !verifiedArtifactInputIsValid(input.renderedPlanArtifact) ||
     !renderedPlanResolutionValid ||
     input.reviewedPlanVersionId !== previousState.currentPlan.versionId ||
