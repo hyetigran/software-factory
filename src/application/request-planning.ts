@@ -118,9 +118,11 @@ export async function requestPlanning(input: {
         `Run not found: ${input.runId}`,
       );
     if (
+      state.currentLedger?.approval === undefined ||
       transaction.loadAcceptedCommandResult(
         input.runId,
         "render_ledger_approval",
+        state.currentLedger?.approval?.receiptCommandId,
       ) === null
     )
       throw new WorkspaceOperationError(

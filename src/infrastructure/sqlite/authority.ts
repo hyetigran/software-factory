@@ -465,7 +465,7 @@ export class SqliteAuthority
         assertActive();
         return this.loadRun<TState>(runId);
       },
-      loadAcceptedCommandResult: (runId, commandType) => {
+      loadAcceptedCommandResult: (runId, commandType, commandId) => {
         assertActive();
         const row = this.database
           .prepare(
@@ -474,9 +474,10 @@ export class SqliteAuthority
                JOIN command_attempts ca ON ca.attempt_id = c.accepted_attempt_id
                JOIN artifacts a ON a.artifact_id = ca.result_artifact_id
               WHERE c.run_id = ? AND c.command_type = ? AND c.status = 'succeeded'
+                AND (? IS NULL OR c.command_id = ?)
               ORDER BY c.rowid DESC LIMIT 1`,
           )
-          .get(runId, commandType) as
+          .get(runId, commandType, commandId ?? null, commandId ?? null) as
           { artifact_id: string; content_hash: string } | undefined;
         return row === undefined
           ? null

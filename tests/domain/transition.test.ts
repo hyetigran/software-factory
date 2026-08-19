@@ -1779,6 +1779,10 @@ describe("transition", () => {
       currentLedger: {
         ...exclusionApproved.currentLedger,
         validationStatus: "approved",
+        approval: {
+          gateId: "gate_requirements_approval_01JTEST",
+          receiptCommandId: "command_render_approval_01JTEST",
+        },
       },
       downstreamQualification: {
         artifacts: [

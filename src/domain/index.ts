@@ -42,6 +42,10 @@ export type CurrentLedger = {
     contentHash: string;
     renderedStateVersion: number;
   };
+  approval?: {
+    gateId: string;
+    receiptCommandId: string;
+  };
 };
 
 export type SourceRange = {
@@ -2043,10 +2047,12 @@ function approveSourceExclusion(
           const {
             renderedProjection: _invalidated,
             validation: _validation,
+            approval: _approval,
             ...ledger
           } = previousState.currentLedger;
           void _invalidated;
           void _validation;
+          void _approval;
           return ledger;
         })(),
         validationStatus: "pending",
@@ -2335,6 +2341,10 @@ function approveLedger(
       currentLedger: {
         ...previousState.currentLedger,
         validationStatus: "approved",
+        approval: {
+          gateId: input.approvalGateId,
+          receiptCommandId: input.renderCommandId,
+        },
       },
       downstreamQualification: {
         artifacts: [coverageEvidence],

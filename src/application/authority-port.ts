@@ -471,6 +471,7 @@ export interface AuthorityTransaction {
   loadAcceptedCommandResult(
     runId: string,
     commandType: PersistableCommand["commandType"],
+    commandId?: string,
   ): { artifactId: string; contentHash: string } | null;
   loadExecutionCapacity(
     runId: string,
