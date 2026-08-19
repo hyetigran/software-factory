@@ -1,19 +1,30 @@
 import { randomUUID } from "node:crypto";
 
 import { canonicalJson } from "../domain/canonical-json.js";
-import type { PersistableCommand } from "./authority-port.js";
+import { transition, type NonterminalRunState } from "../domain/index.js";
+import type {
+  PersistableCommand,
+  PersistableTransition,
+} from "./authority-port.js";
 import type { ArtifactStagingPort } from "./artifact-port.js";
-import { validateLedger, renderLedger } from "./deterministic-documents.js";
+import { validateLedger } from "./deterministic-documents.js";
 import {
   beginEligibleCommandAttempt,
-  completeCommandAttempt,
   ExecutionPolicy,
   type CommandExecutionPort,
+  type FailLocalAttemptRequest,
 } from "./execution-port.js";
 import type { ResolvedConfigurationSnapshot } from "./stage-configuration.js";
+import { WorkspaceOperationError } from "./workspace-operations.js";
 
 export interface LocalCommandPort extends CommandExecutionPort {
   listCommands(runId: string): PersistableCommand[];
+  failLocalAttempt(request: FailLocalAttemptRequest): Promise<void>;
+  completeLocalTransition(
+    request: Parameters<CommandExecutionPort["completeAttempt"]>[0],
+    expectedStateVersion: number,
+    result: PersistableTransition<object>,
+  ): Promise<void>;
 }
 
 type RegisteredArtifact = { artifactId: string; contentHash: string };
@@ -24,7 +35,7 @@ export async function executeNextLocalCommand(input: {
   readVerified: (contentHash: string) => Promise<Uint8Array>;
   registeredArtifacts: RegisteredArtifact[];
   runId: string;
-  currentStateVersion: number;
+  currentState: NonterminalRunState;
   configurationArtifactId: string;
   configurationContentHash: string;
   configuration: ResolvedConfigurationSnapshot;
@@ -42,9 +53,9 @@ export async function executeNextLocalCommand(input: {
   });
   for (const command of input.execution.listCommands(input.runId)) {
     if (command.provider !== "local") continue;
-    if (command.triggeringStateVersion !== input.currentStateVersion) continue;
-    if (!new Set(["validate_ledger", "render_ledger"]).has(command.commandType))
+    if (command.triggeringStateVersion !== input.currentState.stateVersion)
       continue;
+    if (command.commandType !== "validate_ledger") continue;
     const payload = command.payload as Record<string, unknown>;
     const sourceIds = command.inputArtifactHashes.map((contentHash) => {
       const matches = input.registeredArtifacts.filter(
@@ -58,10 +69,20 @@ export async function executeNextLocalCommand(input: {
         throw new TypeError("Local command input artifact identity is invalid");
       return artifact.artifactId;
     });
-    let resultBytes: Uint8Array;
-    let kind: "coverage_report" | "rendered_ledger";
-    let mediaType: string;
-    if (command.commandType === "validate_ledger") {
+    const attemptId = `attempt_${randomUUID().replaceAll("-", "")}`;
+    const correlationId = `correlation_${randomUUID().replaceAll("-", "")}`;
+    const begun = await beginEligibleCommandAttempt(input.execution, {
+      runId: input.runId,
+      commandId: command.commandId,
+      attemptId,
+      correlationId,
+      ownerProcess: input.ownerProcess,
+      configurationArtifactId: input.configurationArtifactId,
+      policy,
+      attemptKind: "initial",
+    });
+    if (begun.status === "already_succeeded") continue;
+    try {
       const [ledgerHash, sourceHash] = command.inputArtifactHashes;
       if (ledgerHash === undefined || sourceHash === undefined)
         throw new TypeError("Ledger validation command inputs are incomplete");
@@ -91,82 +112,113 @@ export async function executeNextLocalCommand(input: {
           };
         }),
       });
-      resultBytes = Buffer.from(canonicalJson(report));
-      kind = "coverage_report";
-      mediaType = "application/json";
-    } else {
-      const ledgerHash = command.inputArtifactHashes[0];
-      if (ledgerHash === undefined)
-        throw new TypeError("Ledger render command input is incomplete");
-      const rendered = renderLedger(await input.readVerified(ledgerHash));
-      resultBytes = rendered.bytes;
-      kind = "rendered_ledger";
-      mediaType = rendered.mediaType;
+      const result = await input.staging.stageArtifact(
+        Buffer.from(canonicalJson(report)),
+        {
+          artifactId: `coverage_report_${randomUUID().replaceAll("-", "")}`,
+          kind: "coverage_report",
+          mediaType: "application/json",
+          createdBy: "system:deterministic-local-executor",
+          provenance: {
+            method: "application_generated",
+            purpose: "ledger_validation",
+            sourceArtifactIds: sourceIds,
+            commandId: command.commandId,
+            attemptId,
+          },
+        },
+      );
+      const usageBytes = Buffer.from(
+        canonicalJson({
+          calls: 0,
+          costUsdMicros: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+        }),
+      );
+      const usage = await input.staging.stageArtifact(usageBytes, {
+        artifactId: `usage_${attemptId}`,
+        kind: "native_usage",
+        mediaType: "application/json",
+        createdBy: "system:deterministic-local-executor",
+        provenance: {
+          method: "application_generated",
+          purpose: "local_usage",
+          sourceArtifactIds: sourceIds,
+          commandId: command.commandId,
+          attemptId,
+        },
+      });
+      const completion = {
+        runId: input.runId,
+        commandId: command.commandId,
+        attemptId,
+        ownerProcess: input.ownerProcess,
+        correlationId,
+        resultArtifact: result,
+        nativeUsageArtifact: usage,
+        actualUsage: {
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsdMicros: 0,
+        },
+        providerEvidence: {},
+      };
+      const domainResult = transition(
+        input.currentState,
+        {
+          type: "LedgerValidationCompleted",
+          runId: input.runId,
+          expectedStateVersion: input.currentState.stateVersion,
+          commandId: command.commandId,
+          ledgerVersionId: String(payload.ledgerVersionId),
+          ledgerContentHash: report.ledgerContentHash,
+          sourceContentHash: report.sourceContentHash,
+          coverageReportArtifactId: result.artifactId,
+          coverageReportContentHash: result.contentHash,
+          schemaValid: report.schemaValid,
+          identityValid: report.identityValid,
+          lineageValid: report.lineageValid,
+          coverageComplete: report.coverageValid,
+          uncoveredRangeCount: report.uncoveredRanges.length,
+          actor: {
+            kind: "system",
+            component: "deterministic-local-executor",
+            version: "0.0.0",
+          },
+        },
+        {
+          policyHash: input.configuration.policyHash,
+          plannerAssignment: input.configuration.plannerAssignment,
+          reviewerAssignment: input.configuration.reviewerAssignment,
+        },
+      );
+      await input.execution.completeLocalTransition(
+        completion,
+        input.currentState.stateVersion,
+        domainResult,
+      );
+      return {
+        commandId: command.commandId,
+        commandType: command.commandType,
+        resultArtifactId: result.artifactId,
+      };
+    } catch (error) {
+      await input.execution.failLocalAttempt({
+        runId: input.runId,
+        commandId: command.commandId,
+        attemptId,
+        ownerProcess: input.ownerProcess,
+        correlationId,
+        failureMessage: error instanceof Error ? error.message : String(error),
+      });
+      throw new WorkspaceOperationError(
+        "INTEGRITY_ERROR",
+        "Authoritative local command input is missing or invalid",
+        { cause: error instanceof Error ? error.message : String(error) },
+      );
     }
-    const attemptId = `attempt_${randomUUID().replaceAll("-", "")}`;
-    const correlationId = `correlation_${randomUUID().replaceAll("-", "")}`;
-    const result = await input.staging.stageArtifact(resultBytes, {
-      artifactId: `${kind}_${randomUUID().replaceAll("-", "")}`,
-      kind,
-      mediaType,
-      createdBy: "system:deterministic-local-executor",
-      provenance: {
-        method: "deterministic_render",
-        sourceArtifactIds: sourceIds,
-        commandId: command.commandId,
-      },
-    });
-    const usageBytes = Buffer.from(
-      canonicalJson({
-        calls: 0,
-        costUsdMicros: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-      }),
-    );
-    const usage = await input.staging.stageArtifact(usageBytes, {
-      artifactId: `usage_${attemptId}`,
-      kind: "native_usage",
-      mediaType: "application/json",
-      createdBy: "system:deterministic-local-executor",
-      provenance: {
-        method: "deterministic_render",
-        sourceArtifactIds: sourceIds,
-        commandId: command.commandId,
-      },
-    });
-    const begun = await beginEligibleCommandAttempt(input.execution, {
-      runId: input.runId,
-      commandId: command.commandId,
-      attemptId,
-      correlationId,
-      ownerProcess: input.ownerProcess,
-      configurationArtifactId: input.configurationArtifactId,
-      policy,
-      attemptKind: "initial",
-    });
-    if (begun.status === "already_succeeded") continue;
-    await completeCommandAttempt(input.execution, {
-      runId: input.runId,
-      commandId: command.commandId,
-      attemptId,
-      ownerProcess: input.ownerProcess,
-      correlationId,
-      resultArtifact: result,
-      nativeUsageArtifact: usage,
-      actualUsage: {
-        calls: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        costUsdMicros: 0,
-      },
-      providerEvidence: {},
-    });
-    return {
-      commandId: command.commandId,
-      commandType: command.commandType,
-      resultArtifactId: result.artifactId,
-    };
   }
   return null;
 }

@@ -31,6 +31,7 @@ import type {
   CommandExecutionPort,
   CompleteAttemptRequest,
   CompletedCommandAttempt,
+  FailLocalAttemptRequest,
   ProviderFailureDisposition,
   StartedCommandAttempt,
 } from "../../application/execution-port.js";
@@ -153,6 +154,8 @@ export class SqliteAuthority
       persistArtifactMetadata: (artifact) =>
         this.persistArtifactMetadata(artifact),
       quarantine: (reason) => this.quarantine(reason),
+      persistTransition: (runId, expectedStateVersion, result) =>
+        this.persistAcceptedTransition({ runId, expectedStateVersion }, result),
     });
     this.providerCompletion = new SqliteProviderCompletion({
       database,
@@ -1347,6 +1350,23 @@ export class SqliteAuthority
     this.assertWritable();
     await this.verifyIntegrity();
     return this.operationalCompletion.complete(request);
+  }
+  async failLocalAttempt(request: FailLocalAttemptRequest): Promise<void> {
+    this.assertWritable();
+    await this.verifyIntegrity();
+    this.operationalCompletion.fail(request);
+  }
+  async completeLocalTransition(
+    request: CompleteAttemptRequest,
+    expectedStateVersion: number,
+    result: PersistableTransition<object>,
+  ): Promise<void> {
+    this.assertWritable();
+    await this.verifyIntegrity();
+    this.operationalCompletion.complete(request, {
+      expectedStateVersion,
+      result,
+    });
   }
   private persistAcceptedTransition<TState extends object>(
     request: PersistTransitionRequest,

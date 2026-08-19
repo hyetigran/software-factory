@@ -30,7 +30,13 @@ export type CurrentLedger = {
   versionId: string;
   artifactId: string;
   contentHash: string;
-  validationStatus: "pending" | "approved";
+  validationStatus: "pending" | "validated" | "approved";
+  validation?: {
+    coverageReportArtifactId: string;
+    coverageReportContentHash: string;
+    validatedStateVersion: number;
+    coverageComplete: boolean;
+  };
 };
 
 export type SourceRange = {
@@ -313,6 +319,24 @@ export type LedgerApprovalRequested = {
   mutationLeaseAvailable: boolean;
   renderCommandId: string;
   actor: HumanActor;
+};
+
+export type LedgerValidationCompleted = {
+  type: "LedgerValidationCompleted";
+  runId: string;
+  expectedStateVersion: number;
+  commandId: string;
+  ledgerVersionId: string;
+  ledgerContentHash: string;
+  sourceContentHash: string;
+  coverageReportArtifactId: string;
+  coverageReportContentHash: string;
+  schemaValid: boolean;
+  identityValid: boolean;
+  lineageValid: boolean;
+  coverageComplete: boolean;
+  uncoveredRangeCount: number;
+  actor: SystemActor;
 };
 
 export type PlanningRequested = {
@@ -972,6 +996,22 @@ export type SourceExclusionApprovedFact = {
   payload: SourceExclusion;
 };
 
+export type LedgerValidationCompletedFact = {
+  type: "ledger_validation_completed";
+  actor: SystemActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    commandId: string;
+    ledgerVersionId: string;
+    schemaValid: boolean;
+    identityValid: boolean;
+    lineageValid: boolean;
+    coverageComplete: boolean;
+    uncoveredRangeCount: number;
+  };
+};
+
 export type LedgerApprovedFact = {
   type: "ledger_approved";
   actor: HumanActor;
@@ -1137,6 +1177,7 @@ export type TransitionResult = {
     | LedgerSubmittedFact
     | DownstreamInvalidatedFact
     | SourceExclusionApprovedFact
+    | LedgerValidationCompletedFact
     | LedgerApprovedFact
     | PlanningRequestedFact
     | PlanVersionAcceptedFact
@@ -1326,6 +1367,7 @@ type NonterminalDomainInput =
   | RunStarted
   | LedgerSubmitted
   | SourceExclusionApproved
+  | LedgerValidationCompleted
   | LedgerApprovalRequested
   | PlanningRequested
   | PlanGenerated
@@ -1541,6 +1583,8 @@ export function transition(
       return submitLedger(previousState, input, policy);
     case "SourceExclusionApproved":
       return approveSourceExclusion(previousState, input, policy);
+    case "LedgerValidationCompleted":
+      return completeLedgerValidation(previousState, input, policy);
     case "LedgerApprovalRequested":
       return approveLedger(previousState, input, policy);
     case "PlanningRequested":
@@ -1967,6 +2011,77 @@ function approveSourceExclusion(
         "Recompute ledger coverage after source exclusion approval",
         [sourceEvidence, ledgerEvidence],
       ),
+    ],
+  };
+}
+
+function completeLedgerValidation(
+  previousState: NonterminalRunState | null,
+  input: LedgerValidationCompleted,
+  policy: PinnedRunPolicy,
+): TransitionResult {
+  if (
+    previousState === null ||
+    previousState.state !== "draft" ||
+    previousState.runId !== input.runId ||
+    previousState.stateVersion !== input.expectedStateVersion ||
+    previousState.currentLedger === undefined ||
+    previousState.currentLedger.versionId !== input.ledgerVersionId ||
+    previousState.currentLedger.contentHash !== input.ledgerContentHash ||
+    previousState.sourceContentHash !== input.sourceContentHash ||
+    previousState.policyHash !== policy.policyHash ||
+    !input.schemaValid ||
+    !input.identityValid ||
+    !input.lineageValid ||
+    typeof input.coverageReportArtifactId !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(input.coverageReportContentHash) ||
+    !Number.isInteger(input.uncoveredRangeCount) ||
+    input.uncoveredRangeCount < 0 ||
+    input.coverageComplete !== (input.uncoveredRangeCount === 0) ||
+    input.actor.kind !== "system"
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "LedgerValidationCompleted requires current deterministic evidence",
+    );
+  }
+  const nextStateVersion = previousState.stateVersion + 1;
+  const reportEvidence = artifactEvidence(
+    input.coverageReportArtifactId,
+    input.coverageReportContentHash,
+  );
+  return {
+    nextState: {
+      ...previousState,
+      stateVersion: nextStateVersion,
+      currentLedger: {
+        ...previousState.currentLedger,
+        validationStatus: "validated",
+        validation: {
+          coverageReportArtifactId: input.coverageReportArtifactId,
+          coverageReportContentHash: input.coverageReportContentHash,
+          validatedStateVersion: nextStateVersion,
+          coverageComplete: input.coverageComplete,
+        },
+      },
+    },
+    commands: [],
+    auditFacts: [
+      {
+        type: "ledger_validation_completed",
+        actor: input.actor,
+        reason: "Record deterministic ledger validation",
+        evidence: [reportEvidence],
+        payload: {
+          commandId: input.commandId,
+          ledgerVersionId: input.ledgerVersionId,
+          schemaValid: input.schemaValid,
+          identityValid: input.identityValid,
+          lineageValid: input.lineageValid,
+          coverageComplete: input.coverageComplete,
+          uncoveredRangeCount: input.uncoveredRangeCount,
+        },
+      },
     ],
   };
 }

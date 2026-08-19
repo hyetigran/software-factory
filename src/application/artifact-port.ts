@@ -2,7 +2,6 @@ export const artifactKinds = [
   "raw_requirements",
   "requirements_ledger",
   "coverage_report",
-  "rendered_ledger",
   "structured_plan",
   "rendered_plan",
   "external_edit",
@@ -35,6 +34,8 @@ export type ArtifactProvenance =
         | "provider_request"
         | "structured_provider_output"
         | "provider_failure_evidence"
+        | "ledger_validation"
+        | "local_usage"
         | "terminal_policy_decision"
         | "terminal_budget_report"
         | "terminal_failure_diagnostic";
@@ -160,6 +161,8 @@ export function artifactRegistrationIsValid(
             "provider_request",
             "structured_provider_output",
             "provider_failure_evidence",
+            "ledger_validation",
+            "local_usage",
           ].includes(provenance.purpose) &&
           identifiers(provenance.sourceArtifactIds) &&
           provenance.commandId.trim().length > 0 &&

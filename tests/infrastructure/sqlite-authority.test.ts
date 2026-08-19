@@ -732,13 +732,15 @@ describe("SQLite authority", () => {
     );
     const result = await store.stageArtifact(Buffer.from("rendered"), {
       artifactId: "artifact_result",
-      kind: "rendered_plan",
-      mediaType: "text/markdown",
+      kind: "coverage_report",
+      mediaType: "application/json",
       createdBy: "system:test",
       provenance: {
-        method: "deterministic_render",
+        method: "application_generated",
+        purpose: "ledger_validation",
         sourceArtifactIds: ["artifact_source"],
         commandId: "command_execute",
+        attemptId: "attempt_execute_1",
       },
     });
     const usage = await store.stageArtifact(Buffer.from("{}"), {
@@ -747,9 +749,11 @@ describe("SQLite authority", () => {
       mediaType: "application/json",
       createdBy: "system:test",
       provenance: {
-        method: "deterministic_render",
+        method: "application_generated",
+        purpose: "local_usage",
         sourceArtifactIds: ["artifact_source"],
         commandId: "command_execute",
+        attemptId: "attempt_execute_1",
       },
     });
     await expect(

@@ -15,7 +15,10 @@ import { submitLedger } from "../../application/submit-ledger.js";
 import { loadPinnedConfiguration } from "../../application/load-pinned-configuration.js";
 import { approveSourceExclusion } from "../../application/approve-source-exclusion.js";
 import { executeNextLocalCommand } from "../../application/execute-local-command.js";
-import { DomainTransitionError } from "../../domain/index.js";
+import {
+  DomainTransitionError,
+  type NonterminalRunState,
+} from "../../domain/index.js";
 import {
   resolveAndRegisterConfiguration,
   packagedControlPaths,
@@ -418,7 +421,7 @@ export function createWorkspaceOperations(): WorkspaceOperations {
           readVerified: (contentHash) => store.readVerified(contentHash),
           registeredArtifacts,
           runId,
-          currentStateVersion: identity.stateVersion as number,
+          currentState: state as NonterminalRunState,
           configurationArtifactId: identity.configurationArtifactId,
           configurationContentHash: identity.configurationContentHash,
           configuration,

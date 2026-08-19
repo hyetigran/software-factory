@@ -318,6 +318,15 @@ export type CompletedCommandAttempt = {
   acceptedAsLogicalResult: boolean;
 };
 
+export type FailLocalAttemptRequest = {
+  runId: string;
+  commandId: string;
+  attemptId: string;
+  ownerProcess: string;
+  correlationId: string;
+  failureMessage: string;
+};
+
 export interface CommandExecutionPort {
   beginAttempt(request: BeginAttemptRequest): Promise<BeginAttemptOutcome>;
   completeAttempt(

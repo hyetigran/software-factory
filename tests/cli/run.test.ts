@@ -240,6 +240,26 @@ describe("factory executable", () => {
     } finally {
       database.close();
     }
+    await expect(
+      operations.loadRun(projectRoot, started.data.runId),
+    ).resolves.toMatchObject({
+      stateVersion: 4,
+      currentLedger: {
+        validationStatus: "validated",
+        validation: {
+          coverageReportArtifactId: executed.data.execution.resultArtifactId,
+          coverageComplete: false,
+        },
+      },
+    });
+    await expect(
+      operations.listAudit(projectRoot, started.data.runId),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ factType: "ledger_validation_completed" }),
+        expect.objectContaining({ factType: "command_attempt_completed" }),
+      ]),
+    );
 
     const conflictLines: string[] = [];
     const conflictExit = await runCliAsync(
