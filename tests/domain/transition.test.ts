@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  createProvisionalBaselineExport,
   transition,
   type AdvancedRunState,
   type DraftRunState,
@@ -16,6 +15,7 @@ import {
   type RunStarted,
   type SourceExclusionApproved,
 } from "../../src/domain/index.js";
+import { createProvisionalBaselineExport } from "../../src/reporting/provisional-baseline.js";
 
 const policyHash = "a".repeat(64);
 const sourceContentHash = "b".repeat(64);
@@ -428,6 +428,16 @@ function reviewAcceptedInput(blockingFindingIds: string[]): ReviewAccepted {
       contentHash: reviewContentHash,
       verified: true,
     },
+    reviewRequestArtifact: {
+      artifactId: "artifact_review_request_01JTEST",
+      contentHash: "0".repeat(64),
+      verified: true,
+    },
+    providerUsageArtifact: {
+      artifactId: "artifact_review_usage_01JTEST",
+      contentHash: "3".repeat(64),
+      verified: true,
+    },
     renderedPlanArtifact: {
       artifactId: "artifact_rendered_plan_01JTEST",
       contentHash: "2".repeat(64),
@@ -633,34 +643,20 @@ function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
     if (reviewed.state !== "baseline_review") {
       throw new Error("Expected baseline review fixture");
     }
-    const common = {
-      ...reviewed,
-      state,
-      stateVersion: 7,
-      activeFindings: [],
-      renderedPlan: {
-        artifactId: "artifact_rendered_plan_01JTEST",
-        contentHash: "2".repeat(64),
+    const accepted = transition(
+      reviewed,
+      {
+        ...reviewAcceptedInput(
+          state === "remediation" ? ["finding_architecture_01JTEST"] : [],
+        ),
+        expectedStateVersion: reviewed.stateVersion,
       },
-      baselineReview: {
-        reviewId: "review_baseline_01JTEST",
-        artifactId: "artifact_review_baseline_01JTEST",
-        contentHash: reviewContentHash,
-        cycle: 1,
-        reviewerAssignment: configuredReviewerAssignment,
-      },
-    };
-    return state === "remediation"
-      ? {
-          ...common,
-          state,
-          activePlanning: {
-            purposeId: "purpose_remediation_01JTEST",
-            commandId: "command_remediation_01JTEST",
-            plannerAssignment: configuredPlannerAssignment,
-          },
-        }
-      : { ...common, state };
+      pinnedPolicy,
+    ).nextState;
+    if (accepted.state !== state) {
+      throw new Error(`Expected ${state} fixture`);
+    }
+    return accepted;
   }
   return { ...base, state };
 }
@@ -1164,7 +1160,7 @@ describe("transition", () => {
     const qualified = advancedRunState("qualified");
     const revision = {
       ...ledgerSubmittedInput(),
-      expectedStateVersion: 7,
+      expectedStateVersion: qualified.stateVersion,
       ledgerVersionId: "ledger_02JTEST",
       ledgerArtifactId: "artifact_ledger_02JTEST",
       validateCommandId: "command_validate_ledger_02JTEST",
@@ -1247,7 +1243,7 @@ describe("transition", () => {
     const previousState = advancedRunState(state);
     const revision = {
       ...ledgerSubmittedInput(),
-      expectedStateVersion: 7,
+      expectedStateVersion: previousState.stateVersion,
       ledgerVersionId: "ledger_02JTEST",
     };
 
@@ -1256,7 +1252,7 @@ describe("transition", () => {
     expect(result.nextState).toEqual(
       expect.objectContaining({
         state: "draft",
-        stateVersion: 8,
+        stateVersion: previousState.stateVersion + 1,
         policyLocked: true,
       }),
     );
@@ -2833,7 +2829,13 @@ describe("transition", () => {
         approved: false,
         planVersionId: "plan_version_01JTEST",
         reviewId: "review_baseline_01JTEST",
-        openFindingIds: ["finding_architecture_01JTEST"],
+        findings: [
+          expect.objectContaining({
+            findingId: "finding_architecture_01JTEST",
+            severity: "high",
+            ruleId: "rule_architecture_boundary",
+          }),
+        ],
       }),
     );
     expect(createProvisionalBaselineExport(reviewed)).toEqual(exported);
@@ -2845,6 +2847,34 @@ describe("transition", () => {
     expect(() =>
       createProvisionalBaselineExport(baselineReviewState()),
     ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
+  });
+
+  it("exports the reviewed snapshot after the mutable current plan advances", () => {
+    const reviewed = transition(
+      baselineReviewState(),
+      reviewAcceptedInput(["finding_architecture_01JTEST"]),
+      pinnedPolicy,
+    ).nextState;
+    if (reviewed.state !== "remediation") {
+      throw new Error("Expected remediation state");
+    }
+    const laterState = {
+      ...reviewed,
+      currentPlan: {
+        ...reviewed.currentPlan,
+        versionId: "plan_version_02JTEST",
+        artifactId: "artifact_plan_02JTEST",
+        contentHash: "4".repeat(64),
+      },
+    };
+
+    const exported = createProvisionalBaselineExport(laterState);
+
+    expect(exported.planVersionId).toBe("plan_version_01JTEST");
+    expect(exported.planArtifact).toEqual({
+      artifactId: "artifact_plan_01JTEST",
+      contentHash: planContentHash,
+    });
   });
 
   it("routes an accepted baseline review without blockers to closure", () => {
