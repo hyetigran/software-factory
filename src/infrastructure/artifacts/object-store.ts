@@ -14,6 +14,12 @@ import {
   initializeWorkspace,
   type WorkspacePaths,
 } from "../platform/workspace.js";
+import {
+  ArtifactIntegrityError,
+  readVerifiedObject,
+} from "./object-verifier.js";
+
+export { ArtifactIntegrityError } from "./object-verifier.js";
 
 export {
   initializeWorkspace,
@@ -46,13 +52,6 @@ export type ArtifactStoreHooks = {
     objectPath: string;
   }) => Promise<void>;
 };
-
-export class ArtifactIntegrityError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "ArtifactIntegrityError";
-  }
-}
 
 function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -163,41 +162,12 @@ export class ContentAddressedArtifactStore {
   }
 
   async readVerified(contentHash: string): Promise<Buffer> {
-    if (!/^[a-f0-9]{64}$/u.test(contentHash)) {
-      throw new ArtifactIntegrityError(`Invalid content hash: ${contentHash}`);
-    }
-    let handle;
-    const objectPath = join(this.workspace.objects, contentHash);
-    try {
-      await this.hooks.beforeObjectOpen?.({ contentHash, objectPath });
-      handle = await open(
-        objectPath,
-        constants.O_RDONLY | constants.O_NOFOLLOW,
-      );
-      const metadata = await handle.stat();
-      if (!metadata.isFile()) {
-        throw new ArtifactIntegrityError(
-          `Object path is not a regular file: ${contentHash}`,
-        );
-      }
-      const bytes = await handle.readFile();
-      if (sha256(bytes) !== contentHash) {
-        throw new ArtifactIntegrityError(
-          `Object content does not match its address: ${contentHash}`,
-        );
-      }
-      return bytes;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ELOOP") {
-        throw new ArtifactIntegrityError(
-          `Object path is not a regular file: ${contentHash}`,
-          { cause: error },
-        );
-      }
-      throw error;
-    } finally {
-      await handle?.close();
-    }
+    return readVerifiedObject(
+      this.workspace.objects,
+      contentHash,
+      async (objectPath) =>
+        this.hooks.beforeObjectOpen?.({ contentHash, objectPath }),
+    );
   }
 
   async copySource(sourcePathInput: string): Promise<CopiedSource> {

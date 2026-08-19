@@ -1,13 +1,11 @@
 import { join } from "node:path";
-import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { open } from "node:fs/promises";
 
 import type { WorkspaceOperations } from "../../application/workspace-operations.js";
 import { WorkspaceOperationError } from "../../application/workspace-operations.js";
 import { ContentAddressedArtifactStore } from "../artifacts/object-store.js";
 import { SqliteAuthority } from "../sqlite/authority.js";
 import { SqliteReadModel } from "../sqlite/read-model.js";
+import { readVerifiedObject } from "../artifacts/object-verifier.js";
 
 export function createWorkspaceOperations(): WorkspaceOperations {
   async function withReadModel<T>(
@@ -70,22 +68,13 @@ export function createWorkspaceOperations(): WorkspaceOperations {
         }
         const artifacts = model.listArtifacts(runId);
         for (const artifact of artifacts) {
-          let handle;
           try {
-            handle = await open(
-              join(projectRoot, ".factory", "objects", artifact.contentHash),
-              constants.O_RDONLY | constants.O_NOFOLLOW,
+            const bytes = await readVerifiedObject(
+              join(projectRoot, ".factory", "objects"),
+              artifact.contentHash,
             );
-            const metadata = await handle.stat();
-            const bytes = await handle.readFile();
-            if (
-              !metadata.isFile() ||
-              bytes.byteLength !== artifact.byteLength ||
-              createHash("sha256").update(bytes).digest("hex") !==
-                artifact.contentHash
-            ) {
-              throw new Error("mismatch");
-            }
+            if (bytes.byteLength !== artifact.byteLength)
+              throw new Error("length mismatch");
           } catch (error) {
             throw new WorkspaceOperationError(
               "INTEGRITY_ERROR",
@@ -95,8 +84,6 @@ export function createWorkspaceOperations(): WorkspaceOperations {
                 cause: error instanceof Error ? error.message : String(error),
               },
             );
-          } finally {
-            await handle?.close();
           }
         }
         return artifacts.map((artifact) => ({
