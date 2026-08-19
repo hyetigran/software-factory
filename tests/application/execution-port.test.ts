@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   beginEligibleCommandAttempt,
+  completeCommandAttempt,
   ExecutionPolicy,
   StrictReplayEvidence,
 } from "../../src/application/execution-port.js";
@@ -79,7 +80,7 @@ describe("execution policy and attempt boundary", () => {
 
     await expect(
       beginEligibleCommandAttempt(
-        { beginAttempt },
+        { beginAttempt, completeAttempt: vi.fn() },
         {
           runId: "run_1",
           commandId: "command_1",
@@ -101,7 +102,7 @@ describe("execution policy and attempt boundary", () => {
     }).toThrow();
     expect(() =>
       beginEligibleCommandAttempt(
-        { beginAttempt },
+        { beginAttempt, completeAttempt: vi.fn() },
         {
           runId: "run_other",
           commandId: "command_1",
@@ -125,6 +126,67 @@ describe("execution policy and attempt boundary", () => {
         expectedContentHash: "f".repeat(64),
       }),
     ).toThrow("hash does not match");
+  });
+
+  it("submits a verified physical result through the execution boundary", async () => {
+    const completeAttempt = vi.fn().mockResolvedValue({
+      status: "completed",
+      runId: "run_1",
+      commandId: "command_1",
+      attemptId: "attempt_1",
+      acceptedAsLogicalResult: true,
+    });
+
+    await expect(
+      completeCommandAttempt(
+        { beginAttempt: vi.fn(), completeAttempt },
+        {
+          runId: "run_1",
+          commandId: "command_1",
+          attemptId: "attempt_1",
+          ownerProcess: "pid:1",
+          correlationId: "correlation_1",
+          resultArtifact: {
+            schemaVersion: 1,
+            artifactId: "artifact_result",
+            kind: "provider_response",
+            contentHash: "a".repeat(64),
+            byteLength: 1,
+            mediaType: "application/json",
+            createdBy: "system:test",
+            provenance: {
+              method: "provider_generated",
+              sourceArtifactIds: ["artifact_source"],
+              commandId: "command_1",
+              attemptId: "attempt_1",
+            },
+          },
+          nativeUsageArtifact: {
+            schemaVersion: 1,
+            artifactId: "artifact_usage",
+            kind: "native_usage",
+            contentHash: "b".repeat(64),
+            byteLength: 1,
+            mediaType: "application/json",
+            createdBy: "system:test",
+            provenance: {
+              method: "provider_generated",
+              sourceArtifactIds: ["artifact_source"],
+              commandId: "command_1",
+              attemptId: "attempt_1",
+            },
+          },
+          actualUsage: {
+            calls: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            costUsdMicros: 0,
+          },
+          providerEvidence: {},
+        },
+      ),
+    ).resolves.toMatchObject({ acceptedAsLogicalResult: true });
+    expect(completeAttempt).toHaveBeenCalledOnce();
   });
 
   it("mints replay evidence only from an exact matching recording manifest", () => {

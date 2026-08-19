@@ -25,6 +25,8 @@ import type {
   BeginAttemptRequest,
   BeginAttemptOutcome,
   CommandExecutionPort,
+  CompleteAttemptRequest,
+  CompletedCommandAttempt,
 } from "../../application/execution-port.js";
 import { commandIsValid } from "../../application/command-validation.js";
 import { artifactRegistrationIsValid } from "../../application/artifact-port.js";
@@ -870,6 +872,193 @@ export class SqliteAuthority implements AuthorityPort, CommandExecutionPort {
         },
         startedAt,
         resolvedPrerequisiteArtifacts,
+      };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      if (error instanceof AuthorityIntegrityError)
+        this.quarantine(error.message);
+      throw error;
+    }
+  }
+
+  async completeAttempt(
+    request: CompleteAttemptRequest,
+  ): Promise<CompletedCommandAttempt> {
+    this.assertWritable();
+    await this.verifyIntegrity();
+    this.verifyStagedArtifact(request.resultArtifact);
+    this.verifyStagedArtifact(request.nativeUsageArtifact);
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.assertWritable();
+      this.verifyAuditChain();
+      const row = this.database
+        .prepare(
+          `SELECT c.run_id, c.status AS command_status, c.accepted_attempt_id,
+                  c.triggering_state_version, c.specification_json,
+                  a.status AS attempt_status, a.correlation_id,
+                  l.owner_process, l.attempt_id AS lease_attempt_id,
+                  r.state_version
+             FROM logical_commands c
+             JOIN command_attempts a ON a.command_id = c.command_id
+             JOIN runs r ON r.run_id = c.run_id
+             LEFT JOIN mutation_lease l ON l.singleton = 1
+            WHERE c.command_id = ? AND a.attempt_id = ?`,
+        )
+        .get(request.commandId, request.attemptId) as
+        | {
+            run_id: string;
+            command_status: string;
+            accepted_attempt_id: string | null;
+            triggering_state_version: number;
+            specification_json: string;
+            attempt_status: string;
+            correlation_id: string;
+            owner_process: string | null;
+            lease_attempt_id: string | null;
+            state_version: number;
+          }
+        | undefined;
+      if (
+        row === undefined ||
+        row.run_id !== request.runId ||
+        row.attempt_status !== "started" ||
+        row.correlation_id !== request.correlationId ||
+        row.lease_attempt_id !== request.attemptId ||
+        row.owner_process !== request.ownerProcess
+      ) {
+        throw new TypeError("Command attempt completion is not eligible");
+      }
+      const command = parseObject(row.specification_json) as PersistableCommand;
+      if (!commandIsValid(command)) {
+        throw new AuthorityIntegrityError(
+          "Logical command envelope is invalid during completion",
+        );
+      }
+      const reservation = command.budgetReservation;
+      const actual = request.actualUsage;
+      if (
+        actual.calls > reservation.calls ||
+        actual.inputTokens > reservation.inputTokens ||
+        actual.outputTokens > reservation.outputTokens ||
+        actual.costUsdMicros > reservation.costUsdMicros
+      ) {
+        throw new TypeError("Actual usage exceeds the reserved maximum");
+      }
+      this.persistArtifactMetadata(request.resultArtifact);
+      this.persistArtifactMetadata(request.nativeUsageArtifact);
+      const completedAt = this.now();
+      this.database
+        .prepare(
+          `UPDATE command_attempts
+              SET status = 'completed', provider_request_id = ?,
+                  provider_response_id = ?, result_artifact_id = ?,
+                  native_usage_artifact_id = ?, completed_at = ?
+            WHERE attempt_id = ?`,
+        )
+        .run(
+          request.providerEvidence.providerRequestId ?? null,
+          request.providerEvidence.providerResponseId ?? null,
+          request.resultArtifact.artifactId,
+          request.nativeUsageArtifact.artifactId,
+          completedAt,
+          request.attemptId,
+        );
+      const acceptedAsLogicalResult = row.accepted_attempt_id === null;
+      if (acceptedAsLogicalResult) {
+        this.database
+          .prepare(
+            `UPDATE logical_commands
+                SET status = 'succeeded', accepted_attempt_id = ?
+              WHERE command_id = ?`,
+          )
+          .run(request.attemptId, request.commandId);
+      }
+      for (const [kind, usage] of [
+        ["release", reservation],
+        ["actual", actual],
+      ] as const) {
+        this.database
+          .prepare(
+            `INSERT INTO usage_ledger
+               (usage_entry_id, run_id, command_id, attempt_id, kind,
+                calls, input_tokens, output_tokens, cost_usd_micros,
+                native_usage_artifact_id, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            `${request.attemptId}:${kind}`,
+            request.runId,
+            request.commandId,
+            request.attemptId,
+            kind,
+            usage.calls,
+            usage.inputTokens,
+            usage.outputTokens,
+            usage.costUsdMicros,
+            request.nativeUsageArtifact.artifactId,
+            completedAt,
+          );
+      }
+      appendAuditEntries({
+        database: this.database,
+        workspaceId: this.workspaceId,
+        runId: request.runId,
+        stateVersionBefore: row.state_version,
+        stateVersionAfter: row.state_version,
+        correlationId: request.correlationId,
+        facts: [
+          {
+            type: "command_attempt_completed",
+            actor: { kind: "system", component: "executor", version: "0.0.0" },
+            reason: "Persist the verified physical command result",
+            evidence: [
+              {
+                kind: "artifact",
+                artifactId: request.resultArtifact.artifactId,
+                contentHash: request.resultArtifact.contentHash,
+              },
+              {
+                kind: "artifact",
+                artifactId: request.nativeUsageArtifact.artifactId,
+                contentHash: request.nativeUsageArtifact.contentHash,
+              },
+            ],
+            payload: {
+              commandId: request.commandId,
+              attemptId: request.attemptId,
+              resultArtifactId: request.resultArtifact.artifactId,
+              nativeUsageArtifactId: request.nativeUsageArtifact.artifactId,
+              acceptedAsLogicalResult,
+              providerEvidence: request.providerEvidence,
+            },
+          },
+          {
+            type: "budget_reconciled",
+            actor: { kind: "system", component: "executor", version: "0.0.0" },
+            reason: "Replace the conservative reservation with actual usage",
+            evidence: [
+              {
+                kind: "artifact",
+                artifactId: request.nativeUsageArtifact.artifactId,
+                contentHash: request.nativeUsageArtifact.contentHash,
+              },
+            ],
+            payload: { commandId: request.commandId, reservation, actual },
+          },
+        ],
+        now: this.now,
+      });
+      this.database
+        .prepare("DELETE FROM mutation_lease WHERE singleton = 1")
+        .run();
+      this.database.exec("COMMIT");
+      return {
+        status: "completed",
+        runId: request.runId,
+        commandId: request.commandId,
+        attemptId: request.attemptId,
+        acceptedAsLogicalResult,
       };
     } catch (error) {
       this.database.exec("ROLLBACK");

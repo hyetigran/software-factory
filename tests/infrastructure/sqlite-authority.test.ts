@@ -234,24 +234,76 @@ describe("SQLite authority", () => {
         attemptKind: "initial",
       }),
     ).rejects.toThrow("Mutation lease is unavailable");
-    authority.close();
 
-    const database = new DatabaseSync(path);
-    database.exec("PRAGMA foreign_keys = ON");
-    database
-      .prepare(
-        `UPDATE command_attempts SET status = 'completed', completed_at = ?
-          WHERE attempt_id = ?`,
-      )
-      .run("2026-08-19T00:01:00.000Z", "attempt_execute_1");
-    database
-      .prepare(
-        `UPDATE logical_commands SET status = 'succeeded', accepted_attempt_id = ?
-          WHERE command_id = ?`,
-      )
-      .run("attempt_execute_1", "command_execute");
-    database.exec("DELETE FROM mutation_lease");
-    database.close();
+    const store = await ContentAddressedArtifactStore.open(
+      resolve(path, "../.."),
+    );
+    const result = await store.stageArtifact(Buffer.from("rendered"), {
+      artifactId: "artifact_result",
+      kind: "rendered_plan",
+      mediaType: "text/markdown",
+      createdBy: "system:test",
+      provenance: {
+        method: "deterministic_render",
+        sourceArtifactIds: ["artifact_source"],
+        commandId: "command_execute",
+      },
+    });
+    const usage = await store.stageArtifact(Buffer.from("{}"), {
+      artifactId: "artifact_usage",
+      kind: "native_usage",
+      mediaType: "application/json",
+      createdBy: "system:test",
+      provenance: {
+        method: "provider_generated",
+        sourceArtifactIds: ["artifact_source"],
+        commandId: "command_execute",
+        attemptId: "attempt_execute_1",
+      },
+    });
+    await expect(
+      authority.completeAttempt({
+        runId: "run_execute",
+        commandId: "command_execute",
+        attemptId: "attempt_execute_1",
+        correlationId: "correlation_execute_1",
+        ownerProcess: "pid:123",
+        resultArtifact: result,
+        nativeUsageArtifact: usage,
+        actualUsage: {
+          calls: 1,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsdMicros: 0,
+        },
+        providerEvidence: {},
+      }),
+    ).rejects.toThrow("exceeds the reserved maximum");
+    await expect(
+      authority.completeAttempt({
+        runId: "run_execute",
+        commandId: "command_execute",
+        attemptId: "attempt_execute_1",
+        correlationId: "correlation_execute_1",
+        ownerProcess: "pid:123",
+        resultArtifact: result,
+        nativeUsageArtifact: usage,
+        actualUsage: {
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsdMicros: 0,
+        },
+        providerEvidence: {},
+      }),
+    ).resolves.toMatchObject({ acceptedAsLogicalResult: true });
+    expect(
+      authority
+        .listAuditEntries()
+        .slice(-2)
+        .map(({ factType }) => factType),
+    ).toEqual(["command_attempt_completed", "budget_reconciled"]);
+    authority.close();
 
     const reopened = await openAuthority(path);
     await expect(

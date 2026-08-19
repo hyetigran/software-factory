@@ -6,6 +6,10 @@ import {
   resolvedConfigurationIsValid,
   type ResolvedConfigurationSnapshot,
 } from "./stage-configuration.js";
+import {
+  artifactRegistrationIsValid,
+  type StagedArtifactRegistration,
+} from "./artifact-port.js";
 
 export type AttemptStatus =
   "started" | "completed" | "failed" | "unknown" | "discarded";
@@ -191,8 +195,31 @@ export type BeginAttemptRequest = {
   strictReplay?: StrictReplayEvidence;
 };
 
+export type CompleteAttemptRequest = {
+  runId: string;
+  commandId: string;
+  attemptId: string;
+  ownerProcess: string;
+  correlationId: string;
+  resultArtifact: StagedArtifactRegistration;
+  nativeUsageArtifact: StagedArtifactRegistration;
+  actualUsage: BudgetReservation;
+  providerEvidence: Readonly<Record<string, string | null>>;
+};
+
+export type CompletedCommandAttempt = {
+  status: "completed";
+  runId: string;
+  commandId: string;
+  attemptId: string;
+  acceptedAsLogicalResult: boolean;
+};
+
 export interface CommandExecutionPort {
   beginAttempt(request: BeginAttemptRequest): Promise<BeginAttemptOutcome>;
+  completeAttempt(
+    request: CompleteAttemptRequest,
+  ): Promise<CompletedCommandAttempt>;
 }
 
 export function beginEligibleCommandAttempt(
@@ -226,4 +253,41 @@ export function beginEligibleCommandAttempt(
     );
   }
   return execution.beginAttempt(request);
+}
+
+export function completeCommandAttempt(
+  execution: CommandExecutionPort,
+  request: CompleteAttemptRequest,
+): Promise<CompletedCommandAttempt> {
+  const identityFields = [
+    request.runId,
+    request.commandId,
+    request.attemptId,
+    request.ownerProcess,
+    request.correlationId,
+    request.resultArtifact.artifactId,
+    request.nativeUsageArtifact.artifactId,
+  ];
+  const usage = request.actualUsage;
+  if (
+    identityFields.some((value) => value.trim().length === 0) ||
+    request.resultArtifact.schemaVersion !== 1 ||
+    !artifactRegistrationIsValid(request.resultArtifact) ||
+    !/^[a-f0-9]{64}$/u.test(request.resultArtifact.contentHash) ||
+    request.nativeUsageArtifact.schemaVersion !== 1 ||
+    !artifactRegistrationIsValid(request.nativeUsageArtifact) ||
+    !/^[a-f0-9]{64}$/u.test(request.nativeUsageArtifact.contentHash) ||
+    ![
+      usage.calls,
+      usage.inputTokens,
+      usage.outputTokens,
+      usage.costUsdMicros,
+    ].every((value) => Number.isInteger(value) && value >= 0) ||
+    Object.values(request.providerEvidence).some(
+      (value) => value !== null && typeof value !== "string",
+    )
+  ) {
+    throw new TypeError("Completed command attempt evidence is invalid");
+  }
+  return execution.completeAttempt(request);
 }
