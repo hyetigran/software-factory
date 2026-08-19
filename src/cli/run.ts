@@ -1,9 +1,9 @@
-import { join, resolve } from "node:path";
-import { access } from "node:fs/promises";
+import { resolve } from "node:path";
 
-import { ContentAddressedArtifactStore } from "../infrastructure/artifacts/object-store.js";
-import { AuthorityIntegrityError } from "../infrastructure/sqlite/errors.js";
-import { SqliteAuthority } from "../infrastructure/sqlite/authority.js";
+import {
+  WorkspaceOperationError,
+  type WorkspaceOperations,
+} from "../application/workspace-operations.js";
 
 export const CliExit = {
   success: 0,
@@ -15,12 +15,19 @@ export const CliExit = {
 } as const;
 
 type Writer = (line: string) => void;
+type ParsedCommand =
+  | { kind: "init"; json: boolean; projectRoot: string }
+  | { kind: "run_list"; json: boolean; projectRoot: string }
+  | { kind: "run_state"; json: boolean; projectRoot: string; runId: string }
+  | {
+      kind: "audit";
+      json: boolean;
+      projectRoot: string;
+      runId?: string;
+    };
 
-type CliDependencies = {
-  cwd: () => string;
-};
-
-const defaultDependencies: CliDependencies = { cwd: () => process.cwd() };
+const usage =
+  "Usage: factory init | run list | run status <run-id> | inspect state <run-id> | inspect audit [run-id] [--json] [--project <path>]";
 
 export function runCli(args: string[], write: Writer): number {
   if (args.includes("--version")) {
@@ -36,8 +43,6 @@ export function runCli(args: string[], write: Writer): number {
     return CliExit.success;
   }
   if (args.length === 0 || args.includes("--help")) {
-    const usage =
-      "Usage: factory init | run list | run status <run-id> | inspect state <run-id> | inspect audit [run-id] [--json]";
     write(
       args.includes("--json")
         ? JSON.stringify({ ok: true, command: "help", data: { usage } })
@@ -49,22 +54,85 @@ export function runCli(args: string[], write: Writer): number {
   return CliExit.usage;
 }
 
-function option(args: string[], name: string): string | undefined {
-  const index = args.indexOf(name);
-  return index < 0 ? undefined : args[index + 1];
+function parseArgs(args: string[], cwd: string): ParsedCommand {
+  let json = false;
+  let project: string | undefined;
+  const positional: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index] ?? "";
+    if (token === "--json") {
+      if (json) throw new TypeError("Duplicate option: --json");
+      json = true;
+    } else if (token === "--project") {
+      const value = args[index + 1];
+      if (
+        project !== undefined ||
+        value === undefined ||
+        value.startsWith("--")
+      ) {
+        throw new TypeError("--project requires exactly one path");
+      }
+      project = value;
+      index += 1;
+    } else if (token.startsWith("--")) {
+      throw new TypeError(`Unknown option: ${token}`);
+    } else {
+      positional.push(token);
+    }
+  }
+  const projectRoot = resolve(project ?? cwd);
+  if (positional.length === 1 && positional[0] === "init") {
+    return { kind: "init", json, projectRoot };
+  }
+  if (
+    positional.length === 2 &&
+    positional[0] === "run" &&
+    positional[1] === "list"
+  ) {
+    return { kind: "run_list", json, projectRoot };
+  }
+  if (
+    positional.length === 3 &&
+    ((positional[0] === "run" && positional[1] === "status") ||
+      (positional[0] === "inspect" && positional[1] === "state"))
+  ) {
+    return {
+      kind: "run_state",
+      json,
+      projectRoot,
+      runId: positional[2] ?? "",
+    };
+  }
+  if (
+    positional[0] === "inspect" &&
+    positional[1] === "audit" &&
+    positional.length >= 2 &&
+    positional.length <= 3
+  ) {
+    return {
+      kind: "audit",
+      json,
+      projectRoot,
+      ...(positional[2] === undefined ? {} : { runId: positional[2] }),
+    };
+  }
+  throw new TypeError(`Unknown command: ${positional.join(" ")}`);
 }
 
-function output(
+function writeSuccess(
   write: Writer,
-  json: boolean,
-  command: string,
+  command: ParsedCommand,
   data: unknown,
   human: string,
 ): void {
-  write(json ? JSON.stringify({ ok: true, command, data }) : human);
+  write(
+    command.json
+      ? JSON.stringify({ ok: true, command: command.kind, data })
+      : human,
+  );
 }
 
-function outputError(
+function writeError(
   write: Writer,
   json: boolean,
   command: string,
@@ -83,10 +151,24 @@ function outputError(
   );
 }
 
+function exitFor(error: WorkspaceOperationError): number {
+  switch (error.code) {
+    case "WORKSPACE_NOT_FOUND":
+    case "RUN_NOT_FOUND":
+      return CliExit.notFound;
+    case "SCHEMA_INCOMPATIBLE":
+    case "INTEGRITY_ERROR":
+      return CliExit.integrity;
+    case "CONFLICT":
+      return CliExit.conflict;
+  }
+}
+
 export async function runCliAsync(
   args: string[],
   write: Writer,
-  dependencies: CliDependencies = defaultDependencies,
+  operations: WorkspaceOperations,
+  cwd = process.cwd(),
 ): Promise<number> {
   if (
     args.includes("--version") ||
@@ -95,151 +177,92 @@ export async function runCliAsync(
   ) {
     return runCli(args, write);
   }
-  const json = args.includes("--json");
-  const projectRoot = resolve(option(args, "--project") ?? dependencies.cwd());
-  const positional = args.filter(
-    (arg, index) =>
-      arg !== "--json" &&
-      arg !== "--project" &&
-      args[index - 1] !== "--project",
-  );
-  const command = positional.join(" ");
-  const recognized =
-    (positional[0] === "init" && positional.length === 1) ||
-    (positional[0] === "run" &&
-      positional[1] === "list" &&
-      positional.length === 2) ||
-    ((positional[0] === "run" && positional[1] === "status") ||
-    (positional[0] === "inspect" && positional[1] === "state")
-      ? positional.length === 3
-      : false) ||
-    (positional[0] === "inspect" &&
-      positional[1] === "audit" &&
-      positional.length <= 3);
-  if (!recognized) {
-    outputError(
-      write,
-      json,
-      command,
-      "USAGE_ERROR",
-      `Unknown command: ${command}`,
-    );
+  let command: ParsedCommand;
+  try {
+    command = parseArgs(args, cwd);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    writeError(write, args.includes("--json"), "parse", "USAGE_ERROR", message);
     return CliExit.usage;
   }
-  let authority: SqliteAuthority | undefined;
   try {
-    if (positional[0] !== "init") {
-      try {
-        await access(join(projectRoot, ".factory", "state.db"));
-      } catch {
-        outputError(
+    switch (command.kind) {
+      case "init": {
+        const initialized = await operations.initialize(command.projectRoot);
+        writeSuccess(
           write,
-          json,
           command,
-          "WORKSPACE_NOT_FOUND",
-          `Software Factory workspace not found: ${projectRoot}`,
-          { projectRoot },
+          { projectRoot: command.projectRoot, ...initialized },
+          `Initialized Software Factory workspace at ${initialized.workspaceRoot}`,
         );
-        return CliExit.notFound;
+        return CliExit.success;
+      }
+      case "run_list": {
+        const runs = await operations.listRuns(command.projectRoot);
+        writeSuccess(
+          write,
+          command,
+          { runs },
+          runs.length === 0
+            ? "No runs"
+            : runs
+                .map(
+                  (run) => `${run.runId}\t${run.state}\tv${run.stateVersion}`,
+                )
+                .join("\n"),
+        );
+        return CliExit.success;
+      }
+      case "run_state": {
+        const state = await operations.loadRun(
+          command.projectRoot,
+          command.runId,
+        );
+        if (state === null) {
+          throw new WorkspaceOperationError(
+            "RUN_NOT_FOUND",
+            `Run not found: ${command.runId}`,
+            { runId: command.runId },
+          );
+        }
+        writeSuccess(write, command, { state }, JSON.stringify(state, null, 2));
+        return CliExit.success;
+      }
+      case "audit": {
+        const entries = await operations.listAudit(
+          command.projectRoot,
+          command.runId,
+        );
+        writeSuccess(
+          write,
+          command,
+          { entries },
+          entries.length === 0
+            ? "No audit entries"
+            : entries
+                .map(
+                  (entry) =>
+                    `${entry.sequence}\t${entry.runId}\t${entry.factType}\tv${entry.stateVersionAfter}`,
+                )
+                .join("\n"),
+        );
+        return CliExit.success;
       }
     }
-    const store = await ContentAddressedArtifactStore.open(projectRoot);
-    authority = SqliteAuthority.open(join(store.workspace.root, "state.db"), {
-      artifactStore: store,
-    });
-    if (positional[0] === "init" && positional.length === 1) {
-      output(
-        write,
-        json,
-        "init",
-        { projectRoot, workspaceRoot: store.workspace.root },
-        `Initialized Software Factory workspace at ${store.workspace.root}`,
-      );
-      return CliExit.success;
-    }
-    if (
-      positional[0] === "run" &&
-      positional[1] === "list" &&
-      positional.length === 2
-    ) {
-      const runs = authority.listRuns();
-      output(
-        write,
-        json,
-        "run list",
-        { runs },
-        runs.length === 0
-          ? "No runs"
-          : runs
-              .map((run) => `${run.runId}\t${run.state}\tv${run.stateVersion}`)
-              .join("\n"),
-      );
-      return CliExit.success;
-    }
-    if (
-      ((positional[0] === "run" && positional[1] === "status") ||
-        (positional[0] === "inspect" && positional[1] === "state")) &&
-      positional.length === 3
-    ) {
-      const runId = positional[2] ?? "";
-      const state = authority.loadRun<object>(runId);
-      if (state === null) {
-        outputError(
-          write,
-          json,
-          command,
-          "RUN_NOT_FOUND",
-          `Run not found: ${runId}`,
-          { runId },
-        );
-        return CliExit.notFound;
-      }
-      output(write, json, command, { state }, JSON.stringify(state, null, 2));
-      return CliExit.success;
-    }
-    if (
-      positional[0] === "inspect" &&
-      positional[1] === "audit" &&
-      positional.length <= 3
-    ) {
-      const runId = positional[2];
-      const entries = authority
-        .listAuditEntries()
-        .filter((entry) => runId === undefined || entry.runId === runId);
-      output(
-        write,
-        json,
-        command,
-        { entries },
-        entries.length === 0
-          ? "No audit entries"
-          : entries
-              .map(
-                (entry) =>
-                  `${entry.sequence}\t${entry.runId}\t${entry.factType}\tv${entry.stateVersionAfter}`,
-              )
-              .join("\n"),
-      );
-      return CliExit.success;
-    }
-    throw new Error(`CLI command was not handled: ${command}`);
   } catch (error) {
-    const integrity = error instanceof AuthorityIntegrityError;
+    if (error instanceof WorkspaceOperationError) {
+      writeError(
+        write,
+        command.json,
+        command.kind,
+        error.code,
+        error.message,
+        error.details,
+      );
+      return exitFor(error);
+    }
     const message = error instanceof Error ? error.message : String(error);
-    write(
-      json
-        ? JSON.stringify({
-            ok: false,
-            command,
-            error: {
-              code: integrity ? "INTEGRITY_ERROR" : "INTERNAL_ERROR",
-              message,
-            },
-          })
-        : `Error: ${message}`,
-    );
-    return integrity ? CliExit.integrity : CliExit.internal;
-  } finally {
-    authority?.close();
+    writeError(write, command.json, command.kind, "INTERNAL_ERROR", message);
+    return CliExit.internal;
   }
 }

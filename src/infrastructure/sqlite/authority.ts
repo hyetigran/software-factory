@@ -459,32 +459,6 @@ export class SqliteAuthority
       : (parseObject(row.state_json) as unknown as TState);
   }
 
-  listRuns(): Array<{
-    runId: string;
-    state: string;
-    stateVersion: number;
-    createdAt: string;
-  }> {
-    return (
-      this.database
-        .prepare(
-          `SELECT run_id, state, state_version, created_at
-             FROM runs ORDER BY created_at, run_id`,
-        )
-        .all() as Array<{
-        run_id: string;
-        state: string;
-        state_version: number;
-        created_at: string;
-      }>
-    ).map((row) => ({
-      runId: row.run_id,
-      state: row.state,
-      stateVersion: row.state_version,
-      createdAt: row.created_at,
-    }));
-  }
-
   listCommands(runId: string): PersistableCommand[] {
     return this.database
       .prepare(
