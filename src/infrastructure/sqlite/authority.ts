@@ -59,7 +59,7 @@ export class StaleStateError extends Error {
   }
 }
 
-function sha256(value: string): string {
+function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
@@ -513,6 +513,64 @@ export class SqliteAuthority implements AuthorityPort {
     this.database.close();
   }
 
+  private verifyLegacyAuthority(): void {
+    const busy = this.database
+      .prepare(
+        `SELECT
+          (SELECT count(*) FROM mutation_lease) AS leases,
+          (SELECT count(*) FROM logical_commands WHERE status = 'running') AS commands,
+          (SELECT count(*) FROM command_attempts WHERE status = 'started') AS attempts`,
+      )
+      .get() as { leases: number; commands: number; attempts: number };
+    if (busy.leases > 0 || busy.commands > 0 || busy.attempts > 0) {
+      throw new AuthorityIntegrityError(
+        "Migration requires an idle mutation lease",
+      );
+    }
+    const metadata = this.database
+      .prepare(
+        "SELECT next_audit_sequence, audit_chain_head FROM workspaces WHERE workspace_id = ?",
+      )
+      .get(this.workspaceId) as
+      { next_audit_sequence: number; audit_chain_head: string } | undefined;
+    const rows = this.database
+      .prepare(
+        "SELECT * FROM audit_entries WHERE workspace_id = ? ORDER BY sequence",
+      )
+      .all(this.workspaceId) as AuditRow[];
+    let previousHash = ZERO_HASH;
+    const versions = new Map<string, number>();
+    for (const [index, row] of rows.entries()) {
+      const entry = auditEntryFromRow(row);
+      const { entryHash, ...withoutHash } = entry;
+      if (
+        entry.sequence !== index + 1 ||
+        entry.previousEntryHash !== previousHash ||
+        sha256(canonicalJson(withoutHash)) !== entryHash ||
+        (versions.get(entry.runId) ?? 0) !== entry.stateVersionBefore
+      ) {
+        throw new AuthorityIntegrityError(
+          "Legacy audit chain verification failed",
+        );
+      }
+      versions.set(entry.runId, entry.stateVersionAfter);
+      previousHash = entryHash;
+    }
+    const runs = this.database
+      .prepare("SELECT run_id, state_version FROM runs")
+      .all() as Array<{ run_id: string; state_version: number }>;
+    if (
+      metadata === undefined ||
+      metadata.audit_chain_head !== previousHash ||
+      metadata.next_audit_sequence !== rows.length + 1 ||
+      runs.some((run) => versions.get(run.run_id) !== run.state_version)
+    ) {
+      throw new AuthorityIntegrityError(
+        "Legacy authority disagrees with its audit chain",
+      );
+    }
+  }
+
   private migrate(): void {
     const initialized = this.database
       .prepare(
@@ -538,6 +596,7 @@ export class SqliteAuthority implements AuthorityPort {
       )
       .run(this.workspaceId, this.now(), ZERO_HASH);
     if (version?.schema_version === 1) {
+      this.verifyLegacyAuthority();
       const integrity = this.database
         .prepare("PRAGMA integrity_check")
         .all() as Array<{ integrity_check: string }> | undefined;
@@ -585,7 +644,7 @@ export class SqliteAuthority implements AuthorityPort {
             { cause: error },
           );
         }
-        if (sha256(bytes.toString("binary")) !== contentHash) {
+        if (sha256(bytes) !== contentHash) {
           throw new AuthorityIntegrityError(
             `Migration object is corrupt: ${contentHash}`,
           );
@@ -599,21 +658,28 @@ export class SqliteAuthority implements AuthorityPort {
       const manifestPath = resolve(backupDirectory, "manifest.json");
       const manifest = canonicalJson({
         backupId,
-        databaseHash: sha256(backupBytes.toString("binary")),
+        databaseHash: sha256(backupBytes),
         fromSchemaVersion: 1,
         objectHashes,
         auditChainHead: chain?.audit_chain_head ?? ZERO_HASH,
-        cliVersion: "0.0.0",
+        cliVersion: (
+          JSON.parse(
+            readFileSync(
+              resolve(
+                dirname(fileURLToPath(import.meta.url)),
+                "../../../package.json",
+              ),
+              "utf8",
+            ),
+          ) as { version: string }
+        ).version,
         createdAt: this.now(),
       });
       writeFileSync(manifestPath, manifest, { mode: 0o600, flag: "wx" });
       const verifiedManifest = JSON.parse(manifest) as {
         databaseHash: string;
       };
-      if (
-        sha256(readFileSync(backupPath).toString("binary")) !==
-        verifiedManifest.databaseHash
-      ) {
+      if (sha256(readFileSync(backupPath)) !== verifiedManifest.databaseHash) {
         throw new AuthorityIntegrityError(
           "Migration backup verification failed",
         );
