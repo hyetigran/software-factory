@@ -1,6 +1,7 @@
 import type { ProviderRequest } from "../../application/provider-port.js";
 
 export type HttpTransportRequest = {
+  method?: "GET" | "POST";
   url: string;
   headers: Record<string, string>;
   body: Uint8Array;
