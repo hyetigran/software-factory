@@ -13,6 +13,7 @@ import { readVerifiedObject } from "../artifacts/object-verifier.js";
 import { startConfiguredRun } from "../../application/start-configured-run.js";
 import { submitLedger } from "../../application/submit-ledger.js";
 import { loadPinnedConfiguration } from "../../application/load-pinned-configuration.js";
+import { approveSourceExclusion } from "../../application/approve-source-exclusion.js";
 import { DomainTransitionError } from "../../domain/index.js";
 import {
   resolveAndRegisterConfiguration,
@@ -285,6 +286,86 @@ export function createWorkspaceOperations(): WorkspaceOperations {
           );
         }
         throw error;
+      }
+    },
+    async approveSourceExclusion(
+      projectRoot,
+      runId,
+      exclusionId,
+      startOffset,
+      endOffset,
+      reason,
+    ) {
+      const store = await ContentAddressedArtifactStore.open(projectRoot);
+      const state = await withReadModel(projectRoot, (model) =>
+        model.loadRun(runId),
+      );
+      if (state === null)
+        throw new WorkspaceOperationError(
+          "RUN_NOT_FOUND",
+          `Run not found: ${runId}`,
+          {
+            runId,
+          },
+        );
+      const sourceContentHash = (state as { sourceContentHash?: unknown })
+        .sourceContentHash;
+      if (typeof sourceContentHash !== "string")
+        throw new WorkspaceOperationError(
+          "INTEGRITY_ERROR",
+          `Run source identity is invalid: ${runId}`,
+        );
+      let sourceBytes: Uint8Array;
+      try {
+        sourceBytes = await store.readVerified(sourceContentHash);
+      } catch (error) {
+        throw new WorkspaceOperationError(
+          "INTEGRITY_ERROR",
+          `Run source is missing or corrupt: ${runId}`,
+          { cause: error instanceof Error ? error.message : String(error) },
+        );
+      }
+      const configuration = await loadPinnedConfiguration({
+        runId,
+        read: {
+          loadRun: (id) =>
+            withReadModel(projectRoot, (model) => model.loadRun(id)),
+          listArtifacts: () =>
+            withReadModel(projectRoot, (model) => model.listArtifacts()),
+          readVerified: (contentHash) => store.readVerified(contentHash),
+        },
+      });
+      const authority = SqliteAuthority.open(
+        join(store.workspace.root, "state.db"),
+        { artifactStore: store },
+      );
+      try {
+        return await approveSourceExclusion({
+          authority,
+          runId,
+          exclusionId,
+          startOffset,
+          endOffset,
+          expectedSourceContentHash: sourceContentHash,
+          sourceByteLength: sourceBytes.byteLength,
+          reason,
+          configuration,
+          actor: {
+            kind: "human",
+            displayName: configuration.humanActorDisplayName,
+            osAccount: userInfo().username,
+          },
+        });
+      } catch (error) {
+        if (error instanceof DomainTransitionError)
+          throw new WorkspaceOperationError("CONFLICT", error.message, {
+            domainCode: error.code,
+          });
+        if (error instanceof TypeError)
+          throw new WorkspaceOperationError("INVALID_INPUT", error.message);
+        throw error;
+      } finally {
+        authority.close();
       }
     },
     async listRuns(projectRoot) {

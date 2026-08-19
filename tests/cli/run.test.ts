@@ -168,6 +168,35 @@ describe("factory executable", () => {
     });
     expect(submitted.data.ledgerArtifactId).toMatch(/^ledger_/u);
 
+    const exclusionLines: string[] = [];
+    await expect(
+      runCliAsync(
+        [
+          "approve",
+          "exclusion",
+          started.data.runId,
+          "exclusion_1",
+          "10",
+          String(Buffer.byteLength("# Requirements\n\nBuild it safely.\n")),
+          "Non-requirement heading",
+          "--json",
+        ],
+        (line) => exclusionLines.push(line),
+        operations,
+        projectRoot,
+      ),
+    ).resolves.toBe(CliExit.success);
+    expect(JSON.parse(exclusionLines[0] ?? "null")).toMatchObject({
+      ok: true,
+      command: "approve exclusion",
+      data: {
+        state: {
+          stateVersion: 3,
+          sourceExclusions: [{ exclusionId: "exclusion_1" }],
+        },
+      },
+    });
+
     const conflictLines: string[] = [];
     const conflictExit = await runCliAsync(
       [
@@ -352,6 +381,7 @@ describe("factory executable", () => {
       configure: vi.fn(),
       startRun: vi.fn(),
       submitLedger: vi.fn(),
+      approveSourceExclusion: vi.fn(),
       listRuns,
       loadRun: vi.fn(),
       listAudit: vi.fn(),
@@ -406,6 +436,7 @@ describe("factory executable", () => {
       configure: vi.fn(),
       startRun: vi.fn(),
       submitLedger: vi.fn(),
+      approveSourceExclusion: vi.fn(),
       listRuns: vi.fn(),
       loadRun: vi.fn().mockResolvedValue({ runId: "run_1" }),
       listAudit: vi.fn(),
@@ -478,6 +509,7 @@ describe("factory executable", () => {
       configure: vi.fn(),
       startRun: vi.fn(),
       submitLedger: vi.fn(),
+      approveSourceExclusion: vi.fn(),
       listRuns: vi.fn(),
       loadRun: vi.fn(),
       listAudit: vi.fn(),

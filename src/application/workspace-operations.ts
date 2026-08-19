@@ -143,6 +143,14 @@ export interface WorkspaceOperations {
     runId: string,
     ledgerPath: string,
   ): Promise<{ state: object; ledgerArtifactId: string }>;
+  approveSourceExclusion(
+    projectRoot: string,
+    runId: string,
+    exclusionId: string,
+    startOffset: number,
+    endOffset: number,
+    reason: string,
+  ): Promise<{ state: object }>;
   listRuns(projectRoot: string): Promise<RunSummary[]>;
   loadRun(projectRoot: string, runId: string): Promise<object | null>;
   listAudit(projectRoot: string, runId?: string): Promise<AuditSummary[]>;

@@ -18,6 +18,17 @@ type Writer = (line: string) => void;
 type ParsedCommand =
   | { kind: "init"; publicName: "init"; json: boolean; projectRoot: string }
   | {
+      kind: "approve_exclusion";
+      publicName: "approve exclusion";
+      json: boolean;
+      projectRoot: string;
+      runId: string;
+      exclusionId: string;
+      startOffset: number;
+      endOffset: number;
+      reason: string;
+    }
+  | {
       kind: "submit_ledger";
       publicName: "submit ledger";
       json: boolean;
@@ -133,6 +144,27 @@ function parseArgs(args: string[], cwd: string): ParsedCommand {
   const projectRoot = resolve(project ?? cwd);
   if (positional.length === 1 && positional[0] === "init") {
     return { kind: "init", publicName: "init", json, projectRoot };
+  }
+  if (
+    positional.length === 7 &&
+    positional[0] === "approve" &&
+    positional[1] === "exclusion"
+  ) {
+    const startOffset = Number(positional[4]);
+    const endOffset = Number(positional[5]);
+    if (!Number.isInteger(startOffset) || !Number.isInteger(endOffset))
+      throw new TypeError("Exclusion offsets must be integers");
+    return {
+      kind: "approve_exclusion",
+      publicName: "approve exclusion",
+      json,
+      projectRoot,
+      runId: positional[2] ?? "",
+      exclusionId: positional[3] ?? "",
+      startOffset,
+      endOffset,
+      reason: positional[6] ?? "",
+    };
   }
   if (
     positional.length === 4 &&
@@ -373,6 +405,23 @@ export async function runCliAsync(
           command,
           submitted,
           `Submitted ledger ${submitted.ledgerArtifactId}`,
+        );
+        return CliExit.success;
+      }
+      case "approve_exclusion": {
+        const approved = await operations.approveSourceExclusion(
+          command.projectRoot,
+          command.runId,
+          command.exclusionId,
+          command.startOffset,
+          command.endOffset,
+          command.reason,
+        );
+        writeSuccess(
+          write,
+          command,
+          approved,
+          `Approved source exclusion ${command.exclusionId}`,
         );
         return CliExit.success;
       }
