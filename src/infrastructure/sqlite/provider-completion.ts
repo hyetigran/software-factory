@@ -100,6 +100,32 @@ export function structuredOutputMatchesRawResponse(
   }
 }
 
+export function providerResponseMatchesEvidence(
+  evidence: ProviderEvidence,
+  bytes: Uint8Array,
+): boolean {
+  try {
+    const response = JSON.parse(Buffer.from(bytes).toString("utf8")) as Record<
+      string,
+      unknown
+    >;
+    return (
+      response !== null &&
+      typeof response === "object" &&
+      !Array.isArray(response) &&
+      (evidence.providerResponseId === undefined ||
+        response.id === evidence.providerResponseId) &&
+      (evidence.returnedModel === undefined ||
+        response.model === evidence.returnedModel) &&
+      (evidence.completionStatus === undefined ||
+        response.status === evidence.completionStatus ||
+        response.stop_reason === evidence.completionStatus)
+    );
+  } catch {
+    return false;
+  }
+}
+
 export class SqliteProviderCompletion {
   constructor(private readonly dependencies: Dependencies) {}
 
@@ -500,22 +526,7 @@ export class SqliteProviderCompletion {
     request: CompleteProviderAttemptEvidence,
     bytes: Uint8Array,
   ): boolean {
-    try {
-      const response = JSON.parse(
-        Buffer.from(bytes).toString("utf8"),
-      ) as Record<string, unknown>;
-      return (
-        response !== null &&
-        typeof response === "object" &&
-        !Array.isArray(response) &&
-        response.id === request.providerEvidence.providerResponseId &&
-        response.model === request.providerEvidence.returnedModel &&
-        (response.status === request.providerEvidence.completionStatus ||
-          response.stop_reason === request.providerEvidence.completionStatus)
-      );
-    } catch {
-      return false;
-    }
+    return providerResponseMatchesEvidence(request.providerEvidence, bytes);
   }
 
   private outputMatchesRawResponse(

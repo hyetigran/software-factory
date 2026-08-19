@@ -13,7 +13,10 @@ import type { BudgetReservation } from "../../domain/index.js";
 import { createHash } from "node:crypto";
 import { appendAuditEntries } from "./audit-journal.js";
 import { AuthorityIntegrityError } from "./errors.js";
-import { providerEvidenceMatchesRecording } from "./provider-completion.js";
+import {
+  providerEvidenceMatchesRecording,
+  providerResponseMatchesEvidence,
+} from "./provider-completion.js";
 import { providerExecutionIsAuthentic } from "../providers/execution-capability.js";
 
 type Dependencies = {
@@ -131,11 +134,40 @@ export class SqliteProviderFailure {
       );
     }
     this.assertOutcomeArtifact(request);
-    this.dependencies.readStagedArtifactBytes(request.outcomeArtifact);
+    const outcomeBytes = this.dependencies.readStagedArtifactBytes(
+      request.outcomeArtifact,
+    );
+    const rawResponseBytes = request.execution.recording.rawResponseBytes;
+    const expectedOutcomeBytes =
+      rawResponseBytes ??
+      Buffer.from(
+        canonicalJson({
+          kind: request.execution.kind,
+          evidence: request.execution.evidence,
+        }),
+      );
+    if (
+      createHash("sha256").update(outcomeBytes).digest("hex") !==
+        createHash("sha256").update(expectedOutcomeBytes).digest("hex") ||
+      (rawResponseBytes !== undefined &&
+        !providerResponseMatchesEvidence(evidence, outcomeBytes))
+    ) {
+      throw new TypeError("Provider failure outcome bytes are invalid");
+    }
     this.dependencies.persistArtifactMetadata(request.outcomeArtifact);
     if (request.nativeUsageArtifact !== undefined) {
       this.assertNativeUsageArtifact(request.nativeUsageArtifact, request);
-      this.dependencies.readStagedArtifactBytes(request.nativeUsageArtifact);
+      const usageBytes = this.dependencies.readStagedArtifactBytes(
+        request.nativeUsageArtifact,
+      );
+      const expectedUsageBytes = request.execution.recording.nativeUsageBytes;
+      if (
+        expectedUsageBytes === undefined ||
+        createHash("sha256").update(usageBytes).digest("hex") !==
+          createHash("sha256").update(expectedUsageBytes).digest("hex")
+      ) {
+        throw new TypeError("Provider failure usage bytes are invalid");
+      }
       this.dependencies.persistArtifactMetadata(request.nativeUsageArtifact);
     }
     const reservation = this.loadReservation(request.attemptId);
@@ -323,7 +355,14 @@ export class SqliteProviderFailure {
           "Dispatched provider failure requires native usage",
         );
       }
-      return { calls: 0, inputTokens: 0, outputTokens: 0, costUsdMicros: 0 };
+      const dispatched =
+        request.execution.recording.rawResponseBytes !== undefined;
+      return {
+        calls: dispatched ? 1 : 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsdMicros: dispatched ? reservation.costUsdMicros : 0,
+      };
     }
     try {
       const usage = JSON.parse(Buffer.from(nativeBytes).toString("utf8")) as {

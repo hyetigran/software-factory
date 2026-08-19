@@ -558,7 +558,9 @@ describe("SQLite authority", () => {
     ).resolves.toBe("claimed");
 
     const failedResponse = await store.stageArtifact(
-      Buffer.from('{"id":"response_invalid","model":"planner"}'),
+      Buffer.from(
+        '{"id":"response_invalid","model":"planner","status":"completed"}',
+      ),
       {
         artifactId: "artifact_repair_failed_response",
         kind: "provider_response",
@@ -622,7 +624,7 @@ describe("SQLite authority", () => {
             },
             recording: {
               rawResponseBytes: Buffer.from(
-                '{"id":"response_invalid","model":"planner"}',
+                '{"id":"response_invalid","model":"planner","status":"completed"}',
               ),
               nativeUsageBytes: Buffer.from(
                 '{"input_tokens":10,"output_tokens":5}',
