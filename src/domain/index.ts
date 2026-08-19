@@ -536,6 +536,8 @@ export type ReviewAccepted = {
   nextCommandTimeoutMs: number;
   nextCommandReasoning: string | null;
   nextCommandRequestPolicyResolved: boolean;
+  remediationPromptArtifact: VerifiedArtifactInput;
+  remediationSchemaArtifact: VerifiedArtifactInput;
   availableBudget: BudgetReservation;
   auditChainVerified: boolean;
   databaseIntegrityVerified: boolean;
@@ -608,6 +610,9 @@ export type BudgetReservation = {
 };
 
 export type ProviderRequestPolicy = {
+  configurationArtifactId: string;
+  configurationContentHash: string;
+  policyHash: string;
   role: "planner" | "reviewer";
   promptArtifactId: string;
   promptContentHash: string;
@@ -1183,8 +1188,13 @@ function providerRequestPolicy(
   budget: BudgetReservation,
   timeoutMs: number,
   reasoning: string | null,
+  configuration: Omit<ArtifactEvidenceReference, "kind">,
+  policyHash: string,
 ): ProviderRequestPolicy {
   return {
+    configurationArtifactId: configuration.artifactId,
+    configurationContentHash: configuration.contentHash,
+    policyHash,
     role,
     promptArtifactId: prompt.artifactId,
     promptContentHash: prompt.contentHash,
@@ -2169,6 +2179,11 @@ function requestPlanning(
       input.budgetReservation,
       input.requestTimeoutMs,
       input.requestReasoning,
+      {
+        artifactId: previousState.configurationArtifactId,
+        contentHash: previousState.configurationContentHash,
+      },
+      policy.policyHash,
     ),
     payload: {
       ledgerVersionId: previousState.currentLedger.versionId,
@@ -2507,6 +2522,11 @@ function acceptPlanForBaseline(
       input.reviewBudgetMaximum,
       input.reviewTimeoutMs,
       input.reviewReasoning,
+      {
+        artifactId: previousState.configurationArtifactId,
+        contentHash: previousState.configurationContentHash,
+      },
+      policy.policyHash,
     ),
     payload: {
       ledgerVersionId: previousState.currentLedger.versionId,
@@ -2765,22 +2785,20 @@ function planAfterBaselineReview(
   findingIds: string[],
   blockingIds: Set<string>,
 ): GenerateRemediation | ClosureReview {
+  const commonInputArtifactHashes = [
+    state.currentLedger.contentHash,
+    state.currentPlan.contentHash,
+    input.reviewArtifact.contentHash,
+    input.renderedPlanArtifact.contentHash,
+    state.reviewContext.taxonomy.contentHash,
+    state.reviewContext.componentRegistry.contentHash,
+    state.reviewContext.policy.contentHash,
+    ...state.reviewContext.evidence.map(({ contentHash }) => contentHash),
+  ];
   const commonCommand = {
     schemaVersion: 1 as const,
     runId: input.runId,
     triggeringStateVersion: nextStateVersion,
-    inputArtifactHashes: [
-      state.currentLedger.contentHash,
-      state.currentPlan.contentHash,
-      input.reviewArtifact.contentHash,
-      input.renderedPlanArtifact.contentHash,
-      state.reviewContext.prompt.contentHash,
-      state.reviewContext.schema.contentHash,
-      state.reviewContext.taxonomy.contentHash,
-      state.reviewContext.componentRegistry.contentHash,
-      state.reviewContext.policy.contentHash,
-      ...state.reviewContext.evidence.map(({ contentHash }) => contentHash),
-    ],
     policyHash: policy.policyHash,
     budgetReservation: input.nextCommandBudgetMaximum,
   };
@@ -2789,24 +2807,34 @@ function planAfterBaselineReview(
     ? planCommand<GenerateRemediation>(input.nextCommandId, {
         ...commonCommand,
         commandType: "generate_remediation",
+        inputArtifactHashes: [
+          ...commonInputArtifactHashes,
+          input.remediationPromptArtifact.contentHash,
+          input.remediationSchemaArtifact.contentHash,
+        ],
         purposeId: `${input.runId}:plan:${state.currentPlan.versionId}:remediation:1`,
         provider: policy.plannerAssignment.provider,
         modelId: policy.plannerAssignment.modelId,
         providerRequestPolicy: providerRequestPolicy(
           "planner",
-          state.reviewContext.prompt,
-          state.reviewContext.schema,
+          input.remediationPromptArtifact,
+          input.remediationSchemaArtifact,
           input.nextCommandBudgetMaximum,
           input.nextCommandTimeoutMs,
           input.nextCommandReasoning,
+          {
+            artifactId: state.configurationArtifactId,
+            contentHash: state.configurationContentHash,
+          },
+          policy.policyHash,
         ),
         payload: {
           ledgerVersionId: state.currentLedger.versionId,
           planVersionId: state.currentPlan.versionId,
           planArtifactId: state.currentPlan.artifactId,
           reviewArtifactId: input.reviewArtifact.artifactId,
-          promptArtifactId: state.reviewContext.prompt.artifactId,
-          outputSchemaArtifactId: state.reviewContext.schema.artifactId,
+          promptArtifactId: input.remediationPromptArtifact.artifactId,
+          outputSchemaArtifactId: input.remediationSchemaArtifact.artifactId,
           blockingFindingIds: input.reconciliation.blockingFindingIds,
           providerStorage: "minimize",
         },
@@ -2814,6 +2842,11 @@ function planAfterBaselineReview(
     : planCommand<ClosureReview>(input.nextCommandId, {
         ...commonCommand,
         commandType: "closure_review",
+        inputArtifactHashes: [
+          ...commonInputArtifactHashes,
+          state.reviewContext.prompt.contentHash,
+          state.reviewContext.schema.contentHash,
+        ],
         purposeId: `${input.runId}:plan:${state.currentPlan.versionId}:closure:1`,
         provider: state.activeReview.reviewerAssignment.provider,
         modelId: state.activeReview.reviewerAssignment.modelId,
@@ -2824,6 +2857,11 @@ function planAfterBaselineReview(
           input.nextCommandBudgetMaximum,
           input.nextCommandTimeoutMs,
           input.nextCommandReasoning,
+          {
+            artifactId: state.configurationArtifactId,
+            contentHash: state.configurationContentHash,
+          },
+          policy.policyHash,
         ),
         payload: {
           ledgerVersionId: state.currentLedger.versionId,
@@ -3102,6 +3140,10 @@ function acceptBaselineReview(
     input.reviewCycle !== previousState.activeReview.cycle ||
     !input.outputValid ||
     reconciled === null ||
+    (reconciled !== null &&
+      reconciled.blockingIds.size > 0 &&
+      (!verifiedArtifactInputIsValid(input.remediationPromptArtifact) ||
+        !verifiedArtifactInputIsValid(input.remediationSchemaArtifact))) ||
     !reviewerAuthorized ||
     !providerBudgetIsEligible(
       input.nextCommandBudgetMaximum,

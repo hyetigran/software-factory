@@ -1,3 +1,5 @@
+import type { ProviderRequestPolicy } from "../domain/index.js";
+
 export type PersistableCommand = {
   commandId: string;
   commandKey: string;
@@ -17,17 +19,7 @@ export type PersistableCommand = {
     outputTokens: number;
     costUsdMicros: number;
   };
-  providerRequestPolicy?: {
-    role: "planner" | "reviewer";
-    promptArtifactId: string;
-    promptContentHash: string;
-    outputSchemaArtifactId: string;
-    outputSchemaContentHash: string;
-    maxOutputTokens: number;
-    timeoutMs: number;
-    reasoning: string | null;
-    providerStorage: "minimize";
-  };
+  providerRequestPolicy?: ProviderRequestPolicy;
   payload: object;
 };
 

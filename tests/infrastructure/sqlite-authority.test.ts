@@ -207,6 +207,9 @@ function providerTransitionResult(
       costUsdMicros: 100,
     },
     providerRequestPolicy: {
+      configurationArtifactId: "artifact_configuration",
+      configurationContentHash: executionConfigurationHash,
+      policyHash: "a".repeat(64),
       role: "planner" as const,
       promptArtifactId: "artifact_prompt",
       promptContentHash: promptHash,

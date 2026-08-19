@@ -521,6 +521,16 @@ function reviewAcceptedInput(blockingFindingIds: string[]): ReviewAccepted {
     nextCommandTimeoutMs: 120_000,
     nextCommandReasoning: "high",
     nextCommandRequestPolicyResolved: true,
+    remediationPromptArtifact: {
+      artifactId: "artifact_remediation_prompt_01JTEST",
+      contentHash: "a".repeat(64),
+      verified: true,
+    },
+    remediationSchemaArtifact: {
+      artifactId: "artifact_remediation_schema_01JTEST",
+      contentHash: "b".repeat(64),
+      verified: true,
+    },
     availableBudget: {
       calls: 2,
       inputTokens: 100_000,

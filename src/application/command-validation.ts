@@ -477,6 +477,9 @@ function providerRequestPolicyIsValid(command: PersistableCommand): boolean {
   return (
     policy !== undefined &&
     hasExactKeys(policy, [
+      "configurationArtifactId",
+      "configurationContentHash",
+      "policyHash",
       "role",
       "promptArtifactId",
       "promptContentHash",
@@ -487,6 +490,9 @@ function providerRequestPolicyIsValid(command: PersistableCommand): boolean {
       "reasoning",
       "providerStorage",
     ]) &&
+    policy.configurationArtifactId.length > 0 &&
+    /^[a-f0-9]{64}$/u.test(policy.configurationContentHash) &&
+    policy.policyHash === command.policyHash &&
     ["planner", "reviewer"].includes(policy.role) &&
     policy.promptArtifactId.length > 0 &&
     /^[a-f0-9]{64}$/u.test(policy.promptContentHash) &&

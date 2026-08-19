@@ -56,6 +56,8 @@ export class SqlitePreparedRequestRegistration {
       const row = database
         .prepare(
           `SELECT c.run_id, c.command_key, c.specification_json,
+                  r.configuration_artifact_id,
+                  cfg.content_hash AS configuration_content_hash,
                   a.status AS attempt_status, a.correlation_id,
                   l.command_id AS lease_command_id,
                   l.attempt_id AS lease_attempt_id, l.owner_process,
@@ -66,6 +68,8 @@ export class SqlitePreparedRequestRegistration {
                       AND json_extract(e.payload_json, '$.attemptId') = a.attempt_id
                     ORDER BY e.sequence DESC LIMIT 1) AS attempt_kind
              FROM logical_commands c
+             JOIN runs r ON r.run_id = c.run_id
+             JOIN artifacts cfg ON cfg.artifact_id = r.configuration_artifact_id
              JOIN command_attempts a ON a.command_id = c.command_id
              LEFT JOIN mutation_lease l ON l.singleton = 1
             WHERE c.command_id = ? AND a.attempt_id = ?`,
@@ -73,6 +77,8 @@ export class SqlitePreparedRequestRegistration {
         .get(input.attempt.commandId, input.attempt.attemptId) as
         | {
             run_id: string;
+            configuration_artifact_id: string;
+            configuration_content_hash: string;
             command_key: string;
             specification_json: string;
             attempt_status: string;
@@ -100,6 +106,11 @@ export class SqlitePreparedRequestRegistration {
         row.owner_process !== input.attempt.lease.ownerProcess ||
         command.provider !== input.providerRequest.provider ||
         command.modelId !== input.providerRequest.modelId ||
+        requestPolicy.configurationArtifactId !==
+          row.configuration_artifact_id ||
+        requestPolicy.configurationContentHash !==
+          row.configuration_content_hash ||
+        requestPolicy.policyHash !== command.policyHash ||
         row.attempt_kind === "schema_repair" ||
         requestPolicy.role !== input.providerRequest.role ||
         requestPolicy.maxOutputTokens !==
