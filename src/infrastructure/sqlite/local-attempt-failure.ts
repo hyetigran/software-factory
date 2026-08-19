@@ -65,9 +65,7 @@ export class SqliteLocalAttemptFailure {
              completed_at = ? WHERE attempt_id = ?`,
         )
         .run(
-          request.failureKind === "integrity"
-            ? "provider_error"
-            : "invalid_output",
+          request.failureKind === "integrity" ? "integrity" : "invalid_output",
           completedAt,
           request.attemptId,
         );

@@ -127,19 +127,23 @@ describe("factory executable", () => {
             display_id: "REQ-1",
             statement: "Build it safely.",
             status: "active",
-            source_ranges: [
-              {
-                start_byte: 0,
-                end_byte: Buffer.byteLength(
-                  "# Requirements\n\nBuild it safely.\n",
-                ),
-              },
-            ],
+            source_ranges: [{ start_byte: 0, end_byte: 10 }],
             lineage_roots: ["requirement_1"],
             change_kind: "original",
           },
         ],
-        source_exclusions: [],
+        source_exclusions: [
+          {
+            exclusion_id: "exclusion_1",
+            source_range: {
+              start_byte: 10,
+              end_byte: Buffer.byteLength(
+                "# Requirements\n\nBuild it safely.\n",
+              ),
+            },
+            reason: "Non-requirement heading",
+          },
+        ],
       }),
     );
     const submitLines: string[] = [];
@@ -174,6 +178,21 @@ describe("factory executable", () => {
       },
     });
     expect(submitted.data.ledgerArtifactId).toMatch(/^ledger_/u);
+
+    const rejectedLines: string[] = [];
+    await expect(
+      runCliAsync(
+        ["execute", "next", started.data.runId, "--json"],
+        (line) => rejectedLines.push(line),
+        operations,
+        projectRoot,
+      ),
+    ).resolves.toBe(CliExit.conflict);
+    expect(JSON.parse(rejectedLines[0] ?? "null")).toMatchObject({
+      ok: false,
+      command: "execute next",
+      error: { code: "CONFLICT" },
+    });
 
     const exclusionLines: string[] = [];
     await expect(

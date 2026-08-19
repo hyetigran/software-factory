@@ -29,6 +29,13 @@ export interface LocalCommandPort extends CommandExecutionPort {
 
 type RegisteredArtifact = { artifactId: string; contentHash: string };
 
+class LocalValidationRejected extends Error {
+  constructor(readonly cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "LocalValidationRejected";
+  }
+}
+
 export async function executeNextLocalCommand(input: {
   execution: LocalCommandPort;
   staging: ArtifactStagingPort;
@@ -57,18 +64,6 @@ export async function executeNextLocalCommand(input: {
       continue;
     if (command.commandType !== "validate_ledger") continue;
     const payload = command.payload as Record<string, unknown>;
-    const sourceIds = command.inputArtifactHashes.map((contentHash) => {
-      const matches = input.registeredArtifacts.filter(
-        (artifact) => artifact.contentHash === contentHash,
-      );
-      const payloadIds = [payload.ledgerArtifactId, payload.sourceArtifactId];
-      const artifact = matches.find(({ artifactId }) =>
-        payloadIds.includes(artifactId),
-      );
-      if (artifact === undefined)
-        throw new TypeError("Local command input artifact identity is invalid");
-      return artifact.artifactId;
-    });
     const attemptId = `attempt_${randomUUID().replaceAll("-", "")}`;
     const correlationId = `correlation_${randomUUID().replaceAll("-", "")}`;
     const begun = await beginEligibleCommandAttempt(input.execution, {
@@ -83,35 +78,57 @@ export async function executeNextLocalCommand(input: {
     });
     if (begun.status === "already_succeeded") continue;
     try {
+      const sourceIds = command.inputArtifactHashes.map((contentHash) => {
+        const matches = input.registeredArtifacts.filter(
+          (artifact) => artifact.contentHash === contentHash,
+        );
+        const payloadIds = [payload.ledgerArtifactId, payload.sourceArtifactId];
+        const artifact = matches.find(({ artifactId }) =>
+          payloadIds.includes(artifactId),
+        );
+        if (artifact === undefined)
+          throw new TypeError(
+            "Local command input artifact identity is invalid",
+          );
+        return artifact.artifactId;
+      });
       const [ledgerHash, sourceHash] = command.inputArtifactHashes;
       if (ledgerHash === undefined || sourceHash === undefined)
         throw new TypeError("Ledger validation command inputs are incomplete");
-      const report = validateLedger({
-        ledgerBytes: await input.readVerified(ledgerHash),
-        ledgerSchema: JSON.parse(
-          Buffer.from(
-            await input.readVerified(
-              input.configuration.artifactHashes.requirementsSchema,
-            ),
-          ).toString("utf8"),
-        ) as unknown,
-        sourceBytes: await input.readVerified(sourceHash),
-        expectedSourceArtifactId: String(payload.sourceArtifactId),
-        approvedExclusions: (
-          (payload.sourceExclusions as
-            Array<Record<string, unknown>> | undefined) ?? []
-        ).map((exclusion) => {
-          const range = exclusion.sourceRange as Record<string, unknown>;
-          return {
-            exclusionId: String(exclusion.exclusionId),
-            sourceRange: {
-              startByte: Number(range.startOffset),
-              endByte: Number(range.endOffset),
-            },
-            reason: String(exclusion.reason),
-          };
-        }),
-      });
+      const ledgerBytes = await input.readVerified(ledgerHash);
+      const sourceBytes = await input.readVerified(sourceHash);
+      const ledgerSchema = JSON.parse(
+        Buffer.from(
+          await input.readVerified(
+            input.configuration.artifactHashes.requirementsSchema,
+          ),
+        ).toString("utf8"),
+      ) as unknown;
+      let report;
+      try {
+        report = validateLedger({
+          ledgerBytes,
+          ledgerSchema,
+          sourceBytes,
+          expectedSourceArtifactId: String(payload.sourceArtifactId),
+          approvedExclusions: (
+            (payload.sourceExclusions as
+              Array<Record<string, unknown>> | undefined) ?? []
+          ).map((exclusion) => {
+            const range = exclusion.sourceRange as Record<string, unknown>;
+            return {
+              exclusionId: String(exclusion.exclusionId),
+              sourceRange: {
+                startByte: Number(range.startOffset),
+                endByte: Number(range.endOffset),
+              },
+              reason: String(exclusion.reason),
+            };
+          }),
+        });
+      } catch (error) {
+        throw new LocalValidationRejected(error);
+      }
       const result = await input.staging.stageArtifact(
         Buffer.from(canonicalJson(report)),
         {
@@ -205,6 +222,7 @@ export async function executeNextLocalCommand(input: {
         resultArtifactId: result.artifactId,
       };
     } catch (error) {
+      const rejected = error instanceof LocalValidationRejected;
       await input.execution.failLocalAttempt({
         runId: input.runId,
         commandId: command.commandId,
@@ -212,11 +230,13 @@ export async function executeNextLocalCommand(input: {
         ownerProcess: input.ownerProcess,
         correlationId,
         failureMessage: error instanceof Error ? error.message : String(error),
-        failureKind: "integrity",
+        failureKind: rejected ? "invalid_output" : "integrity",
       });
       throw new WorkspaceOperationError(
-        "INTEGRITY_ERROR",
-        "Authoritative local command input is missing or invalid",
+        rejected ? "CONFLICT" : "INTEGRITY_ERROR",
+        rejected
+          ? "Ledger validation rejected the current input"
+          : "Authoritative local command input is missing or invalid",
         { cause: error instanceof Error ? error.message : String(error) },
       );
     }

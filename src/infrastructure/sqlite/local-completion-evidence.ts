@@ -7,6 +7,7 @@ import type {
 import type { CompleteAttemptRequest } from "../../application/execution-port.js";
 import type { StagedArtifactRegistration } from "../../application/artifact-port.js";
 import { AuthorityIntegrityError } from "./errors.js";
+import { canonicalJson } from "../../domain/canonical-json.js";
 
 export class LocalCompletionEvidence {
   constructor(
@@ -84,9 +85,6 @@ export class LocalCompletionEvidence {
       result: PersistableTransition<object>;
     },
   ): void {
-    const facts = domain.result.auditFacts.filter(
-      ({ type }) => type === "ledger_validation_completed",
-    );
     const state = domain.result.nextState as Record<string, unknown>;
     const ledger = state.currentLedger as Record<string, unknown> | undefined;
     const validation = ledger?.validation as
@@ -94,11 +92,66 @@ export class LocalCompletionEvidence {
     const report = JSON.parse(
       this.readStagedArtifactBytes(request.resultArtifact).toString("utf8"),
     ) as Record<string, unknown>;
-    const factPayload = facts[0]?.payload as
-      Record<string, unknown> | undefined;
+    const currentRow = this.database
+      .prepare("SELECT state_json FROM run_state_snapshots WHERE run_id = ?")
+      .get(request.runId) as { state_json: string } | undefined;
+    if (currentRow === undefined)
+      throw new AuthorityIntegrityError(
+        "Local completion run state is missing",
+      );
+    const currentState = JSON.parse(currentRow.state_json) as Record<
+      string,
+      unknown
+    >;
+    const currentLedger = currentState.currentLedger as Record<string, unknown>;
+    const uncoveredRangeCount = Array.isArray(report.uncoveredRanges)
+      ? report.uncoveredRanges.length
+      : -1;
+    const expectedState = {
+      ...currentState,
+      stateVersion: domain.expectedStateVersion + 1,
+      currentLedger: {
+        ...currentLedger,
+        validationStatus: "validated",
+        validation: {
+          coverageReportArtifactId: request.resultArtifact.artifactId,
+          coverageReportContentHash: request.resultArtifact.contentHash,
+          validatedStateVersion: domain.expectedStateVersion + 1,
+          coverageComplete: report.coverageValid,
+        },
+      },
+    };
+    const expectedFact = {
+      type: "ledger_validation_completed",
+      actor: {
+        kind: "system",
+        component: "deterministic-local-executor",
+        version: "0.0.0",
+      },
+      reason: "Record deterministic ledger validation",
+      evidence: [
+        {
+          kind: "artifact",
+          artifactId: request.resultArtifact.artifactId,
+          contentHash: request.resultArtifact.contentHash,
+        },
+      ],
+      payload: {
+        commandId: request.commandId,
+        ledgerVersionId: currentLedger.versionId,
+        schemaValid: true,
+        identityValid: true,
+        lineageValid: true,
+        coverageComplete: report.coverageValid,
+        uncoveredRangeCount,
+      },
+    };
     if (
-      facts.length !== 1 ||
-      factPayload?.commandId !== request.commandId ||
+      domain.result.commands.length !== 0 ||
+      domain.result.auditFacts.length !== 1 ||
+      canonicalJson(domain.result.nextState) !== canonicalJson(expectedState) ||
+      canonicalJson(domain.result.auditFacts[0]) !==
+        canonicalJson(expectedFact) ||
       validation?.coverageReportArtifactId !==
         request.resultArtifact.artifactId ||
       validation.coverageReportContentHash !==
@@ -106,12 +159,12 @@ export class LocalCompletionEvidence {
       Number(state.stateVersion) !== domain.expectedStateVersion + 1 ||
       report.ledgerContentHash !== ledger?.contentHash ||
       report.sourceContentHash !== state.sourceContentHash ||
+      report.validator !== "deterministic-ledger-validator-v1" ||
+      report.schemaValid !== true ||
+      report.identityValid !== true ||
+      report.lineageValid !== true ||
       report.coverageValid !== validation.coverageComplete ||
-      factPayload.coverageComplete !== report.coverageValid ||
-      factPayload.uncoveredRangeCount !==
-        (Array.isArray(report.uncoveredRanges)
-          ? report.uncoveredRanges.length
-          : -1)
+      uncoveredRangeCount < 0
     )
       throw new TypeError(
         "Ledger validation domain outcome does not match the completed attempt",
