@@ -104,6 +104,7 @@ No adapter may make workflow decisions or directly update domain tables.
 
 - A retry continues the same logical command after a retryable failure or unknown outcome.
 - A schema repair continues the same logical command and consumes only repair and provider budgets.
+  Before the repair attempt starts, its immutable overlay binds the configured schema-repair prompt, the original command's output schema, and the immediately preceding schema-invalid response. `command_attempt_started` records that overlay; provider-request registration must reproduce it exactly while preserving the original logical command key.
 - A strict replay creates a physical attempt sourced from a matching local recording and performs no network call.
 - A rerun is an explicit human-authorized fresh call. If a successful logical result already exists, the new result is evidence only unless a new child run or new logical command expects it.
 - Normal execution with an existing accepted result is a no-op.

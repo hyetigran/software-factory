@@ -90,6 +90,51 @@ function configuredRequestPolicy(
   return null;
 }
 
+type SchemaRepairOverlay = {
+  promptArtifactId: string;
+  promptContentHash: string;
+  outputSchemaArtifactId: string;
+  outputSchemaContentHash: string;
+  invalidResponseArtifactId: string;
+  invalidResponseContentHash: string;
+};
+
+type EffectiveProviderRequestPolicy = Omit<
+  NonNullable<PersistableCommand["providerRequestPolicy"]>,
+  "role"
+> & { role: ProviderRequest["role"] };
+
+function parseSchemaRepairOverlay(
+  value: string | null,
+): SchemaRepairOverlay | null {
+  if (value === null) return null;
+  const parsed: unknown = JSON.parse(value);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new AuthorityIntegrityError("Schema repair audit policy is invalid");
+  }
+  const overlay = parsed as Record<string, unknown>;
+  const keys = [
+    "promptArtifactId",
+    "promptContentHash",
+    "outputSchemaArtifactId",
+    "outputSchemaContentHash",
+    "invalidResponseArtifactId",
+    "invalidResponseContentHash",
+  ];
+  if (
+    Object.keys(overlay).sort().join(",") !== keys.sort().join(",") ||
+    !keys.every((key) => typeof overlay[key] === "string") ||
+    ![
+      overlay.promptContentHash,
+      overlay.outputSchemaContentHash,
+      overlay.invalidResponseContentHash,
+    ].every((hash) => /^[a-f0-9]{64}$/u.test(hash as string))
+  ) {
+    throw new AuthorityIntegrityError("Schema repair audit policy is invalid");
+  }
+  return overlay as SchemaRepairOverlay;
+}
+
 export class SqlitePreparedRequestRegistration {
   constructor(private readonly dependencies: Dependencies) {}
 
@@ -122,7 +167,13 @@ export class SqlitePreparedRequestRegistration {
                     WHERE e.run_id = c.run_id
                       AND e.fact_type = 'command_attempt_started'
                       AND json_extract(e.payload_json, '$.attemptId') = a.attempt_id
-                    ORDER BY e.sequence DESC LIMIT 1) AS attempt_kind
+                    ORDER BY e.sequence DESC LIMIT 1) AS attempt_kind,
+                  (SELECT json_extract(e.payload_json, '$.schemaRepair')
+                     FROM audit_entries e
+                    WHERE e.run_id = c.run_id
+                      AND e.fact_type = 'command_attempt_started'
+                      AND json_extract(e.payload_json, '$.attemptId') = a.attempt_id
+                    ORDER BY e.sequence DESC LIMIT 1) AS schema_repair_json
              FROM logical_commands c
              JOIN runs r ON r.run_id = c.run_id
              JOIN artifacts cfg ON cfg.artifact_id = r.configuration_artifact_id
@@ -143,6 +194,7 @@ export class SqlitePreparedRequestRegistration {
             lease_attempt_id: string | null;
             owner_process: string | null;
             attempt_kind: string | null;
+            schema_repair_json: string | null;
           }
         | undefined;
       const command = row && parseCommand(row.specification_json);
@@ -159,11 +211,43 @@ export class SqlitePreparedRequestRegistration {
         command === undefined || configuration === undefined
           ? null
           : configuredRequestPolicy(configuration, command.commandType);
+      const repairOverlay =
+        row === undefined
+          ? null
+          : parseSchemaRepairOverlay(row.schema_repair_json);
+      const effectivePolicy =
+        row?.attempt_kind === "schema_repair" &&
+        requestPolicy !== undefined &&
+        configuration !== undefined &&
+        repairOverlay !== null
+          ? {
+              ...requestPolicy,
+              role: "schema_repair" as const,
+              promptArtifactId: repairOverlay.promptArtifactId,
+              promptContentHash: repairOverlay.promptContentHash,
+              outputSchemaArtifactId: repairOverlay.outputSchemaArtifactId,
+              outputSchemaContentHash: repairOverlay.outputSchemaContentHash,
+              timeoutMs:
+                configuration.providerRequestSettings.schemaRepair.timeoutMs,
+              reasoning:
+                configuration.providerRequestSettings.schemaRepair.reasoning,
+              providerStorage: configuration.providerStorage,
+            }
+          : requestPolicy;
+      const expectedConfiguredPolicy =
+        row?.attempt_kind === "schema_repair" && configuration !== undefined
+          ? {
+              promptHash: configuration.artifactHashes.schemaRepairPrompt,
+              schemaHash: requestPolicy?.outputSchemaContentHash ?? "",
+              ...configuration.providerRequestSettings.schemaRepair,
+            }
+          : configuredPolicy;
       if (
         row === undefined ||
         command === undefined ||
         !commandIsValid(command) ||
         requestPolicy === undefined ||
+        effectivePolicy === undefined ||
         configuration === undefined ||
         row.run_id !== input.attempt.runId ||
         row.command_key !== input.providerRequest.logicalCommandKey ||
@@ -181,26 +265,35 @@ export class SqlitePreparedRequestRegistration {
           row.configuration_content_hash ||
         requestPolicy.policyHash !== command.policyHash ||
         configuration.policyHash !== command.policyHash ||
-        configuredPolicy === null ||
-        requestPolicy.promptContentHash !== configuredPolicy.promptHash ||
-        requestPolicy.outputSchemaContentHash !== configuredPolicy.schemaHash ||
-        requestPolicy.timeoutMs !== configuredPolicy.timeoutMs ||
-        requestPolicy.reasoning !== configuredPolicy.reasoning ||
-        requestPolicy.providerStorage !== configuration.providerStorage ||
-        row.attempt_kind === "schema_repair" ||
-        requestPolicy.role !== input.providerRequest.role ||
-        requestPolicy.maxOutputTokens !==
+        expectedConfiguredPolicy === null ||
+        effectivePolicy.promptContentHash !==
+          expectedConfiguredPolicy.promptHash ||
+        effectivePolicy.outputSchemaContentHash !==
+          expectedConfiguredPolicy.schemaHash ||
+        effectivePolicy.timeoutMs !== expectedConfiguredPolicy.timeoutMs ||
+        effectivePolicy.reasoning !== expectedConfiguredPolicy.reasoning ||
+        effectivePolicy.providerStorage !== configuration.providerStorage ||
+        effectivePolicy.role !== input.providerRequest.role ||
+        effectivePolicy.maxOutputTokens !==
           input.providerRequest.maxOutputTokens ||
-        requestPolicy.timeoutMs !== input.providerRequest.timeoutMs ||
-        requestPolicy.reasoning !== (input.providerRequest.reasoning ?? null) ||
-        requestPolicy.providerStorage !== input.providerRequest.providerStorage
+        effectivePolicy.timeoutMs !== input.providerRequest.timeoutMs ||
+        effectivePolicy.reasoning !==
+          (input.providerRequest.reasoning ?? null) ||
+        effectivePolicy.providerStorage !==
+          input.providerRequest.providerStorage
       ) {
         throw new TypeError(
           "Provider request is not bound to the active command attempt",
         );
       }
       this.assertArtifactIdentity(input, row.owner_process);
-      this.assertInputs(input.providerRequest, command, requestPolicy);
+      this.assertInputs(
+        input.providerRequest,
+        command,
+        effectivePolicy,
+        repairOverlay,
+        requestPolicy.promptContentHash,
+      );
       const existing = database
         .prepare(
           `SELECT artifact_id FROM artifacts
@@ -264,7 +357,9 @@ export class SqlitePreparedRequestRegistration {
   private assertInputs(
     request: ProviderRequest,
     command: PersistableCommand,
-    policy: NonNullable<PersistableCommand["providerRequestPolicy"]>,
+    policy: EffectiveProviderRequestPolicy,
+    repairOverlay: SchemaRepairOverlay | null,
+    originalPromptHash: string,
   ): void {
     if (
       createHash("sha256").update(request.systemPrompt).digest("hex") !==
@@ -294,7 +389,19 @@ export class SqlitePreparedRequestRegistration {
     if (
       new Set(hashes).size !== hashes.length ||
       canonicalJson([...hashes].sort()) !==
-        canonicalJson([...command.inputArtifactHashes].sort())
+        canonicalJson(
+          [
+            ...command.inputArtifactHashes.filter(
+              (hash) => repairOverlay === null || hash !== originalPromptHash,
+            ),
+            ...(repairOverlay === null
+              ? []
+              : [
+                  repairOverlay.promptContentHash,
+                  repairOverlay.invalidResponseContentHash,
+                ]),
+          ].sort(),
+        )
     ) {
       throw new TypeError("Provider request inputs do not match command");
     }

@@ -56,7 +56,7 @@ export type ResolvedConfigurationSnapshot = {
   reviewerAssignment: ProviderModelAssignment;
   artifactHashes: ResolvedArtifactPins;
   providerRequestSettings: ResolvedProviderRequestSettings;
-  providerStorage: "minimize" | "required_feature_opt_in";
+  providerStorage: "minimize";
   hardCeilings: HardCeilings;
   credentialReferences: Record<string, CredentialReference>;
 };
@@ -163,8 +163,7 @@ export function resolvedConfigurationIsValid(
           (typeof settings.reasoning === "string" &&
             settings.reasoning.trim().length > 0)),
     ) &&
-    (value.providerStorage === "minimize" ||
-      value.providerStorage === "required_feature_opt_in") &&
+    value.providerStorage === "minimize" &&
     hasExactKeys(value.hardCeilings, [
       "calls",
       "physicalAttempts",

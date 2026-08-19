@@ -193,6 +193,14 @@ export type BeginAttemptRequest = {
     | "human_rerun";
   humanAuthorizationId?: string;
   strictReplay?: StrictReplayEvidence;
+  schemaRepair?: {
+    promptArtifactId: string;
+    promptContentHash: string;
+    outputSchemaArtifactId: string;
+    outputSchemaContentHash: string;
+    invalidResponseArtifactId: string;
+    invalidResponseContentHash: string;
+  };
 };
 
 export type CompleteAttemptRequest = {
@@ -222,6 +230,20 @@ export interface CommandExecutionPort {
   ): Promise<CompletedCommandAttempt>;
 }
 
+function schemaRepairPolicyIsValid(
+  repair: NonNullable<BeginAttemptRequest["schemaRepair"]>,
+): boolean {
+  const hash = /^[a-f0-9]{64}$/u;
+  return (
+    repair.promptArtifactId.trim().length > 0 &&
+    hash.test(repair.promptContentHash) &&
+    repair.outputSchemaArtifactId.trim().length > 0 &&
+    hash.test(repair.outputSchemaContentHash) &&
+    repair.invalidResponseArtifactId.trim().length > 0 &&
+    hash.test(repair.invalidResponseContentHash)
+  );
+}
+
 export function beginEligibleCommandAttempt(
   execution: CommandExecutionPort,
   request: BeginAttemptRequest,
@@ -233,6 +255,10 @@ export function beginEligibleCommandAttempt(
       request.policy.configurationArtifactId ||
     request.attemptId.trim().length === 0 ||
     request.correlationId.trim().length === 0 ||
+    (request.attemptKind === "schema_repair") !==
+      (request.schemaRepair !== undefined) ||
+    (request.schemaRepair !== undefined &&
+      !schemaRepairPolicyIsValid(request.schemaRepair)) ||
     request.ownerProcess.trim().length === 0 ||
     (request.attemptKind === "human_rerun" &&
       (request.humanAuthorizationId?.trim().length ?? 0) === 0) ||

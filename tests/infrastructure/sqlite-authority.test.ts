@@ -64,7 +64,7 @@ const executionConfiguration: ResolvedConfigurationSnapshot = {
     reviewerPrompt: "8".repeat(64),
     remediationPrompt: "a".repeat(64),
     remediationSchema: "b".repeat(64),
-    schemaRepairPrompt: "c".repeat(64),
+    schemaRepairPrompt: createHash("sha256").update("repair").digest("hex"),
     reviewPolicy: "9".repeat(64),
   },
   providerRequestSettings: {
@@ -366,6 +366,117 @@ describe("SQLite authority", () => {
         }),
       ).rejects.toThrow("not bound to the active command attempt");
     }
+
+    const repairPrompt = await store.stageArtifact(Buffer.from("repair"), {
+      artifactId: "artifact_repair_prompt",
+      kind: "other",
+      mediaType: "text/plain",
+      createdBy: "system:test",
+      provenance: {
+        method: "human_submitted",
+      },
+    });
+    const invalidResponse = await store.stageArtifact(Buffer.from("invalid"), {
+      artifactId: "artifact_invalid_response",
+      kind: "provider_response",
+      mediaType: "application/json",
+      createdBy: "pid:provider",
+      provenance: {
+        method: "provider_generated",
+        sourceArtifactIds: ["artifact_source"],
+        commandId: "command_provider",
+        attemptId: "attempt_provider_1",
+      },
+    });
+    await authority.registerArtifact(repairPrompt);
+    await authority.registerArtifact(invalidResponse);
+    const database = (authority as unknown as { database: DatabaseSync })
+      .database;
+    database
+      .prepare(
+        `UPDATE command_attempts
+            SET status = 'failed', failure_class = 'schema_invalid',
+                result_artifact_id = ?
+          WHERE attempt_id = ?`,
+      )
+      .run(invalidResponse.artifactId, attempt.attemptId);
+    database
+      .prepare(
+        "UPDATE logical_commands SET status = 'failed' WHERE command_id = ?",
+      )
+      .run(attempt.commandId);
+    database.prepare("DELETE FROM mutation_lease WHERE singleton = 1").run();
+
+    const repairAttempt = await authority.beginAttempt({
+      runId: "run_provider_request",
+      commandId: "command_provider",
+      attemptId: "attempt_provider_2",
+      correlationId: "correlation_provider_1",
+      ownerProcess: "pid:provider",
+      configurationArtifactId: "artifact_configuration",
+      policy,
+      attemptKind: "schema_repair",
+      schemaRepair: {
+        promptArtifactId: repairPrompt.artifactId,
+        promptContentHash: repairPrompt.contentHash,
+        outputSchemaArtifactId: "artifact_schema",
+        outputSchemaContentHash: providerRequest.outputSchemaContentHash,
+        invalidResponseArtifactId: invalidResponse.artifactId,
+        invalidResponseContentHash: invalidResponse.contentHash,
+      },
+    });
+    expect(repairAttempt.status).toBe("started");
+    if (repairAttempt.status !== "started") {
+      throw new Error("repair attempt must start");
+    }
+    const repairRequest = {
+      ...providerRequest,
+      role: "schema_repair" as const,
+      systemPromptArtifactId: repairPrompt.artifactId,
+      systemPromptContentHash: repairPrompt.contentHash,
+      systemPrompt: "repair",
+      inputArtifacts: [
+        ...providerRequest.inputArtifacts,
+        {
+          artifactId: invalidResponse.artifactId,
+          kind: "invalid_response",
+          content: "invalid",
+          contentHash: invalidResponse.contentHash,
+        },
+      ],
+      timeoutMs:
+        executionConfiguration.providerRequestSettings.schemaRepair.timeoutMs,
+    };
+    const repairRequestArtifact = await store.stageArtifact(
+      Buffer.from('{"request":"repair"}'),
+      {
+        artifactId: "artifact_provider_repair_request",
+        kind: "provider_request",
+        mediaType: "application/json",
+        schemaId: "provider-request-recording.v1",
+        createdBy: "pid:provider",
+        provenance: {
+          method: "application_generated",
+          purpose: "provider_request",
+          sourceArtifactIds: [
+            repairPrompt.artifactId,
+            "artifact_schema",
+            "artifact_source",
+            invalidResponse.artifactId,
+          ],
+          commandId: "command_provider",
+          attemptId: repairAttempt.attemptId,
+        },
+      },
+    );
+    await expect(
+      authority.registerPreparedProviderRequest({
+        attempt: repairAttempt,
+        providerRequest: repairRequest,
+        normalizedRequestHash: repairRequestArtifact.contentHash,
+        artifact: repairRequestArtifact,
+      }),
+    ).resolves.toBe("claimed");
   });
 
   it("atomically reserves budget, acquires the lease, and starts one attempt", async () => {

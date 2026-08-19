@@ -639,9 +639,11 @@ export class SqliteAuthority
       };
       const lastAttempt = this.database
         .prepare(
-          `SELECT attempt_id, status, failure_class, correlation_id
-             FROM command_attempts
-            WHERE command_id = ? ORDER BY attempt_number DESC LIMIT 1`,
+          `SELECT a.attempt_id, a.status, a.failure_class, a.correlation_id,
+                  a.result_artifact_id, r.content_hash AS result_content_hash
+             FROM command_attempts a
+             LEFT JOIN artifacts r ON r.artifact_id = a.result_artifact_id
+            WHERE a.command_id = ? ORDER BY a.attempt_number DESC LIMIT 1`,
         )
         .get(request.commandId) as
         | {
@@ -649,6 +651,8 @@ export class SqliteAuthority
             status: string;
             failure_class: string | null;
             correlation_id: string;
+            result_artifact_id: string | null;
+            result_content_hash: string | null;
           }
         | undefined;
       const priorAttempts = attemptCounts.command_attempts ?? 0;
@@ -735,6 +739,39 @@ export class SqliteAuthority
           commandId: request.commandId,
           acceptedAttemptId: decision.noOpAcceptedAttemptId,
         };
+      }
+      const repair = request.schemaRepair;
+      if (request.attemptKind === "schema_repair") {
+        const originalPolicy = command.providerRequestPolicy;
+        const registeredRepairPrompt =
+          repair === undefined
+            ? undefined
+            : (this.database
+                .prepare(
+                  "SELECT content_hash FROM artifacts WHERE artifact_id = ?",
+                )
+                .get(repair.promptArtifactId) as
+                { content_hash: string } | undefined);
+        if (
+          repair === undefined ||
+          originalPolicy === undefined ||
+          repair.promptContentHash !==
+            request.policy.configuration.artifactHashes.schemaRepairPrompt ||
+          registeredRepairPrompt?.content_hash !== repair.promptContentHash ||
+          repair.outputSchemaArtifactId !==
+            originalPolicy.outputSchemaArtifactId ||
+          repair.outputSchemaContentHash !==
+            originalPolicy.outputSchemaContentHash ||
+          repair.invalidResponseArtifactId !==
+            lastAttempt?.result_artifact_id ||
+          repair.invalidResponseContentHash !== lastAttempt?.result_content_hash
+        ) {
+          throw new TypeError(
+            "Schema repair policy is not bound to the failed attempt",
+          );
+        }
+      } else if (repair !== undefined) {
+        throw new TypeError("Schema repair policy requires a repair attempt");
       }
       const usage = this.database
         .prepare(
@@ -858,6 +895,7 @@ export class SqliteAuthority
               humanAuthorizationId: request.humanAuthorizationId ?? null,
               recordingManifestArtifactId:
                 request.strictReplay?.recordingManifestArtifactId ?? null,
+              schemaRepair: repair ?? null,
             },
           },
           {

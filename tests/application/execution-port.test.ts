@@ -55,6 +55,32 @@ const configuration: ResolvedConfigurationSnapshot = {
 };
 
 describe("execution policy and attempt boundary", () => {
+  it("requires a complete repair overlay for schema-repair attempts", () => {
+    const policy = ExecutionPolicy.fromConfiguration({
+      configuration,
+      runId: "run_1",
+      configurationArtifactId: "artifact_configuration",
+      expectedContentHash: createHash("sha256")
+        .update(canonicalJson(configuration))
+        .digest("hex"),
+    });
+    expect(() =>
+      beginEligibleCommandAttempt(
+        { beginAttempt: vi.fn(), completeAttempt: vi.fn() },
+        {
+          runId: "run_1",
+          commandId: "command_1",
+          attemptId: "attempt_2",
+          correlationId: "correlation_1",
+          ownerProcess: "pid:1",
+          configurationArtifactId: "artifact_configuration",
+          policy,
+          attemptKind: "schema_repair",
+        },
+      ),
+    ).toThrow("execution policy");
+  });
+
   it("binds hard ceilings to the immutable resolved configuration", async () => {
     const expectedContentHash = createHash("sha256")
       .update(canonicalJson(configuration))
