@@ -580,6 +580,7 @@ function providerOutcomeFailedInput(): ProviderOutcomeFailed {
     failedCommandId: "command_generate_plan_01JTEST",
     failedPurposeId: "purpose_plan_01JTEST",
     retryRepairExhausted: true,
+    failureKind: "schema_invalid",
     failureClassification: "invalid_output",
     terminalPolicyDecision: "halt",
     terminalPolicyDecisionArtifact: {
@@ -3134,6 +3135,7 @@ describe("transition", () => {
     const input: PinnedModelUnavailable = {
       ...providerOutcomeFailedInput(),
       type: "PinnedModelUnavailable",
+      failureKind: "model_unavailable",
       unavailableModelId: configuredPlannerAssignment.modelId,
       providerConfirmedUnavailable: true,
       failureClassification: "provider_error",
@@ -3156,6 +3158,7 @@ describe("transition", () => {
     const input: PinnedModelUnavailable = {
       ...providerOutcomeFailedInput(),
       type: "PinnedModelUnavailable",
+      failureKind: "model_unavailable",
       expectedStateVersion: 6,
       failedCommandId: "command_baseline_review_01JTEST",
       failedPurposeId:
@@ -3207,6 +3210,7 @@ describe("transition", () => {
       const input: PinnedModelUnavailable = {
         ...providerOutcomeFailedInput(),
         type: "PinnedModelUnavailable",
+        failureKind: "model_unavailable",
         expectedStateVersion: active.stateVersion,
         failedCommandId: command.commandId,
         failedPurposeId: command.purposeId,
@@ -3257,6 +3261,14 @@ describe("transition", () => {
         failedCommandId: command.commandId,
         failedPurposeId: command.purposeId,
         retryRepairExhausted: true,
+        failureKind: "refusal",
+        failureClassification: "refusal",
+        recoveryBounds: {
+          retryLimit: 2,
+          repairLimit: 1,
+          retriesUsed: 0,
+          repairsUsed: 0,
+        },
       };
 
       expect(transition(active, input, pinnedPolicy).nextState).toMatchObject({
@@ -3293,6 +3305,7 @@ describe("transition", () => {
       {
         ...providerOutcomeFailedInput(),
         retryRepairExhausted: false,
+        failureKind: "refusal",
         failureClassification: "refusal",
         recoveryBounds: {
           retryLimit: 2,

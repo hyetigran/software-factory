@@ -556,6 +556,15 @@ export type ProviderOutcomeFailed = {
   failedCommandId: string;
   failedPurposeId: string;
   retryRepairExhausted: boolean;
+  failureKind:
+    | "refusal"
+    | "truncated"
+    | "schema_invalid"
+    | "transport_retryable"
+    | "transport_nonretryable"
+    | "unknown_outcome"
+    | "model_unavailable"
+    | "model_mismatch";
   failureClassification:
     "refusal" | "invalid_output" | "transport" | "provider_error" | "budget";
   terminalPolicyDecision: "halt";
@@ -3288,10 +3297,13 @@ function haltAfterProviderFailure(
       bounds.retriesUsed,
       bounds.repairsUsed,
     ].every((value) => Number.isInteger(value) && value >= 0) &&
-    (previousState.state === "planning" ||
-      input.type === "PinnedModelUnavailable" ||
-      (bounds.retriesUsed >= bounds.retryLimit &&
-        bounds.repairsUsed >= bounds.repairLimit));
+    (input.type === "PinnedModelUnavailable" ||
+      (input.failureKind === "schema_invalid"
+        ? bounds.repairsUsed >= bounds.repairLimit
+        : input.failureKind === "transport_retryable" ||
+            input.failureKind === "unknown_outcome"
+          ? bounds.retriesUsed >= bounds.retryLimit
+          : true));
   const classificationValid = [
     "refusal",
     "invalid_output",

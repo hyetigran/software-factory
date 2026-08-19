@@ -624,6 +624,17 @@ export class SqliteAuthority
             output_tokens: number;
             cost_usd_micros: number;
           }>;
+          const attemptEvidence = this.database
+            .prepare(
+              `SELECT attempt_id, result_artifact_id, native_usage_artifact_id
+                 FROM command_attempts
+                WHERE command_id = ? ORDER BY attempt_number`,
+            )
+            .all(data.completion.commandId) as Array<{
+            attempt_id: string;
+            result_artifact_id: string | null;
+            native_usage_artifact_id: string | null;
+          }>;
           const usage = (attemptId: string, kind: "reservation" | "actual") => {
             const row = usageRows.find(
               ({ attempt_id, kind: storedKind }) =>
@@ -655,8 +666,21 @@ export class SqliteAuthority
                 "Terminal failure attempt accounting is incomplete",
               );
             }
+            const evidenceRow = attemptEvidence.find(
+              ({ attempt_id }) => attempt_id === attemptId,
+            );
+            if (
+              evidenceRow === undefined ||
+              evidenceRow.result_artifact_id === null
+            ) {
+              throw new AuthorityIntegrityError(
+                "Terminal failure attempt evidence is incomplete",
+              );
+            }
             return {
               attemptId,
+              outcomeArtifactId: evidenceRow.result_artifact_id,
+              nativeUsageArtifactId: evidenceRow.native_usage_artifact_id,
               reserved: usage(attemptId, "reservation"),
               actual: usage(attemptId, "actual"),
               actualKind: actualRow.kind as "actual" | "conservative_charge",
@@ -681,12 +705,12 @@ export class SqliteAuthority
                     input: terminalInput.budgetReportArtifact,
                     purpose: "terminal_budget_report" as const,
                     bytes: documents.budgetReport,
-                    sources: [
-                      data.completion.outcomeArtifact.artifactId,
-                      ...(data.completion.nativeUsageArtifact === undefined
+                    sources: attempts.flatMap((attempt) => [
+                      attempt.outcomeArtifactId,
+                      ...(attempt.nativeUsageArtifactId === null
                         ? []
-                        : [data.completion.nativeUsageArtifact.artifactId]),
-                    ],
+                        : [attempt.nativeUsageArtifactId]),
+                    ]),
                   },
                   {
                     input: terminalInput.diagnosticArtifact,
@@ -736,6 +760,7 @@ export class SqliteAuthority
               terminalInput.unavailableModelId !==
                 data.completion.execution.evidence.requestedModel) ||
             terminalInput.failedCommandId !== data.completion.commandId ||
+            terminalInput.failureKind !== completion.failureKind ||
             !terminalInput.attemptIds.includes(data.completion.attemptId) ||
             canonicalJson(terminalInput.attemptIds) !==
               canonicalJson(authoritativeAttemptIds) ||
