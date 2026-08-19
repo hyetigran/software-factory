@@ -26,6 +26,10 @@ const sectionMapContentHash = "5".repeat(64);
 const reviewerPromptContentHash = "6".repeat(64);
 const reviewSchemaContentHash = "7".repeat(64);
 const componentRegistryContentHash = "8".repeat(64);
+const configuredReviewerAssignment = {
+  provider: "anthropic" as const,
+  modelId: "claude-frontier-pinned-20260801",
+};
 
 function runStartedInput(): RunStarted {
   return {
@@ -225,17 +229,23 @@ function planGeneratedInput(): PlanGenerated {
     planPurposeId: "purpose_plan_01JTEST",
     originatingCommandId: "command_generate_plan_01JTEST",
     planVersionId: "plan_version_01JTEST",
-    planArtifactId: "artifact_plan_01JTEST",
-    planContentHash,
-    planObjectVerified: true,
+    planArtifact: {
+      artifactId: "artifact_plan_01JTEST",
+      contentHash: planContentHash,
+      verified: true,
+    },
     outputValid: true,
     sectionContinuityValid: true,
-    sectionTransitionMapArtifactId: "artifact_section_map_01JTEST",
-    sectionTransitionMapContentHash: sectionMapContentHash,
-    sectionTransitionMapVerified: true,
-    provenanceArtifactId: "artifact_plan_provenance_01JTEST",
-    provenanceContentHash: reviewContentHash,
-    provenanceVerified: true,
+    sectionTransitionMapArtifact: {
+      artifactId: "artifact_section_map_01JTEST",
+      contentHash: sectionMapContentHash,
+      verified: true,
+    },
+    provenanceArtifact: {
+      artifactId: "artifact_plan_provenance_01JTEST",
+      contentHash: reviewContentHash,
+      verified: true,
+    },
     reviewerAssignment: {
       provider: "anthropic",
       modelId: "claude-frontier-pinned-20260801",
@@ -243,18 +253,26 @@ function planGeneratedInput(): PlanGenerated {
     reviewerModelAllowed: true,
     reviewerModelIdentityPinned: true,
     reviewerAssignmentAuthorized: true,
-    reviewPolicyArtifactId: "artifact_review_policy_01JTEST",
-    reviewPolicyContentHash: policyHash,
-    reviewPolicyVerified: true,
-    reviewerPromptArtifactId: "artifact_reviewer_prompt_01JTEST",
-    reviewerPromptContentHash,
-    reviewerPromptVerified: true,
-    reviewSchemaArtifactId: "artifact_review_schema_01JTEST",
-    reviewSchemaContentHash,
-    reviewSchemaVerified: true,
-    componentRegistryArtifactId: "artifact_component_registry_01JTEST",
-    componentRegistryContentHash,
-    componentRegistryVerified: true,
+    reviewPolicyArtifact: {
+      artifactId: "artifact_review_policy_01JTEST",
+      contentHash: policyHash,
+      verified: true,
+    },
+    reviewerPromptArtifact: {
+      artifactId: "artifact_reviewer_prompt_01JTEST",
+      contentHash: reviewerPromptContentHash,
+      verified: true,
+    },
+    reviewSchemaArtifact: {
+      artifactId: "artifact_review_schema_01JTEST",
+      contentHash: reviewSchemaContentHash,
+      verified: true,
+    },
+    componentRegistryArtifact: {
+      artifactId: "artifact_component_registry_01JTEST",
+      contentHash: componentRegistryContentHash,
+      verified: true,
+    },
     reviewBudgetMaximum: {
       calls: 1,
       inputTokens: 30_000,
@@ -2049,35 +2067,138 @@ describe("transition", () => {
     ["a stale state version", { expectedStateVersion: 4 }],
     ["a different planning purpose", { planPurposeId: "purpose_other" }],
     ["a different command", { originatingCommandId: "command_other" }],
-    ["an unverified plan", { planObjectVerified: false }],
+    [
+      "an unverified plan",
+      {
+        planArtifact: { ...planGeneratedInput().planArtifact, verified: false },
+      },
+    ],
     ["invalid structured output", { outputValid: false }],
     ["invalid section continuity", { sectionContinuityValid: false }],
-    ["an unverified transition map", { sectionTransitionMapVerified: false }],
-    ["unverified provenance", { provenanceVerified: false }],
+    [
+      "an unverified transition map",
+      {
+        sectionTransitionMapArtifact: {
+          ...planGeneratedInput().sectionTransitionMapArtifact,
+          verified: false,
+        },
+      },
+    ],
+    [
+      "unverified provenance",
+      {
+        provenanceArtifact: {
+          ...planGeneratedInput().provenanceArtifact,
+          verified: false,
+        },
+      },
+    ],
     ["an unallowlisted Reviewer", { reviewerModelAllowed: false }],
     ["a floating Reviewer identity", { reviewerModelIdentityPinned: false }],
     [
       "an unauthorized Reviewer assignment",
       { reviewerAssignmentAuthorized: false },
     ],
-    ["an unverified review policy", { reviewPolicyVerified: false }],
-    ["an unverified Reviewer prompt", { reviewerPromptVerified: false }],
-    ["an unverified review schema", { reviewSchemaVerified: false }],
-    ["an unverified component registry", { componentRegistryVerified: false }],
-    ["an invalid plan hash", { planContentHash: "invalid" }],
+    [
+      "an unverified review policy",
+      {
+        reviewPolicyArtifact: {
+          ...planGeneratedInput().reviewPolicyArtifact,
+          verified: false,
+        },
+      },
+    ],
+    [
+      "an unverified Reviewer prompt",
+      {
+        reviewerPromptArtifact: {
+          ...planGeneratedInput().reviewerPromptArtifact,
+          verified: false,
+        },
+      },
+    ],
+    [
+      "an unverified review schema",
+      {
+        reviewSchemaArtifact: {
+          ...planGeneratedInput().reviewSchemaArtifact,
+          verified: false,
+        },
+      },
+    ],
+    [
+      "an unverified component registry",
+      {
+        componentRegistryArtifact: {
+          ...planGeneratedInput().componentRegistryArtifact,
+          verified: false,
+        },
+      },
+    ],
+    [
+      "an invalid plan hash",
+      {
+        planArtifact: {
+          ...planGeneratedInput().planArtifact,
+          contentHash: "invalid",
+        },
+      },
+    ],
     [
       "an invalid transition-map hash",
-      { sectionTransitionMapContentHash: "invalid" },
+      {
+        sectionTransitionMapArtifact: {
+          ...planGeneratedInput().sectionTransitionMapArtifact,
+          contentHash: "invalid",
+        },
+      },
     ],
-    ["an invalid provenance hash", { provenanceContentHash: "invalid" }],
+    [
+      "an invalid provenance hash",
+      {
+        provenanceArtifact: {
+          ...planGeneratedInput().provenanceArtifact,
+          contentHash: "invalid",
+        },
+      },
+    ],
     [
       "an invalid Reviewer-prompt hash",
-      { reviewerPromptContentHash: "invalid" },
+      {
+        reviewerPromptArtifact: {
+          ...planGeneratedInput().reviewerPromptArtifact,
+          contentHash: "invalid",
+        },
+      },
     ],
-    ["an invalid review-schema hash", { reviewSchemaContentHash: "invalid" }],
-    ["an invalid registry hash", { componentRegistryContentHash: "invalid" }],
+    [
+      "an invalid review-schema hash",
+      {
+        reviewSchemaArtifact: {
+          ...planGeneratedInput().reviewSchemaArtifact,
+          contentHash: "invalid",
+        },
+      },
+    ],
+    [
+      "an invalid registry hash",
+      {
+        componentRegistryArtifact: {
+          ...planGeneratedInput().componentRegistryArtifact,
+          contentHash: "invalid",
+        },
+      },
+    ],
     ["a missing plan version", { planVersionId: "" }],
-    ["a missing plan artifact", { planArtifactId: "" }],
+    [
+      "a missing plan artifact",
+      {
+        planArtifact: {
+          ...planGeneratedInput().planArtifact,
+          artifactId: "",
+        },
+      },
+    ],
     [
       "a missing Reviewer model",
       { reviewerAssignment: { provider: "anthropic", modelId: "" } },
@@ -2173,6 +2294,7 @@ describe("transition", () => {
     const approved = requirementsApprovedState();
     const override = transition(approved, independenceOverrideGrantedInput(), {
       policyHash,
+      reviewerAssignment: configuredReviewerAssignment,
     });
     const planning = transition(
       override.nextState,
@@ -2214,6 +2336,7 @@ describe("transition", () => {
           },
         ],
         payload: {
+          policyHash,
           normalReviewerAssignment:
             independenceOverrideGrantedInput().normalReviewerAssignment,
           overrideReviewerAssignment:
@@ -2248,7 +2371,10 @@ describe("transition", () => {
     } as IndependenceOverrideGranted;
 
     expect(() =>
-      transition(requirementsApprovedState(), input, { policyHash }),
+      transition(requirementsApprovedState(), input, {
+        policyHash,
+        reviewerAssignment: configuredReviewerAssignment,
+      }),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 
@@ -2256,14 +2382,14 @@ describe("transition", () => {
     const granted = transition(
       requirementsApprovedState(),
       independenceOverrideGrantedInput(),
-      { policyHash },
+      { policyHash, reviewerAssignment: configuredReviewerAssignment },
     );
 
     expect(() =>
       transition(
         granted.nextState,
         { ...independenceOverrideGrantedInput(), expectedStateVersion: 5 },
-        { policyHash },
+        { policyHash, reviewerAssignment: configuredReviewerAssignment },
       ),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
@@ -2272,5 +2398,37 @@ describe("transition", () => {
     expect(() =>
       transition(null, independenceOverrideGrantedInput(), { policyHash }),
     ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
+  });
+
+  it("rejects an independence override after planning has started", () => {
+    expect(() =>
+      transition(
+        planningState(),
+        {
+          ...independenceOverrideGrantedInput(),
+          expectedStateVersion: 5,
+        },
+        {
+          policyHash,
+          reviewerAssignment: configuredReviewerAssignment,
+        },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
+  });
+
+  it("rejects an independence override whose normal assignment differs from pinned policy", () => {
+    expect(() =>
+      transition(
+        requirementsApprovedState(),
+        independenceOverrideGrantedInput(),
+        {
+          policyHash,
+          reviewerAssignment: {
+            provider: "openai",
+            modelId: "different-pinned-reviewer",
+          },
+        },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 });

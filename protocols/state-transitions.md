@@ -71,7 +71,7 @@ Each accepted transition increments `state_version` exactly once and emits at le
 | any nonterminal | `WaiverGranted` | human; finding active; reason nonempty | unchanged | recompute gate | finding waived |
 | any nonterminal | `WaiverReaffirmed` | human; current evidence displayed | unchanged | recompute gate | waiver reaffirmed |
 | any nonterminal | `RelevantEvidenceChanged` | active waiver references changed evidence | unchanged | recompute gate | waiver invalidated |
-| any nonterminal | `IndependenceOverrideGranted` | human; reason nonempty; before provider dispatch | unchanged | none | independence reduced by override |
+| `requirements_approved` | `IndependenceOverrideGranted` | human; reason nonempty; normal assignment matches pinned policy; before provider dispatch | `requirements_approved` | none | independence reduced by override |
 | any nonterminal | `BudgetReduced` | new ceilings >= actual + reserved usage | unchanged | none | budget reduced |
 | any nonterminal | `CancellationRequested` | human actor | `cancelled` | attempt provider cancel; export terminal report | cancellation requested; run cancelled |
 | any nonterminal | `HardBoundReached` | applicable ceiling exhausted | `halted` | export terminal report | hard bound reached; run halted |

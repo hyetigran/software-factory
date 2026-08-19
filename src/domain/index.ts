@@ -71,7 +71,7 @@ type AdvancedStateBase = RunStateBase & {
   };
 };
 
-export type PlannerAssignment = {
+export type ProviderModelAssignment = {
   provider: "openai" | "anthropic";
   modelId: string;
 };
@@ -79,7 +79,7 @@ export type PlannerAssignment = {
 export type ActivePlanning = {
   purposeId: string;
   commandId: string;
-  plannerAssignment: PlannerAssignment;
+  plannerAssignment: ProviderModelAssignment;
 };
 
 export type CurrentPlan = {
@@ -92,7 +92,7 @@ export type CurrentPlan = {
 
 export type ActiveReview = {
   cycle: number;
-  reviewerAssignment: PlannerAssignment;
+  reviewerAssignment: ProviderModelAssignment;
   reviewPurposeId: string;
   independence:
     | { reduced: false }
@@ -103,8 +103,8 @@ export type ActiveReview = {
 };
 
 export type ReviewIndependenceOverride = {
-  normalReviewerAssignment: PlannerAssignment;
-  overrideReviewerAssignment: PlannerAssignment;
+  normalReviewerAssignment: ProviderModelAssignment;
+  overrideReviewerAssignment: ProviderModelAssignment;
   reason: string;
   evidence: Omit<ArtifactEvidenceReference, "kind">;
   actor: HumanActor;
@@ -149,6 +149,7 @@ export type RunStarted = {
 
 export type PinnedRunPolicy = {
   policyHash: string;
+  reviewerAssignment?: ProviderModelAssignment;
 };
 
 export type LedgerSubmitted = {
@@ -215,7 +216,7 @@ export type PlanningRequested = {
   runId: string;
   expectedStateVersion: number;
   planPurposeId: string;
-  plannerAssignment: PlannerAssignment;
+  plannerAssignment: ProviderModelAssignment;
   plannerModelAllowed: boolean;
   modelIdentityPinned: boolean;
   policyAccepted: boolean;
@@ -237,6 +238,12 @@ export type PlanningRequested = {
   actor: HumanActor;
 };
 
+export type VerifiedArtifactInput = {
+  artifactId: string;
+  contentHash: string;
+  verified: boolean;
+};
+
 export type PlanGenerated = {
   type: "PlanGenerated";
   runId: string;
@@ -244,33 +251,19 @@ export type PlanGenerated = {
   planPurposeId: string;
   originatingCommandId: string;
   planVersionId: string;
-  planArtifactId: string;
-  planContentHash: string;
-  planObjectVerified: boolean;
+  planArtifact: VerifiedArtifactInput;
   outputValid: boolean;
   sectionContinuityValid: boolean;
-  sectionTransitionMapArtifactId: string;
-  sectionTransitionMapContentHash: string;
-  sectionTransitionMapVerified: boolean;
-  provenanceArtifactId: string;
-  provenanceContentHash: string;
-  provenanceVerified: boolean;
-  reviewerAssignment: PlannerAssignment;
+  sectionTransitionMapArtifact: VerifiedArtifactInput;
+  provenanceArtifact: VerifiedArtifactInput;
+  reviewerAssignment: ProviderModelAssignment;
   reviewerModelAllowed: boolean;
   reviewerModelIdentityPinned: boolean;
   reviewerAssignmentAuthorized: boolean;
-  reviewPolicyArtifactId: string;
-  reviewPolicyContentHash: string;
-  reviewPolicyVerified: boolean;
-  reviewerPromptArtifactId: string;
-  reviewerPromptContentHash: string;
-  reviewerPromptVerified: boolean;
-  reviewSchemaArtifactId: string;
-  reviewSchemaContentHash: string;
-  reviewSchemaVerified: boolean;
-  componentRegistryArtifactId: string;
-  componentRegistryContentHash: string;
-  componentRegistryVerified: boolean;
+  reviewPolicyArtifact: VerifiedArtifactInput;
+  reviewerPromptArtifact: VerifiedArtifactInput;
+  reviewSchemaArtifact: VerifiedArtifactInput;
+  componentRegistryArtifact: VerifiedArtifactInput;
   reviewBudgetMaximum: BudgetReservation;
   availableBudget: BudgetReservation;
   auditChainVerified: boolean;
@@ -286,8 +279,8 @@ export type IndependenceOverrideGranted = {
   type: "IndependenceOverrideGranted";
   runId: string;
   expectedStateVersion: number;
-  normalReviewerAssignment: PlannerAssignment;
-  overrideReviewerAssignment: PlannerAssignment;
+  normalReviewerAssignment: ProviderModelAssignment;
+  overrideReviewerAssignment: ProviderModelAssignment;
   evidenceArtifactId: string;
   evidenceContentHash: string;
   evidenceVerified: boolean;
@@ -396,7 +389,7 @@ export type GeneratePlan = {
   purposeId: string;
   inputArtifactHashes: string[];
   policyHash: string;
-  provider: PlannerAssignment["provider"];
+  provider: ProviderModelAssignment["provider"];
   modelId: string;
   budgetReservation: BudgetReservation;
   payload: {
@@ -437,7 +430,7 @@ export type BaselineReview = {
   purposeId: string;
   inputArtifactHashes: string[];
   policyHash: string;
-  provider: PlannerAssignment["provider"];
+  provider: ProviderModelAssignment["provider"];
   modelId: string;
   budgetReservation: BudgetReservation;
   payload: {
@@ -560,7 +553,7 @@ export type PlanningRequestedFact = {
   evidence: ArtifactEvidenceReference[];
   payload: {
     planPurposeId: string;
-    plannerAssignment: PlannerAssignment;
+    plannerAssignment: ProviderModelAssignment;
     policyHash: string;
     budgetReservation: BudgetReservation;
   };
@@ -588,8 +581,9 @@ export type IndependenceOverrideGrantedFact = {
   reason: string;
   evidence: ArtifactEvidenceReference[];
   payload: {
-    normalReviewerAssignment: PlannerAssignment;
-    overrideReviewerAssignment: PlannerAssignment;
+    policyHash: string;
+    normalReviewerAssignment: ProviderModelAssignment;
+    overrideReviewerAssignment: ProviderModelAssignment;
     reason: string;
   };
 };
@@ -678,6 +672,16 @@ function artifactEvidence(
   contentHash: string,
 ): ArtifactEvidenceReference {
   return { kind: "artifact", artifactId, contentHash };
+}
+
+function verifiedArtifactInputIsValid(
+  artifact: VerifiedArtifactInput,
+): boolean {
+  return (
+    artifact.verified &&
+    artifact.artifactId.length > 0 &&
+    /^[a-f0-9]{64}$/.test(artifact.contentHash)
+  );
 }
 
 function commandPlannedFact(
@@ -1427,19 +1431,28 @@ function grantIndependenceOverride(
   input: IndependenceOverrideGranted,
   policy: PinnedRunPolicy,
 ): TransitionResult {
-  if (previousState === null || previousState.runId !== input.runId) {
+  if (
+    previousState === null ||
+    previousState.state !== "requirements_approved" ||
+    previousState.runId !== input.runId
+  ) {
     throw new DomainTransitionError(
       "INVALID_TRANSITION",
       "IndependenceOverrideGranted requires a matching nonterminal run",
     );
   }
 
-  const assignmentValid = (assignment: PlannerAssignment): boolean =>
+  const assignmentValid = (assignment: ProviderModelAssignment): boolean =>
     (assignment.provider === "openai" || assignment.provider === "anthropic") &&
     assignment.modelId.length > 0;
   if (
     input.expectedStateVersion !== previousState.stateVersion ||
     policy.policyHash !== previousState.policyHash ||
+    policy.reviewerAssignment === undefined ||
+    input.normalReviewerAssignment.provider !==
+      policy.reviewerAssignment.provider ||
+    input.normalReviewerAssignment.modelId !==
+      policy.reviewerAssignment.modelId ||
     previousState.reviewIndependenceOverride !== undefined ||
     !assignmentValid(input.normalReviewerAssignment) ||
     !assignmentValid(input.overrideReviewerAssignment) ||
@@ -1493,6 +1506,7 @@ function grantIndependenceOverride(
         reason: input.reason,
         evidence: [evidence],
         payload: {
+          policyHash: policy.policyHash,
           normalReviewerAssignment: input.normalReviewerAssignment,
           overrideReviewerAssignment: input.overrideReviewerAssignment,
           reason: input.reason,
@@ -1518,25 +1532,15 @@ function acceptGeneratedPlan(
     );
   }
 
-  const sha256 = /^[a-f0-9]{64}$/;
-  const artifactReferencesValid = [
-    [input.planArtifactId, input.planContentHash],
-    [
-      input.sectionTransitionMapArtifactId,
-      input.sectionTransitionMapContentHash,
-    ],
-    [input.provenanceArtifactId, input.provenanceContentHash],
-    [input.reviewerPromptArtifactId, input.reviewerPromptContentHash],
-    [input.reviewSchemaArtifactId, input.reviewSchemaContentHash],
-    [input.componentRegistryArtifactId, input.componentRegistryContentHash],
-    [input.reviewPolicyArtifactId, input.reviewPolicyContentHash],
-  ].every(
-    ([artifactId, contentHash]) =>
-      artifactId !== undefined &&
-      artifactId.length > 0 &&
-      contentHash !== undefined &&
-      sha256.test(contentHash),
-  );
+  const artifactsValid = [
+    input.planArtifact,
+    input.sectionTransitionMapArtifact,
+    input.provenanceArtifact,
+    input.reviewerPromptArtifact,
+    input.reviewSchemaArtifact,
+    input.componentRegistryArtifact,
+    input.reviewPolicyArtifact,
+  ].every(verifiedArtifactInputIsValid);
   const budgetEligible = providerBudgetIsEligible(
     input.reviewBudgetMaximum,
     input.availableBudget,
@@ -1569,22 +1573,15 @@ function acceptGeneratedPlan(
     input.planPurposeId !== previousState.activePlanning.purposeId ||
     input.originatingCommandId !== previousState.activePlanning.commandId ||
     input.planVersionId.length === 0 ||
-    !input.planObjectVerified ||
     !input.outputValid ||
     !input.sectionContinuityValid ||
-    !input.sectionTransitionMapVerified ||
-    !input.provenanceVerified ||
     !input.reviewerModelAllowed ||
     !input.reviewerModelIdentityPinned ||
     !input.reviewerAssignmentAuthorized ||
     !reviewerValid ||
     !overrideValid ||
-    !input.reviewPolicyVerified ||
-    input.reviewPolicyContentHash !== policy.policyHash ||
-    !input.reviewerPromptVerified ||
-    !input.reviewSchemaVerified ||
-    !input.componentRegistryVerified ||
-    !artifactReferencesValid ||
+    input.reviewPolicyArtifact.contentHash !== policy.policyHash ||
+    !artifactsValid ||
     !input.auditChainVerified ||
     !input.databaseIntegrityVerified ||
     !input.schemaCompatible ||
@@ -1619,13 +1616,13 @@ function acceptGeneratedPlan(
     runId: input.runId,
     triggeringStateVersion: nextStateVersion,
     purposeId: `${input.runId}:plan:${input.planVersionId}:render`,
-    inputArtifactHashes: [input.planContentHash],
+    inputArtifactHashes: [input.planArtifact.contentHash],
     policyHash: policy.policyHash,
     provider: "local",
     budgetReservation: zeroBudgetReservation(),
     payload: {
       planVersionId: input.planVersionId,
-      planArtifactId: input.planArtifactId,
+      planArtifactId: input.planArtifact.artifactId,
     },
   });
   const reviewCommand = planCommand<BaselineReview>(input.reviewCommandId, {
@@ -1637,13 +1634,13 @@ function acceptGeneratedPlan(
     purposeId: reviewPurposeId,
     inputArtifactHashes: [
       previousState.currentLedger.contentHash,
-      input.planContentHash,
-      input.sectionTransitionMapContentHash,
-      input.provenanceContentHash,
-      input.reviewerPromptContentHash,
-      input.reviewSchemaContentHash,
-      input.componentRegistryContentHash,
-      input.reviewPolicyContentHash,
+      input.planArtifact.contentHash,
+      input.sectionTransitionMapArtifact.contentHash,
+      input.provenanceArtifact.contentHash,
+      input.reviewerPromptArtifact.contentHash,
+      input.reviewSchemaArtifact.contentHash,
+      input.componentRegistryArtifact.contentHash,
+      input.reviewPolicyArtifact.contentHash,
       ...previousState.downstreamQualification.artifacts.map(
         ({ contentHash }) => contentHash,
       ),
@@ -1656,15 +1653,15 @@ function acceptGeneratedPlan(
       ledgerVersionId: previousState.currentLedger.versionId,
       ledgerArtifactId: previousState.currentLedger.artifactId,
       planVersionId: input.planVersionId,
-      planArtifactId: input.planArtifactId,
+      planArtifactId: input.planArtifact.artifactId,
       renderPlanCommandId: input.renderCommandId,
-      reviewerPromptArtifactId: input.reviewerPromptArtifactId,
-      reviewSchemaArtifactId: input.reviewSchemaArtifactId,
-      componentRegistryArtifactId: input.componentRegistryArtifactId,
-      reviewPolicyArtifactId: input.reviewPolicyArtifactId,
+      reviewerPromptArtifactId: input.reviewerPromptArtifact.artifactId,
+      reviewSchemaArtifactId: input.reviewSchemaArtifact.artifactId,
+      componentRegistryArtifactId: input.componentRegistryArtifact.artifactId,
+      reviewPolicyArtifactId: input.reviewPolicyArtifact.artifactId,
       evidenceArtifactIds: [
-        input.sectionTransitionMapArtifactId,
-        input.provenanceArtifactId,
+        input.sectionTransitionMapArtifact.artifactId,
+        input.provenanceArtifact.artifactId,
         ...previousState.downstreamQualification.artifacts.map(
           ({ artifactId }) => artifactId,
         ),
@@ -1674,16 +1671,16 @@ function acceptGeneratedPlan(
     },
   });
   const planEvidence = artifactEvidence(
-    input.planArtifactId,
-    input.planContentHash,
+    input.planArtifact.artifactId,
+    input.planArtifact.contentHash,
   );
   const transitionMapEvidence = artifactEvidence(
-    input.sectionTransitionMapArtifactId,
-    input.sectionTransitionMapContentHash,
+    input.sectionTransitionMapArtifact.artifactId,
+    input.sectionTransitionMapArtifact.contentHash,
   );
   const provenanceEvidence = artifactEvidence(
-    input.provenanceArtifactId,
-    input.provenanceContentHash,
+    input.provenanceArtifact.artifactId,
+    input.provenanceArtifact.contentHash,
   );
   const reviewEvidence = [
     artifactEvidence(
@@ -1694,20 +1691,20 @@ function acceptGeneratedPlan(
     transitionMapEvidence,
     provenanceEvidence,
     artifactEvidence(
-      input.reviewerPromptArtifactId,
-      input.reviewerPromptContentHash,
+      input.reviewerPromptArtifact.artifactId,
+      input.reviewerPromptArtifact.contentHash,
     ),
     artifactEvidence(
-      input.reviewSchemaArtifactId,
-      input.reviewSchemaContentHash,
+      input.reviewSchemaArtifact.artifactId,
+      input.reviewSchemaArtifact.contentHash,
     ),
     artifactEvidence(
-      input.componentRegistryArtifactId,
-      input.componentRegistryContentHash,
+      input.componentRegistryArtifact.artifactId,
+      input.componentRegistryArtifact.contentHash,
     ),
     artifactEvidence(
-      input.reviewPolicyArtifactId,
-      input.reviewPolicyContentHash,
+      input.reviewPolicyArtifact.artifactId,
+      input.reviewPolicyArtifact.contentHash,
     ),
     ...previousState.downstreamQualification.artifacts,
   ];
@@ -1727,15 +1724,15 @@ function acceptGeneratedPlan(
       stateVersion: nextStateVersion,
       currentPlan: {
         versionId: input.planVersionId,
-        artifactId: input.planArtifactId,
-        contentHash: input.planContentHash,
+        artifactId: input.planArtifact.artifactId,
+        contentHash: input.planArtifact.contentHash,
         sectionTransitionMap: {
-          artifactId: input.sectionTransitionMapArtifactId,
-          contentHash: input.sectionTransitionMapContentHash,
+          artifactId: input.sectionTransitionMapArtifact.artifactId,
+          contentHash: input.sectionTransitionMapArtifact.contentHash,
         },
         provenance: {
-          artifactId: input.provenanceArtifactId,
-          contentHash: input.provenanceContentHash,
+          artifactId: input.provenanceArtifact.artifactId,
+          contentHash: input.provenanceArtifact.contentHash,
         },
       },
       activeReview: {
@@ -1754,13 +1751,14 @@ function acceptGeneratedPlan(
         evidence: [planEvidence, transitionMapEvidence, provenanceEvidence],
         payload: {
           planVersionId: input.planVersionId,
-          planArtifactId: input.planArtifactId,
-          planContentHash: input.planContentHash,
-          sectionTransitionMapArtifactId: input.sectionTransitionMapArtifactId,
+          planArtifactId: input.planArtifact.artifactId,
+          planContentHash: input.planArtifact.contentHash,
+          sectionTransitionMapArtifactId:
+            input.sectionTransitionMapArtifact.artifactId,
           sectionTransitionMapContentHash:
-            input.sectionTransitionMapContentHash,
-          provenanceArtifactId: input.provenanceArtifactId,
-          provenanceContentHash: input.provenanceContentHash,
+            input.sectionTransitionMapArtifact.contentHash,
+          provenanceArtifactId: input.provenanceArtifact.artifactId,
+          provenanceContentHash: input.provenanceArtifact.contentHash,
         },
       },
       commandPlannedFact(renderCommand, "Render the accepted plan", [
