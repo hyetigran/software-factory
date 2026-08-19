@@ -43,6 +43,7 @@ function ledgerSubmittedInput(): LedgerSubmitted {
     ledgerVersionId: "ledger_01JTEST",
     ledgerArtifactId: "artifact_ledger_01JTEST",
     ledgerContentHash,
+    ledgerObjectVerified: true,
     ledgerSchemaValid: true,
     sourceReferencesValid: true,
     auditChainVerified: true,
@@ -250,9 +251,12 @@ describe("transition", () => {
     expect(result.nextState).toEqual({
       ...draft,
       stateVersion: 2,
-      currentLedgerVersionId: "ledger_01JTEST",
-      currentLedgerArtifactId: "artifact_ledger_01JTEST",
-      ledgerValidationStatus: "pending",
+      currentLedger: {
+        versionId: "ledger_01JTEST",
+        artifactId: "artifact_ledger_01JTEST",
+        contentHash: ledgerContentHash,
+        validationStatus: "pending",
+      },
     });
     expect(result.commands).toEqual([
       {
@@ -385,25 +389,62 @@ describe("transition", () => {
     ]);
   });
 
-  it("rejects a ledger submission from a non-human actor at runtime", () => {
+  it.each<[string, (validInput: LedgerSubmitted) => LedgerSubmitted]>([
+    [
+      "a stale state version",
+      (input) => ({ ...input, expectedStateVersion: 0 }),
+    ],
+    [
+      "an unverified ledger object",
+      (input) => ({ ...input, ledgerObjectVerified: false }),
+    ],
+    [
+      "an invalid ledger schema",
+      (input) => ({ ...input, ledgerSchemaValid: false }),
+    ],
+    [
+      "invalid source references",
+      (input) => ({ ...input, sourceReferencesValid: false }),
+    ],
+    [
+      "an invalid audit chain",
+      (input) => ({ ...input, auditChainVerified: false }),
+    ],
+    [
+      "invalid database integrity",
+      (input) => ({ ...input, databaseIntegrityVerified: false }),
+    ],
+    [
+      "an incompatible schema",
+      (input) => ({ ...input, schemaCompatible: false }),
+    ],
+    [
+      "a conflicting mutation lease",
+      (input) => ({ ...input, mutationLeaseAvailable: false }),
+    ],
+    [
+      "a non-human actor",
+      (input) =>
+        ({
+          ...input,
+          actor: {
+            kind: "system",
+            component: "test-runner",
+            version: "1.0.0",
+          },
+        }) as unknown as LedgerSubmitted,
+    ],
+    [
+      "an empty actor display name",
+      (input) => ({ ...input, actor: { ...input.actor, displayName: "" } }),
+    ],
+    [
+      "an empty actor OS account",
+      (input) => ({ ...input, actor: { ...input.actor, osAccount: "" } }),
+    ],
+  ])("rejects a ledger submission with %s", (_caseName, makeInvalid) => {
     const draft = transition(null, runStartedInput(), { policyHash }).nextState;
-    const input = {
-      ...ledgerSubmittedInput(),
-      actor: {
-        kind: "system",
-        component: "test-runner",
-        version: "1.0.0",
-      },
-    } as unknown as LedgerSubmitted;
-
-    expect(() => transition(draft, input, { policyHash })).toThrowError(
-      expect.objectContaining({ code: "PRECONDITION_FAILED" }),
-    );
-  });
-
-  it("rejects a stale ledger submission", () => {
-    const draft = transition(null, runStartedInput(), { policyHash }).nextState;
-    const input = { ...ledgerSubmittedInput(), expectedStateVersion: 0 };
+    const input = makeInvalid(ledgerSubmittedInput());
 
     expect(() => transition(draft, input, { policyHash })).toThrowError(
       expect.objectContaining({ code: "PRECONDITION_FAILED" }),
@@ -438,5 +479,15 @@ describe("transition", () => {
       expect.objectContaining({ triggeringStateVersion: 3 }),
       expect.objectContaining({ triggeringStateVersion: 3 }),
     ]);
+  });
+
+  it("rejects resubmitting the current ledger version", () => {
+    const draft = transition(null, runStartedInput(), { policyHash }).nextState;
+    const first = transition(draft, ledgerSubmittedInput(), { policyHash });
+    const replay = { ...ledgerSubmittedInput(), expectedStateVersion: 2 };
+
+    expect(() =>
+      transition(first.nextState, replay, { policyHash }),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 });

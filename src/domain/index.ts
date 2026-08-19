@@ -31,9 +31,12 @@ export type DraftRunState = {
   policyHash: string;
   policyLocked: false;
   blockedReason: null;
-  currentLedgerVersionId?: string;
-  currentLedgerArtifactId?: string;
-  ledgerValidationStatus?: "pending";
+  currentLedger?: {
+    versionId: string;
+    artifactId: string;
+    contentHash: string;
+    validationStatus: "pending";
+  };
 };
 
 export type RunStarted = {
@@ -65,6 +68,7 @@ export type LedgerSubmitted = {
   ledgerVersionId: string;
   ledgerArtifactId: string;
   ledgerContentHash: string;
+  ledgerObjectVerified: boolean;
   ledgerSchemaValid: boolean;
   sourceReferencesValid: boolean;
   auditChainVerified: boolean;
@@ -377,6 +381,8 @@ function submitLedger(
 
   if (
     previousState.stateVersion !== input.expectedStateVersion ||
+    previousState.currentLedger?.versionId === input.ledgerVersionId ||
+    !input.ledgerObjectVerified ||
     !input.ledgerSchemaValid ||
     !input.sourceReferencesValid ||
     !input.auditChainVerified ||
@@ -483,9 +489,12 @@ function submitLedger(
     nextState: {
       ...previousState,
       stateVersion: nextStateVersion,
-      currentLedgerVersionId: input.ledgerVersionId,
-      currentLedgerArtifactId: input.ledgerArtifactId,
-      ledgerValidationStatus: "pending",
+      currentLedger: {
+        versionId: input.ledgerVersionId,
+        artifactId: input.ledgerArtifactId,
+        contentHash: input.ledgerContentHash,
+        validationStatus: "pending",
+      },
     },
     commands: [validateCommand, renderCommand],
     auditFacts: [
