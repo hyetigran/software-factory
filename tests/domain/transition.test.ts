@@ -798,7 +798,7 @@ describe("transition", () => {
         {
           commandId: "command_render_source_01JTEST",
           commandKey:
-            "684db2024a706ffc91c075de8abdca100e1dc5d8164449c3f553beaa759fb7ba",
+            "f273aefe38e0576c687fb68b61d4ef0fe573d4674890d6409cf5c4d260a88a29",
           commandType: "render_source_registration_report",
           schemaVersion: 1,
           runId: "run_01JTEST0000000000000000000",
@@ -815,6 +815,7 @@ describe("transition", () => {
           },
           payload: {
             sourceArtifactId: "artifact_source_01JTEST",
+            configurationArtifactId: "artifact_config_01JTEST",
           },
         },
       ],
@@ -885,7 +886,7 @@ describe("transition", () => {
           payload: {
             commandId: "command_render_source_01JTEST",
             commandKey:
-              "684db2024a706ffc91c075de8abdca100e1dc5d8164449c3f553beaa759fb7ba",
+              "f273aefe38e0576c687fb68b61d4ef0fe573d4674890d6409cf5c4d260a88a29",
             commandType: "render_source_registration_report",
             reservation: {
               calls: 0,
@@ -1804,7 +1805,7 @@ describe("transition", () => {
       {
         commandId: "command_render_approval_01JTEST",
         commandKey:
-          "33fd71d7b4745bfdd6362fde282f095826f005b895fac8532cbd906d45156690",
+          "f1f7f743cdc3ef085abb8a7d164b34ccbd62a85eb37a2d76e9b4d7ea0520b0e3",
         commandType: "render_ledger_approval",
         schemaVersion: 1,
         runId: exclusionApproved.runId,
@@ -1826,6 +1827,7 @@ describe("transition", () => {
         payload: {
           ledgerVersionId: "ledger_01JTEST",
           ledgerArtifactId: "artifact_ledger_01JTEST",
+          sourceArtifactId: "artifact_source_01JTEST",
           coverageReportArtifactId: "artifact_coverage_01JTEST",
           coverageValidatedStateVersion: 3,
           coverageValidatedPolicyHash: policyHash,
@@ -1889,7 +1891,7 @@ describe("transition", () => {
       payload: {
         commandId: "command_render_approval_01JTEST",
         commandKey:
-          "33fd71d7b4745bfdd6362fde282f095826f005b895fac8532cbd906d45156690",
+          "f1f7f743cdc3ef085abb8a7d164b34ccbd62a85eb37a2d76e9b4d7ea0520b0e3",
         commandType: "render_ledger_approval",
         reservation: {
           calls: 0,

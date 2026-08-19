@@ -7,7 +7,11 @@ import type {
   PersistableTransition,
 } from "./authority-port.js";
 import type { ArtifactStagingPort } from "./artifact-port.js";
-import { validateLedger } from "./deterministic-documents.js";
+import {
+  renderLedgerApproval,
+  renderSourceRegistrationReport,
+  validateLedger,
+} from "./deterministic-documents.js";
 import {
   beginEligibleCommandAttempt,
   ExecutionPolicy,
@@ -62,7 +66,14 @@ export async function executeNextLocalCommand(input: {
     if (command.provider !== "local") continue;
     if (command.triggeringStateVersion !== input.currentState.stateVersion)
       continue;
-    if (command.commandType !== "validate_ledger") continue;
+    if (
+      ![
+        "render_source_registration_report",
+        "validate_ledger",
+        "render_ledger_approval",
+      ].includes(command.commandType)
+    )
+      continue;
     const payload = command.payload as Record<string, unknown>;
     const attemptId = `attempt_${randomUUID().replaceAll("-", "")}`;
     const correlationId = `correlation_${randomUUID().replaceAll("-", "")}`;
@@ -78,11 +89,20 @@ export async function executeNextLocalCommand(input: {
     });
     if (begun.status === "already_succeeded") continue;
     try {
+      const payloadIds =
+        command.commandType === "render_source_registration_report"
+          ? [payload.sourceArtifactId, payload.configurationArtifactId]
+          : command.commandType === "validate_ledger"
+            ? [payload.ledgerArtifactId, payload.sourceArtifactId]
+            : [
+                payload.ledgerArtifactId,
+                payload.coverageReportArtifactId,
+                payload.sourceArtifactId,
+              ];
       const sourceIds = command.inputArtifactHashes.map((contentHash) => {
         const matches = input.registeredArtifacts.filter(
           (artifact) => artifact.contentHash === contentHash,
         );
-        const payloadIds = [payload.ledgerArtifactId, payload.sourceArtifactId];
         const artifact = matches.find(({ artifactId }) =>
           payloadIds.includes(artifactId),
         );
@@ -92,6 +112,88 @@ export async function executeNextLocalCommand(input: {
           );
         return artifact.artifactId;
       });
+      if (command.commandType !== "validate_ledger") {
+        const bytesById = new Map<string, Uint8Array>();
+        for (const artifactId of sourceIds) {
+          const registered = input.registeredArtifacts.find(
+            (artifact) => artifact.artifactId === artifactId,
+          );
+          if (registered === undefined)
+            throw new TypeError("Local command input artifact is missing");
+          bytesById.set(
+            artifactId,
+            await input.readVerified(registered.contentHash),
+          );
+        }
+        const rendered =
+          command.commandType === "render_source_registration_report"
+            ? renderSourceRegistrationReport({
+                sourceArtifactId: String(payload.sourceArtifactId),
+                sourceBytes: requiredBytes(
+                  bytesById,
+                  String(payload.sourceArtifactId),
+                ),
+              })
+            : renderLedgerApproval({
+                ledgerBytes: requiredBytes(
+                  bytesById,
+                  String(payload.ledgerArtifactId),
+                ),
+                coverageReportBytes: requiredBytes(
+                  bytesById,
+                  String(payload.coverageReportArtifactId),
+                ),
+                sourceBytes: requiredBytes(
+                  bytesById,
+                  String(payload.sourceArtifactId),
+                ),
+                ledgerVersionId: String(payload.ledgerVersionId),
+                approvalGateId: String(payload.approvalGateId),
+                approvedBy: payload.approvedBy as {
+                  displayName: string;
+                  osAccount: string;
+                },
+              });
+        const purpose =
+          command.commandType === "render_source_registration_report"
+            ? "source_registration"
+            : "ledger_approval";
+        const result = await input.staging.stageArtifact(rendered.bytes, {
+          artifactId: `${purpose}_${randomUUID().replaceAll("-", "")}`,
+          kind: "other",
+          mediaType: rendered.mediaType,
+          createdBy: "system:deterministic-local-executor",
+          provenance: {
+            method: "application_generated",
+            purpose,
+            sourceArtifactIds: sourceIds,
+            commandId: command.commandId,
+            attemptId,
+          },
+        });
+        const usage = await stageLocalUsage(
+          input.staging,
+          command.commandId,
+          attemptId,
+          sourceIds,
+        );
+        await input.execution.completeAttempt({
+          runId: input.runId,
+          commandId: command.commandId,
+          attemptId,
+          ownerProcess: input.ownerProcess,
+          correlationId,
+          resultArtifact: result,
+          nativeUsageArtifact: usage,
+          actualUsage: zeroUsage(),
+          providerEvidence: {},
+        });
+        return {
+          commandId: command.commandId,
+          commandType: command.commandType,
+          resultArtifactId: result.artifactId,
+        };
+      }
       const [ledgerHash, sourceHash] = command.inputArtifactHashes;
       if (ledgerHash === undefined || sourceHash === undefined)
         throw new TypeError("Ledger validation command inputs are incomplete");
@@ -145,27 +247,12 @@ export async function executeNextLocalCommand(input: {
           },
         },
       );
-      const usageBytes = Buffer.from(
-        canonicalJson({
-          calls: 0,
-          costUsdMicros: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-        }),
+      const usage = await stageLocalUsage(
+        input.staging,
+        command.commandId,
+        attemptId,
+        sourceIds,
       );
-      const usage = await input.staging.stageArtifact(usageBytes, {
-        artifactId: `usage_${attemptId}`,
-        kind: "native_usage",
-        mediaType: "application/json",
-        createdBy: "system:deterministic-local-executor",
-        provenance: {
-          method: "application_generated",
-          purpose: "local_usage",
-          sourceArtifactIds: sourceIds,
-          commandId: command.commandId,
-          attemptId,
-        },
-      });
       const completion = {
         runId: input.runId,
         commandId: command.commandId,
@@ -174,12 +261,7 @@ export async function executeNextLocalCommand(input: {
         correlationId,
         resultArtifact: result,
         nativeUsageArtifact: usage,
-        actualUsage: {
-          calls: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          costUsdMicros: 0,
-        },
+        actualUsage: zeroUsage(),
         providerEvidence: {},
       };
       const domainResult = transition(
@@ -242,4 +324,42 @@ export async function executeNextLocalCommand(input: {
     }
   }
   return null;
+}
+
+function requiredBytes(
+  values: Map<string, Uint8Array>,
+  artifactId: string,
+): Uint8Array {
+  const value = values.get(artifactId);
+  if (value === undefined)
+    throw new TypeError("Local command input identity is invalid");
+  return value;
+}
+
+function zeroUsage() {
+  return { calls: 0, inputTokens: 0, outputTokens: 0, costUsdMicros: 0 };
+}
+
+function stageLocalUsage(
+  staging: ArtifactStagingPort,
+  commandId: string,
+  attemptId: string,
+  sourceArtifactIds: string[],
+) {
+  return staging.stageArtifact(
+    Buffer.from(canonicalJson({ commandId, attemptId, ...zeroUsage() })),
+    {
+      artifactId: `usage_${attemptId}`,
+      kind: "native_usage",
+      mediaType: "application/json",
+      createdBy: "system:deterministic-local-executor",
+      provenance: {
+        method: "application_generated",
+        purpose: "local_usage",
+        sourceArtifactIds,
+        commandId,
+        attemptId,
+      },
+    },
+  );
 }

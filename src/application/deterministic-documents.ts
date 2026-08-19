@@ -241,6 +241,60 @@ export function renderLedger(ledgerBytes: Uint8Array): RenderedProjection {
   return projection(`${lines.join("\n")}\n`);
 }
 
+export function renderSourceRegistrationReport(input: {
+  sourceArtifactId: string;
+  sourceBytes: Uint8Array;
+}): RenderedProjection {
+  return projection(
+    [
+      "# Source Registration",
+      "",
+      `- Artifact: ${input.sourceArtifactId}`,
+      `- Content hash: ${sha256(input.sourceBytes)}`,
+      `- Bytes: ${input.sourceBytes.byteLength}`,
+      "",
+    ].join("\n"),
+  );
+}
+
+export function renderLedgerApproval(input: {
+  ledgerBytes: Uint8Array;
+  coverageReportBytes: Uint8Array;
+  sourceBytes: Uint8Array;
+  ledgerVersionId: string;
+  approvalGateId: string;
+  approvedBy: { displayName: string; osAccount: string };
+}): RenderedProjection {
+  const coverage: unknown = JSON.parse(
+    Buffer.from(input.coverageReportBytes).toString("utf8"),
+  );
+  if (
+    coverage === null ||
+    typeof coverage !== "object" ||
+    Array.isArray(coverage)
+  )
+    throw new TypeError("Coverage report is invalid");
+  const report = coverage as Record<string, unknown>;
+  if (
+    report.coverageValid !== true ||
+    report.ledgerContentHash !== sha256(input.ledgerBytes) ||
+    report.sourceContentHash !== sha256(input.sourceBytes)
+  )
+    throw new TypeError("Coverage report does not bind the approved ledger");
+  return projection(
+    [
+      `# Ledger Approval ${input.ledgerVersionId}`,
+      "",
+      `- Ledger hash: ${sha256(input.ledgerBytes)}`,
+      `- Coverage report hash: ${sha256(input.coverageReportBytes)}`,
+      `- Source hash: ${sha256(input.sourceBytes)}`,
+      `- Approval gate: ${input.approvalGateId}`,
+      `- Approved by: ${input.approvedBy.displayName} (${input.approvedBy.osAccount})`,
+      "",
+    ].join("\n"),
+  );
+}
+
 export function renderPlan(planBytes: Uint8Array): RenderedProjection {
   const parsed: unknown = JSON.parse(Buffer.from(planBytes).toString("utf8"));
   assertJsonSchema(parsed, schema("plan.v1.schema.json"));
