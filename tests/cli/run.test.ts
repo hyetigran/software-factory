@@ -286,6 +286,29 @@ describe("factory executable", () => {
         expect.objectContaining({ factType: "command_attempt_completed" }),
       ]),
     );
+    const renderLines: string[] = [];
+    await expect(
+      runCliAsync(
+        ["execute", "next", started.data.runId, "--json"],
+        (line) => renderLines.push(line),
+        operations,
+        projectRoot,
+      ),
+    ).resolves.toBe(CliExit.success);
+    expect(JSON.parse(renderLines[0] ?? "null")).toMatchObject({
+      ok: true,
+      command: "execute next",
+      data: { execution: { commandType: "render_ledger" } },
+    });
+    await expect(
+      operations.loadRun(projectRoot, started.data.runId),
+    ).resolves.toMatchObject({
+      stateVersion: 5,
+      currentLedger: {
+        validationStatus: "validated",
+        renderedProjection: { renderedStateVersion: 5 },
+      },
+    });
     const approvalLines: string[] = [];
     await expect(
       runCliAsync(
@@ -301,7 +324,7 @@ describe("factory executable", () => {
       data: {
         state: {
           state: "requirements_approved",
-          stateVersion: 5,
+          stateVersion: 6,
           currentLedger: { validationStatus: "approved" },
         },
         coverageReportArtifactId: executed.data.execution.resultArtifactId,
@@ -398,7 +421,7 @@ describe("factory executable", () => {
       ok: true,
       command: "plan request",
       data: {
-        state: { state: "planning", stateVersion: 6 },
+        state: { state: "planning", stateVersion: 7 },
         providerBoundaryDisclosure: {
           mode: "live",
           provider: "openai",

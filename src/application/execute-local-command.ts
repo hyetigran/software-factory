@@ -7,7 +7,7 @@ import type {
   PersistableTransition,
 } from "./authority-port.js";
 import type { ArtifactStagingPort } from "./artifact-port.js";
-import { validateLedger } from "./deterministic-documents.js";
+import { renderLedger, validateLedger } from "./deterministic-documents.js";
 import {
   beginEligibleCommandAttempt,
   ExecutionPolicy,
@@ -62,7 +62,11 @@ export async function executeNextLocalCommand(input: {
     if (command.provider !== "local") continue;
     if (command.triggeringStateVersion !== input.currentState.stateVersion)
       continue;
-    if (command.commandType !== "validate_ledger") continue;
+    if (
+      command.commandType !== "validate_ledger" &&
+      command.commandType !== "render_ledger"
+    )
+      continue;
     const payload = command.payload as Record<string, unknown>;
     const attemptId = `attempt_${randomUUID().replaceAll("-", "")}`;
     const correlationId = `correlation_${randomUUID().replaceAll("-", "")}`;
@@ -78,73 +82,101 @@ export async function executeNextLocalCommand(input: {
     });
     if (begun.status === "already_succeeded") continue;
     try {
-      const sourceIds = command.inputArtifactHashes.map((contentHash) => {
-        const matches = input.registeredArtifacts.filter(
-          (artifact) => artifact.contentHash === contentHash,
-        );
-        const payloadIds = [payload.ledgerArtifactId, payload.sourceArtifactId];
-        const artifact = matches.find(({ artifactId }) =>
-          payloadIds.includes(artifactId),
+      const payloadIds =
+        command.commandType === "validate_ledger"
+          ? [payload.ledgerArtifactId, payload.sourceArtifactId]
+          : [payload.ledgerArtifactId];
+      if (
+        payloadIds.some((value) => typeof value !== "string") ||
+        new Set(payloadIds).size !== payloadIds.length
+      )
+        throw new TypeError("Local command input identities are invalid");
+      const bindings = (payloadIds as string[]).map((artifactId) => {
+        const artifact = input.registeredArtifacts.find(
+          (candidate) => candidate.artifactId === artifactId,
         );
         if (artifact === undefined)
-          throw new TypeError(
-            "Local command input artifact identity is invalid",
-          );
-        return artifact.artifactId;
+          throw new TypeError("Local command input artifact is not registered");
+        return artifact;
       });
-      const [ledgerHash, sourceHash] = command.inputArtifactHashes;
-      if (ledgerHash === undefined || sourceHash === undefined)
-        throw new TypeError("Ledger validation command inputs are incomplete");
+      const expectedHashes = bindings
+        .map(({ contentHash }) => contentHash)
+        .sort();
+      const declaredHashes = [...command.inputArtifactHashes].sort();
+      if (
+        expectedHashes.length !== declaredHashes.length ||
+        expectedHashes.some((hash, index) => hash !== declaredHashes[index])
+      )
+        throw new TypeError("Local command input artifact identity is invalid");
+      const sourceIds = bindings.map(({ artifactId }) => artifactId);
+      const ledgerHash = bindings[0]?.contentHash;
+      const sourceHash = bindings[1]?.contentHash;
+      if (ledgerHash === undefined)
+        throw new TypeError("Ledger command input is incomplete");
       const ledgerBytes = await input.readVerified(ledgerHash);
-      const sourceBytes = await input.readVerified(sourceHash);
-      const ledgerSchema = JSON.parse(
-        Buffer.from(
-          await input.readVerified(
-            input.configuration.artifactHashes.requirementsSchema,
-          ),
-        ).toString("utf8"),
-      ) as unknown;
-      let report;
-      try {
-        report = validateLedger({
-          ledgerBytes,
-          ledgerSchema,
-          sourceBytes,
-          expectedSourceArtifactId: String(payload.sourceArtifactId),
-          approvedExclusions: (
-            (payload.sourceExclusions as
-              Array<Record<string, unknown>> | undefined) ?? []
-          ).map((exclusion) => {
-            const range = exclusion.sourceRange as Record<string, unknown>;
-            return {
-              exclusionId: String(exclusion.exclusionId),
-              sourceRange: {
-                startByte: Number(range.startOffset),
-                endByte: Number(range.endOffset),
-              },
-              reason: String(exclusion.reason),
-            };
-          }),
-        });
-      } catch (error) {
-        throw new LocalValidationRejected(error);
+      let report: ReturnType<typeof validateLedger> | undefined;
+      let resultBytes: Uint8Array;
+      if (command.commandType === "validate_ledger") {
+        if (sourceHash === undefined)
+          throw new TypeError("Ledger validation source is incomplete");
+        const sourceBytes = await input.readVerified(sourceHash);
+        const ledgerSchema = JSON.parse(
+          Buffer.from(
+            await input.readVerified(
+              input.configuration.artifactHashes.requirementsSchema,
+            ),
+          ).toString("utf8"),
+        ) as unknown;
+        try {
+          report = validateLedger({
+            ledgerBytes,
+            ledgerSchema,
+            sourceBytes,
+            expectedSourceArtifactId: String(payload.sourceArtifactId),
+            approvedExclusions: (
+              (payload.sourceExclusions as
+                Array<Record<string, unknown>> | undefined) ?? []
+            ).map((exclusion) => {
+              const range = exclusion.sourceRange as Record<string, unknown>;
+              return {
+                exclusionId: String(exclusion.exclusionId),
+                sourceRange: {
+                  startByte: Number(range.startOffset),
+                  endByte: Number(range.endOffset),
+                },
+                reason: String(exclusion.reason),
+              };
+            }),
+          });
+        } catch (error) {
+          throw new LocalValidationRejected(error);
+        }
+        resultBytes = Buffer.from(canonicalJson(report));
+      } else {
+        resultBytes = renderLedger(ledgerBytes).bytes;
       }
-      const result = await input.staging.stageArtifact(
-        Buffer.from(canonicalJson(report)),
-        {
-          artifactId: `coverage_report_${randomUUID().replaceAll("-", "")}`,
-          kind: "coverage_report",
-          mediaType: "application/json",
-          createdBy: "system:deterministic-local-executor",
-          provenance: {
-            method: "application_generated",
-            purpose: "ledger_validation",
-            sourceArtifactIds: sourceIds,
-            commandId: command.commandId,
-            attemptId,
-          },
+      const result = await input.staging.stageArtifact(resultBytes, {
+        artifactId: `${command.commandType === "validate_ledger" ? "coverage_report" : "rendered_ledger"}_${randomUUID().replaceAll("-", "")}`,
+        kind:
+          command.commandType === "validate_ledger"
+            ? "coverage_report"
+            : "rendered_ledger",
+        mediaType:
+          command.commandType === "validate_ledger"
+            ? "application/json"
+            : "text/markdown; charset=utf-8",
+        createdBy: "system:deterministic-local-executor",
+        provenance: {
+          method: "application_generated",
+          purpose:
+            command.commandType === "validate_ledger"
+              ? "ledger_validation"
+              : "ledger_render",
+          sourceArtifactIds: sourceIds,
+          commandId: command.commandId,
+          attemptId,
         },
-      );
+      });
       const usageBytes = Buffer.from(
         canonicalJson({
           commandId: command.commandId,
@@ -184,35 +216,50 @@ export async function executeNextLocalCommand(input: {
         },
         providerEvidence: {},
       };
-      const domainResult = transition(
-        input.currentState,
-        {
-          type: "LedgerValidationCompleted",
-          runId: input.runId,
-          expectedStateVersion: input.currentState.stateVersion,
-          commandId: command.commandId,
-          ledgerVersionId: String(payload.ledgerVersionId),
-          ledgerContentHash: report.ledgerContentHash,
-          sourceContentHash: report.sourceContentHash,
-          coverageReportArtifactId: result.artifactId,
-          coverageReportContentHash: result.contentHash,
-          schemaValid: report.schemaValid,
-          identityValid: report.identityValid,
-          lineageValid: report.lineageValid,
-          coverageComplete: report.coverageValid,
-          uncoveredRangeCount: report.uncoveredRanges.length,
-          actor: {
-            kind: "system",
-            component: "deterministic-local-executor",
-            version: "0.0.0",
-          },
-        },
-        {
-          policyHash: input.configuration.policyHash,
-          plannerAssignment: input.configuration.plannerAssignment,
-          reviewerAssignment: input.configuration.reviewerAssignment,
-        },
-      );
+      const domainInput =
+        command.commandType === "validate_ledger"
+          ? {
+              type: "LedgerValidationCompleted" as const,
+              runId: input.runId,
+              expectedStateVersion: input.currentState.stateVersion,
+              commandId: command.commandId,
+              ledgerVersionId: String(payload.ledgerVersionId),
+              ledgerContentHash: report!.ledgerContentHash,
+              sourceContentHash: report!.sourceContentHash,
+              coverageReportArtifactId: result.artifactId,
+              coverageReportContentHash: result.contentHash,
+              schemaValid: report!.schemaValid,
+              identityValid: report!.identityValid,
+              lineageValid: report!.lineageValid,
+              coverageComplete: report!.coverageValid,
+              uncoveredRangeCount: report!.uncoveredRanges.length,
+              renderCommandId: `command_${randomUUID().replaceAll("-", "")}`,
+              actor: {
+                kind: "system" as const,
+                component: "deterministic-local-executor",
+                version: "0.0.0",
+              },
+            }
+          : {
+              type: "LedgerRendered" as const,
+              runId: input.runId,
+              expectedStateVersion: input.currentState.stateVersion,
+              commandId: command.commandId,
+              ledgerVersionId: String(payload.ledgerVersionId),
+              ledgerContentHash: ledgerHash,
+              renderedArtifactId: result.artifactId,
+              renderedContentHash: result.contentHash,
+              actor: {
+                kind: "system" as const,
+                component: "deterministic-local-executor",
+                version: "0.0.0",
+              },
+            };
+      const domainResult = transition(input.currentState, domainInput, {
+        policyHash: input.configuration.policyHash,
+        plannerAssignment: input.configuration.plannerAssignment,
+        reviewerAssignment: input.configuration.reviewerAssignment,
+      });
       await input.execution.completeLocalTransition(
         completion,
         input.currentState.stateVersion,

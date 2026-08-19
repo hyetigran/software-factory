@@ -974,7 +974,6 @@ describe("SQLite authority", () => {
       schemaCompatible: true,
       mutationLeaseAvailable: true,
       validateCommandId: "command_validate_ledger",
-      renderCommandId: "command_render_ledger",
       actor: input.actor,
     };
     await commitTransition<NonterminalRunState>(authority, {
@@ -1002,7 +1001,6 @@ describe("SQLite authority", () => {
       "source_registered",
       "command_planned",
       "ledger_submitted",
-      "command_planned",
       "command_planned",
     ]);
     authority.close();

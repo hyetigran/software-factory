@@ -155,6 +155,8 @@ export class SqliteAuthority
       verifyStagedArtifact: (artifact) => this.verifyStagedArtifact(artifact),
       readStagedArtifactBytes: (artifact) =>
         this.readVerifiedStagedArtifact(artifact),
+      readRegisteredObject: (contentHash) =>
+        this.readVerifiedObject(contentHash),
       persistArtifactMetadata: (artifact) =>
         this.persistArtifactMetadata(artifact),
       quarantine: (reason) => this.quarantine(reason),

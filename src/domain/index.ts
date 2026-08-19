@@ -37,6 +37,11 @@ export type CurrentLedger = {
     validatedStateVersion: number;
     coverageComplete: boolean;
   };
+  renderedProjection?: {
+    artifactId: string;
+    contentHash: string;
+    renderedStateVersion: number;
+  };
 };
 
 export type SourceRange = {
@@ -277,7 +282,6 @@ export type LedgerSubmitted = {
   schemaCompatible: boolean;
   mutationLeaseAvailable: boolean;
   validateCommandId: string;
-  renderCommandId: string;
   actor: HumanActor;
 };
 
@@ -336,6 +340,19 @@ export type LedgerValidationCompleted = {
   lineageValid: boolean;
   coverageComplete: boolean;
   uncoveredRangeCount: number;
+  renderCommandId: string;
+  actor: SystemActor;
+};
+
+export type LedgerRendered = {
+  type: "LedgerRendered";
+  runId: string;
+  expectedStateVersion: number;
+  commandId: string;
+  ledgerVersionId: string;
+  ledgerContentHash: string;
+  renderedArtifactId: string;
+  renderedContentHash: string;
   actor: SystemActor;
 };
 
@@ -1039,6 +1056,19 @@ export type LedgerValidationCompletedFact = {
   };
 };
 
+export type LedgerRenderedFact = {
+  type: "ledger_rendered";
+  actor: SystemActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    commandId: string;
+    ledgerVersionId: string;
+    renderedArtifactId: string;
+    renderedContentHash: string;
+  };
+};
+
 export type LedgerApprovedFact = {
   type: "ledger_approved";
   actor: HumanActor;
@@ -1207,6 +1237,7 @@ export type TransitionResult = {
     | DownstreamInvalidatedFact
     | SourceExclusionApprovedFact
     | LedgerValidationCompletedFact
+    | LedgerRenderedFact
     | LedgerApprovedFact
     | PlanningRequestedFact
     | PlanVersionAcceptedFact
@@ -1397,6 +1428,7 @@ type NonterminalDomainInput =
   | LedgerSubmitted
   | SourceExclusionApproved
   | LedgerValidationCompleted
+  | LedgerRendered
   | LedgerApprovalRequested
   | PlanningRequested
   | PlanGenerated
@@ -1614,6 +1646,8 @@ export function transition(
       return approveSourceExclusion(previousState, input, policy);
     case "LedgerValidationCompleted":
       return completeLedgerValidation(previousState, input, policy);
+    case "LedgerRendered":
+      return completeLedgerRender(previousState, input, policy);
     case "LedgerApprovalRequested":
       return approveLedger(previousState, input, policy);
     case "PlanningRequested":
@@ -1815,28 +1849,9 @@ function submitLedger(
         : { sourceExclusions: previousState.sourceExclusions }),
     },
   };
-  const renderWithoutIdentity = {
-    commandType: "render_ledger" as const,
-    schemaVersion: 1 as const,
-    runId: input.runId,
-    triggeringStateVersion: nextStateVersion,
-    purposeId: `${input.runId}:ledger:${input.ledgerVersionId}:render`,
-    inputArtifactHashes: [input.ledgerContentHash],
-    policyHash: policy.policyHash,
-    provider: "local" as const,
-    budgetReservation: reservation,
-    payload: {
-      ledgerVersionId: input.ledgerVersionId,
-      ledgerArtifactId: input.ledgerArtifactId,
-    },
-  };
   const validateCommand = planCommand<ValidateLedger>(
     input.validateCommandId,
     validateWithoutIdentity,
-  );
-  const renderCommand = planCommand<RenderLedger>(
-    input.renderCommandId,
-    renderWithoutIdentity,
   );
   const ledgerEvidence = artifactEvidence(
     input.ledgerArtifactId,
@@ -1901,7 +1916,7 @@ function submitLedger(
         validationStatus: "pending",
       },
     },
-    commands: [validateCommand, renderCommand],
+    commands: [validateCommand],
     auditFacts: [
       ...(downstreamInvalidatedFact === null
         ? []
@@ -1920,7 +1935,6 @@ function submitLedger(
       commandPlannedFact(validateCommand, "Plan validate_ledger", [
         ledgerEvidence,
       ]),
-      commandPlannedFact(renderCommand, "Plan render_ledger", [ledgerEvidence]),
     ],
   };
 }
@@ -2079,6 +2093,22 @@ function completeLedgerValidation(
     input.coverageReportArtifactId,
     input.coverageReportContentHash,
   );
+  const reservation = zeroBudgetReservation();
+  const renderCommand = planCommand<RenderLedger>(input.renderCommandId, {
+    commandType: "render_ledger",
+    schemaVersion: 1,
+    runId: input.runId,
+    triggeringStateVersion: nextStateVersion,
+    purposeId: `${input.runId}:ledger:${input.ledgerVersionId}:render`,
+    inputArtifactHashes: [input.ledgerContentHash],
+    policyHash: policy.policyHash,
+    provider: "local",
+    budgetReservation: reservation,
+    payload: {
+      ledgerVersionId: input.ledgerVersionId,
+      ledgerArtifactId: previousState.currentLedger.artifactId,
+    },
+  });
   return {
     nextState: {
       ...previousState,
@@ -2094,7 +2124,7 @@ function completeLedgerValidation(
         },
       },
     },
-    commands: [],
+    commands: [renderCommand],
     auditFacts: [
       {
         type: "ledger_validation_completed",
@@ -2109,6 +2139,74 @@ function completeLedgerValidation(
           lineageValid: input.lineageValid,
           coverageComplete: input.coverageComplete,
           uncoveredRangeCount: input.uncoveredRangeCount,
+        },
+      },
+      commandPlannedFact(renderCommand, "Plan render_ledger", [
+        artifactEvidence(
+          previousState.currentLedger.artifactId,
+          previousState.currentLedger.contentHash,
+        ),
+      ]),
+    ],
+  };
+}
+
+function completeLedgerRender(
+  previousState: NonterminalRunState | null,
+  input: LedgerRendered,
+  policy: PinnedRunPolicy,
+): TransitionResult {
+  if (
+    previousState === null ||
+    previousState.state !== "draft" ||
+    previousState.runId !== input.runId ||
+    previousState.stateVersion !== input.expectedStateVersion ||
+    previousState.currentLedger === undefined ||
+    previousState.currentLedger.validationStatus !== "validated" ||
+    previousState.currentLedger.versionId !== input.ledgerVersionId ||
+    previousState.currentLedger.contentHash !== input.ledgerContentHash ||
+    previousState.currentLedger.renderedProjection !== undefined ||
+    previousState.policyHash !== policy.policyHash ||
+    typeof input.renderedArtifactId !== "string" ||
+    input.renderedArtifactId.trim().length === 0 ||
+    !/^[a-f0-9]{64}$/u.test(input.renderedContentHash) ||
+    input.actor.kind !== "system"
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "LedgerRendered requires the current validated ledger",
+    );
+  }
+  const nextStateVersion = previousState.stateVersion + 1;
+  const renderedEvidence = artifactEvidence(
+    input.renderedArtifactId,
+    input.renderedContentHash,
+  );
+  return {
+    nextState: {
+      ...previousState,
+      stateVersion: nextStateVersion,
+      currentLedger: {
+        ...previousState.currentLedger,
+        renderedProjection: {
+          artifactId: input.renderedArtifactId,
+          contentHash: input.renderedContentHash,
+          renderedStateVersion: nextStateVersion,
+        },
+      },
+    },
+    commands: [],
+    auditFacts: [
+      {
+        type: "ledger_rendered",
+        actor: input.actor,
+        reason: "Record deterministic ledger projection",
+        evidence: [renderedEvidence],
+        payload: {
+          commandId: input.commandId,
+          ledgerVersionId: input.ledgerVersionId,
+          renderedArtifactId: input.renderedArtifactId,
+          renderedContentHash: input.renderedContentHash,
         },
       },
     ],
@@ -2134,7 +2232,10 @@ function approveLedger(
   if (
     previousState.stateVersion !== input.expectedStateVersion ||
     previousState.currentLedger === undefined ||
-    input.validatedStateVersion !== previousState.stateVersion ||
+    previousState.currentLedger.renderedProjection === undefined ||
+    previousState.currentLedger.validation === undefined ||
+    input.validatedStateVersion !==
+      previousState.currentLedger.validation.validatedStateVersion ||
     input.validatedLedgerVersionId !== previousState.currentLedger.versionId ||
     input.validatedLedgerContentHash !==
       previousState.currentLedger.contentHash ||

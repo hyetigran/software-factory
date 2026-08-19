@@ -61,6 +61,7 @@ Evidence references use stable artifact, requirement, section, finding, observat
 | `ledger_submitted`              | ledger version and artifact hash                             |
 | `source_exclusion_approved`     | source range and reason                                      |
 | `ledger_validation_completed`   | command, ledger version, coverage result, validation flags   |
+| `ledger_rendered`               | command, ledger version, deterministic rendered projection   |
 | `ledger_approved`               | ledger version, coverage report, human actor                 |
 | `downstream_invalidated`        | cause and affected artifact/gate IDs                         |
 | `planning_requested`            | plan purpose and Planner assignment                          |

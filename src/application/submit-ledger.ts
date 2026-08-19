@@ -97,7 +97,6 @@ export async function submitLedger(input: {
         schemaCompatible: true,
         mutationLeaseAvailable: true,
         validateCommandId: `command_${randomUUID().replaceAll("-", "")}`,
-        renderCommandId: `command_${randomUUID().replaceAll("-", "")}`,
         actor: input.actor,
       },
       {

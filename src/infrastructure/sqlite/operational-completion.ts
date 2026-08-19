@@ -22,6 +22,7 @@ type OperationalCompletionDependencies = {
   verifyAuditChain: () => void;
   verifyStagedArtifact: (artifact: StagedArtifactRegistration) => void;
   readStagedArtifactBytes: (artifact: StagedArtifactRegistration) => Buffer;
+  readRegisteredObject: (contentHash: string) => Buffer;
   persistArtifactMetadata: (artifact: StagedArtifactRegistration) => void;
   quarantine: (reason: string) => void;
   persistTransition: (
@@ -70,6 +71,7 @@ export class SqliteOperationalCompletion {
     this.evidence = new LocalCompletionEvidence(
       dependencies.database,
       dependencies.readStagedArtifactBytes,
+      dependencies.readRegisteredObject,
     );
   }
 
@@ -150,6 +152,7 @@ export class SqliteOperationalCompletion {
         ![
           "render_source_registration_report",
           "validate_ledger",
+          "render_ledger",
           "render_ledger_approval",
         ].includes(command.commandType) ||
         command.provider !== "local"
@@ -159,17 +162,20 @@ export class SqliteOperationalCompletion {
         );
       }
       if (
-        (command.commandType === "validate_ledger") !==
+        ["validate_ledger", "render_ledger"].includes(command.commandType) !==
         (domain !== undefined)
       ) {
         throw new TypeError(
-          "Ledger validation completion requires its exact domain outcome",
+          "State-changing local completion requires its exact domain outcome",
         );
       }
       this.evidence.assertProvenance(request, command);
       this.evidence.assertUsage(request);
-      if (domain !== undefined)
-        this.evidence.assertValidationDomain(request, domain);
+      if (domain !== undefined) {
+        if (command.commandType === "validate_ledger")
+          this.evidence.assertValidationDomain(request, domain);
+        else this.evidence.assertLedgerRenderDomain(request, domain);
+      }
       const reservation = this.loadReservation(request.attemptId);
       const actual = request.actualUsage;
       if (

@@ -138,7 +138,6 @@ function ledgerSubmittedInput(): LedgerSubmitted {
     schemaCompatible: true,
     mutationLeaseAvailable: true,
     validateCommandId: "command_validate_ledger_01JTEST",
-    renderCommandId: "command_render_ledger_01JTEST",
     actor: {
       kind: "human",
       displayName: "Tigran",
@@ -174,8 +173,8 @@ function ledgerApprovalRequestedInput(): LedgerApprovalRequested {
   return {
     type: "LedgerApprovalRequested",
     runId: "run_01JTEST0000000000000000000",
-    expectedStateVersion: 3,
-    validatedStateVersion: 3,
+    expectedStateVersion: 5,
+    validatedStateVersion: 4,
     validatedLedgerVersionId: "ledger_01JTEST",
     validatedLedgerContentHash: ledgerContentHash,
     validatedPolicyHash: policyHash,
@@ -217,7 +216,7 @@ function planningRequestedInput(): PlanningRequested {
   return {
     type: "PlanningRequested",
     runId: "run_01JTEST0000000000000000000",
-    expectedStateVersion: 4,
+    expectedStateVersion: 6,
     planPurposeId: "purpose_plan_01JTEST",
     plannerAssignment: {
       provider: "openai",
@@ -270,7 +269,7 @@ function independenceOverrideGrantedInput(): IndependenceOverrideGranted {
   return {
     type: "IndependenceOverrideGranted",
     runId: "run_01JTEST0000000000000000000",
-    expectedStateVersion: 4,
+    expectedStateVersion: 6,
     normalReviewerAssignment: {
       provider: "anthropic",
       modelId: "claude-frontier-pinned-20260801",
@@ -312,7 +311,7 @@ function planGeneratedInput(): PlanGenerated {
   return {
     type: "PlanGenerated",
     runId: "run_01JTEST0000000000000000000",
-    expectedStateVersion: 5,
+    expectedStateVersion: 7,
     planPurposeId: "purpose_plan_01JTEST",
     originatingCommandId: "command_generate_plan_01JTEST",
     acceptedAttempt: {
@@ -419,7 +418,7 @@ function planSubmittedInput(): PlanSubmitted {
   return {
     type: "PlanSubmitted",
     runId: generated.runId,
-    expectedStateVersion: 4,
+    expectedStateVersion: 6,
     planVersionId: generated.planVersionId,
     planArtifact: generated.planArtifact,
     canonicalSchemaValid: true,
@@ -472,7 +471,7 @@ function reviewAcceptedInput(blockingFindingIds: string[]): ReviewAccepted {
   return {
     type: "ReviewAccepted",
     runId: "run_01JTEST0000000000000000000",
-    expectedStateVersion: 6,
+    expectedStateVersion: 8,
     reviewId: "review_baseline_01JTEST",
     reviewPurposeId:
       "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
@@ -597,7 +596,7 @@ function providerOutcomeFailedInput(): ProviderOutcomeFailed {
   return {
     type: "ProviderOutcomeFailed",
     runId: "run_01JTEST0000000000000000000",
-    expectedStateVersion: 5,
+    expectedStateVersion: 7,
     failedCommandId: "command_generate_plan_01JTEST",
     failedPurposeId: "purpose_plan_01JTEST",
     retryRepairExhausted: true,
@@ -754,9 +753,54 @@ function approvalReadyDraft(): DraftRunState {
     ledgerSubmittedInput(),
     pinnedPolicy,
   ).nextState;
-  const result = transition(
+  const excluded = transition(
     ledgerDraft,
     sourceExclusionApprovedInput(),
+    pinnedPolicy,
+  ).nextState;
+  const validated = transition(
+    excluded,
+    {
+      type: "LedgerValidationCompleted",
+      runId: excluded.runId,
+      expectedStateVersion: excluded.stateVersion,
+      commandId: "command_validate_exclusion_01JTEST",
+      ledgerVersionId: "ledger_01JTEST",
+      ledgerContentHash,
+      sourceContentHash,
+      coverageReportArtifactId: "artifact_coverage_01JTEST",
+      coverageReportContentHash,
+      schemaValid: true,
+      identityValid: true,
+      lineageValid: true,
+      coverageComplete: true,
+      uncoveredRangeCount: 0,
+      renderCommandId: "command_render_ledger_01JTEST",
+      actor: {
+        kind: "system",
+        component: "deterministic-local-executor",
+        version: "0.0.0",
+      },
+    },
+    pinnedPolicy,
+  ).nextState;
+  const result = transition(
+    validated,
+    {
+      type: "LedgerRendered",
+      runId: validated.runId,
+      expectedStateVersion: validated.stateVersion,
+      commandId: "command_render_ledger_01JTEST",
+      ledgerVersionId: "ledger_01JTEST",
+      ledgerContentHash,
+      renderedArtifactId: "artifact_rendered_ledger_01JTEST",
+      renderedContentHash: "a".repeat(64),
+      actor: {
+        kind: "system",
+        component: "deterministic-local-executor",
+        version: "0.0.0",
+      },
+    },
     pinnedPolicy,
   ).nextState;
   if (result.state !== "draft") {
@@ -1000,29 +1044,6 @@ describe("transition", () => {
           sourceArtifactId: "artifact_source_01JTEST",
         },
       },
-      {
-        commandId: "command_render_ledger_01JTEST",
-        commandKey:
-          "99a4792a90958c4d9e6fe6be58357188ef858eab1c8dd8d21e0f19f7b8cea6bd",
-        commandType: "render_ledger",
-        schemaVersion: 1,
-        runId: draft.runId,
-        triggeringStateVersion: 2,
-        purposeId: `${draft.runId}:ledger:ledger_01JTEST:render`,
-        inputArtifactHashes: [ledgerContentHash],
-        policyHash,
-        provider: "local",
-        budgetReservation: {
-          calls: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          costUsdMicros: 0,
-        },
-        payload: {
-          ledgerVersionId: "ledger_01JTEST",
-          ledgerArtifactId: "artifact_ledger_01JTEST",
-        },
-      },
     ]);
     expect(result.auditFacts).toEqual([
       {
@@ -1067,34 +1088,6 @@ describe("transition", () => {
           commandKey:
             "121f18cceeb005ef8043b6ce47ad8c5aa3113eee4969b342b53c3cca4ec05254",
           commandType: "validate_ledger",
-          reservation: {
-            calls: 0,
-            inputTokens: 0,
-            outputTokens: 0,
-            costUsdMicros: 0,
-          },
-        },
-      },
-      {
-        type: "command_planned",
-        actor: {
-          kind: "system",
-          component: "domain-transition",
-          version: "0.0.0",
-        },
-        reason: "Plan render_ledger",
-        evidence: [
-          {
-            kind: "artifact",
-            artifactId: "artifact_ledger_01JTEST",
-            contentHash: ledgerContentHash,
-          },
-        ],
-        payload: {
-          commandId: "command_render_ledger_01JTEST",
-          commandKey:
-            "99a4792a90958c4d9e6fe6be58357188ef858eab1c8dd8d21e0f19f7b8cea6bd",
-          commandType: "render_ledger",
           reservation: {
             calls: 0,
             inputTokens: 0,
@@ -1237,7 +1230,6 @@ describe("transition", () => {
     expect(second.nextState.stateVersion).toBe(3);
     expect(second.commands).toEqual([
       expect.objectContaining({ triggeringStateVersion: 3 }),
-      expect.objectContaining({ triggeringStateVersion: 3 }),
     ]);
   });
 
@@ -1313,7 +1305,6 @@ describe("transition", () => {
     });
     expect(result.commands).toEqual([
       expect.objectContaining({ triggeringStateVersion: 8 }),
-      expect.objectContaining({ triggeringStateVersion: 8 }),
     ]);
   });
 
@@ -1386,7 +1377,6 @@ describe("transition", () => {
       }),
     );
     expect(result.commands).toEqual([
-      expect.objectContaining({ policyHash: revisedPolicyHash }),
       expect.objectContaining({ policyHash: revisedPolicyHash }),
     ]);
   });
@@ -1784,7 +1774,7 @@ describe("transition", () => {
     expect(result.nextState).toEqual({
       ...exclusionApproved,
       state: "requirements_approved",
-      stateVersion: 4,
+      stateVersion: 6,
       currentLedger: {
         ...exclusionApproved.currentLedger,
         validationStatus: "approved",
@@ -1804,11 +1794,11 @@ describe("transition", () => {
       {
         commandId: "command_render_approval_01JTEST",
         commandKey:
-          "33fd71d7b4745bfdd6362fde282f095826f005b895fac8532cbd906d45156690",
+          "f190c9b19d77e957235212a4bea8950e56d5be7b55540a224927093e689a8c5e",
         commandType: "render_ledger_approval",
         schemaVersion: 1,
         runId: exclusionApproved.runId,
-        triggeringStateVersion: 4,
+        triggeringStateVersion: 6,
         purposeId: `${exclusionApproved.runId}:ledger:ledger_01JTEST:approval`,
         inputArtifactHashes: [
           ledgerContentHash,
@@ -1827,7 +1817,7 @@ describe("transition", () => {
           ledgerVersionId: "ledger_01JTEST",
           ledgerArtifactId: "artifact_ledger_01JTEST",
           coverageReportArtifactId: "artifact_coverage_01JTEST",
-          coverageValidatedStateVersion: 3,
+          coverageValidatedStateVersion: 4,
           coverageValidatedPolicyHash: policyHash,
           approvalGateId: "gate_requirements_approval_01JTEST",
           sourceExclusions: exclusionApproved.sourceExclusions,
@@ -1855,7 +1845,7 @@ describe("transition", () => {
         ledgerVersionId: "ledger_01JTEST",
         coverageReportArtifactId: "artifact_coverage_01JTEST",
         coverageReportContentHash,
-        coverageValidatedStateVersion: 3,
+        coverageValidatedStateVersion: 4,
         coverageValidatedPolicyHash: policyHash,
         approvalGateId: "gate_requirements_approval_01JTEST",
         approvedBy: ledgerApprovalRequestedInput().actor,
@@ -1889,7 +1879,7 @@ describe("transition", () => {
       payload: {
         commandId: "command_render_approval_01JTEST",
         commandKey:
-          "33fd71d7b4745bfdd6362fde282f095826f005b895fac8532cbd906d45156690",
+          "f190c9b19d77e957235212a4bea8950e56d5be7b55540a224927093e689a8c5e",
         commandType: "render_ledger_approval",
         reservation: {
           calls: 0,
@@ -2045,7 +2035,7 @@ describe("transition", () => {
     );
     const revision = {
       ...ledgerSubmittedInput(),
-      expectedStateVersion: 4,
+      expectedStateVersion: 6,
       ledgerVersionId: "ledger_02JTEST",
       ledgerArtifactId: "artifact_ledger_02JTEST",
       validateCommandId: "command_validate_ledger_02JTEST",
@@ -2108,7 +2098,7 @@ describe("transition", () => {
   it("rejects coverage evidence produced for an earlier ledger revision", () => {
     const revision = {
       ...ledgerSubmittedInput(),
-      expectedStateVersion: 3,
+      expectedStateVersion: 5,
       ledgerVersionId: "ledger_02JTEST",
       ledgerArtifactId: "artifact_ledger_02JTEST",
       validateCommandId: "command_validate_ledger_02JTEST",
@@ -2117,7 +2107,7 @@ describe("transition", () => {
     const revised = transition(approvalReadyDraft(), revision, pinnedPolicy);
     const staleCoverageApproval = {
       ...ledgerApprovalRequestedInput(),
-      expectedStateVersion: 4,
+      expectedStateVersion: 6,
     };
 
     expect(() =>
@@ -2133,7 +2123,7 @@ describe("transition", () => {
     expect(result.nextState).toEqual({
       ...approved,
       state: "planning",
-      stateVersion: 5,
+      stateVersion: 7,
       policyLocked: true,
       activePlanning: {
         purposeId: "purpose_plan_01JTEST",
@@ -2148,7 +2138,7 @@ describe("transition", () => {
       expect.objectContaining({
         commandId: "command_generate_plan_01JTEST",
         commandType: "generate_plan",
-        triggeringStateVersion: 5,
+        triggeringStateVersion: 7,
         purposeId: "purpose_plan_01JTEST",
         inputArtifactHashes: [
           ledgerContentHash,
@@ -2384,7 +2374,7 @@ describe("transition", () => {
       expect.objectContaining({
         ...planning,
         state: "baseline_review",
-        stateVersion: 6,
+        stateVersion: 8,
         currentPlan: {
           versionId: "plan_version_01JTEST",
           artifactId: "artifact_plan_01JTEST",
@@ -2425,7 +2415,7 @@ describe("transition", () => {
       expect.objectContaining({
         commandId: "command_render_plan_01JTEST",
         commandType: "render_plan",
-        triggeringStateVersion: 6,
+        triggeringStateVersion: 8,
         provider: "local",
         budgetReservation: {
           calls: 0,
@@ -2441,7 +2431,7 @@ describe("transition", () => {
       expect.objectContaining({
         commandId: "command_baseline_review_01JTEST",
         commandType: "baseline_review",
-        triggeringStateVersion: 6,
+        triggeringStateVersion: 8,
         prerequisiteCommandIds: ["command_render_plan_01JTEST"],
         provider: "anthropic",
         modelId: "claude-frontier-pinned-20260801",
@@ -2777,7 +2767,7 @@ describe("transition", () => {
     if (result.nextState.state !== "baseline_review") {
       throw new Error("Expected baseline review state");
     }
-    expect(result.nextState.stateVersion).toBe(5);
+    expect(result.nextState.stateVersion).toBe(7);
     expect(result.nextState.currentPlan).toEqual(
       expect.objectContaining({
         versionId: "plan_version_01JTEST",
@@ -2825,7 +2815,7 @@ describe("transition", () => {
     );
     const result = transition(
       overridden.nextState,
-      { ...planSubmittedInput(), expectedStateVersion: 5 },
+      { ...planSubmittedInput(), expectedStateVersion: 7 },
       pinnedPolicy,
     );
 
@@ -2904,7 +2894,7 @@ describe("transition", () => {
     );
 
     expect(result.nextState.state).toBe("remediation");
-    expect(result.nextState.stateVersion).toBe(7);
+    expect(result.nextState.stateVersion).toBe(9);
     expect(result.commands).toEqual([
       expect.objectContaining({ commandType: "generate_remediation" }),
     ]);
@@ -2992,7 +2982,7 @@ describe("transition", () => {
       submitted,
       {
         ...reviewAcceptedInput([]),
-        expectedStateVersion: 5,
+        expectedStateVersion: 7,
         originatingCommandId: "command_review_submitted_plan_01JTEST",
         renderedPlanResolution: {
           ...reviewAcceptedInput([]).renderedPlanResolution,
@@ -3191,7 +3181,7 @@ describe("transition", () => {
       ...providerOutcomeFailedInput(),
       type: "PinnedModelUnavailable",
       failureKind: "model_unavailable",
-      expectedStateVersion: 6,
+      expectedStateVersion: 8,
       failedCommandId: "command_baseline_review_01JTEST",
       failedPurposeId:
         "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
@@ -3315,7 +3305,7 @@ describe("transition", () => {
       baselineReviewState(),
       {
         ...providerOutcomeFailedInput(),
-        expectedStateVersion: 6,
+        expectedStateVersion: 8,
         failedCommandId: "command_baseline_review_01JTEST",
         failedPurposeId:
           "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
@@ -3420,7 +3410,7 @@ describe("transition", () => {
         baselineReviewState(),
         {
           ...providerOutcomeFailedInput(),
-          expectedStateVersion: 6,
+          expectedStateVersion: 8,
           failedCommandId: "command_baseline_review_01JTEST",
           failedPurposeId:
             "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
@@ -3440,12 +3430,12 @@ describe("transition", () => {
     });
     const planning = transition(
       override.nextState,
-      { ...planningRequestedInput(), expectedStateVersion: 5 },
+      { ...planningRequestedInput(), expectedStateVersion: 7 },
       pinnedPolicy,
     );
     const input: PlanGenerated = {
       ...planGeneratedInput(),
-      expectedStateVersion: 6,
+      expectedStateVersion: 8,
       reviewerAssignment: {
         provider: "openai" as const,
         modelId: "gpt-reviewer-pinned",

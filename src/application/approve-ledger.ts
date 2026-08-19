@@ -59,7 +59,9 @@ export async function approveLedger(input: {
       report.coverageValid !== true ||
       report.uncoveredRanges.length !== 0 ||
       validation.coverageComplete !== true ||
-      validation.validatedStateVersion !== state.stateVersion
+      state.currentLedger.renderedProjection === undefined ||
+      state.currentLedger.renderedProjection.renderedStateVersion !==
+        state.stateVersion
     ) {
       throw new WorkspaceOperationError(
         "CONFLICT",

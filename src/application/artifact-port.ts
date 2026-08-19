@@ -1,6 +1,7 @@
 export const artifactKinds = [
   "raw_requirements",
   "requirements_ledger",
+  "rendered_ledger",
   "coverage_report",
   "structured_plan",
   "rendered_plan",
@@ -35,6 +36,7 @@ export type ArtifactProvenance =
         | "structured_provider_output"
         | "provider_failure_evidence"
         | "ledger_validation"
+        | "ledger_render"
         | "source_registration"
         | "ledger_approval"
         | "local_usage"
@@ -164,6 +166,7 @@ export function artifactRegistrationIsValid(
             "structured_provider_output",
             "provider_failure_evidence",
             "ledger_validation",
+            "ledger_render",
             "source_registration",
             "ledger_approval",
             "local_usage",
