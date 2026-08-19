@@ -319,48 +319,12 @@ export class LocalCompletionEvidence {
     },
     validateTransition = true,
   ): void {
-    const currentRow = this.database
-      .prepare("SELECT state_json FROM run_state_snapshots WHERE run_id = ?")
-      .get(request.runId) as { state_json: string } | undefined;
-    if (currentRow === undefined)
-      throw new AuthorityIntegrityError(
-        "Local completion run state is missing",
-      );
-    const currentState = JSON.parse(
-      currentRow.state_json,
-    ) as NonterminalRunState;
+    const { currentState, payload, inputContentHash } = this.authenticateRender(
+      request,
+      "ledgerArtifactId",
+    );
     if (currentState.currentLedger === undefined)
       throw new AuthorityIntegrityError("Current ledger is missing");
-    const commandRow = this.database
-      .prepare(
-        "SELECT specification_json FROM logical_commands WHERE command_id = ?",
-      )
-      .get(request.commandId) as { specification_json: string } | undefined;
-    if (commandRow === undefined)
-      throw new AuthorityIntegrityError("Local render command is missing");
-    const command = JSON.parse(commandRow.specification_json) as Record<
-      string,
-      unknown
-    >;
-    const payload = command.payload as Record<string, unknown>;
-    const ledgerRow = this.database
-      .prepare("SELECT content_hash FROM artifacts WHERE artifact_id = ?")
-      .get(String(payload.ledgerArtifactId)) as
-      { content_hash: string } | undefined;
-    if (ledgerRow === undefined)
-      throw new AuthorityIntegrityError("Ledger render input is missing");
-    const ledgerBytes = this.readRegisteredObject(ledgerRow.content_hash);
-    const expectedRender = renderLedger(ledgerBytes);
-    const actualRender = this.readStagedArtifactBytes(request.resultArtifact);
-    if (
-      !actualRender.equals(expectedRender.bytes) ||
-      expectedRender.contentHash !== request.resultArtifact.contentHash ||
-      request.resultArtifact.kind !== "rendered_ledger" ||
-      request.resultArtifact.mediaType !== expectedRender.mediaType
-    )
-      throw new TypeError(
-        "Ledger render result does not match deterministic output",
-      );
     if (!validateTransition) return;
     const expected = completeLedgerRender(
       currentState,
@@ -370,7 +334,7 @@ export class LocalCompletionEvidence {
         expectedStateVersion: domain.expectedStateVersion,
         commandId: request.commandId,
         ledgerVersionId: String(payload.ledgerVersionId),
-        ledgerContentHash: ledgerRow.content_hash,
+        ledgerContentHash: inputContentHash,
         renderedArtifactId: request.resultArtifact.artifactId,
         renderedContentHash: request.resultArtifact.contentHash,
         actor: {
@@ -395,50 +359,13 @@ export class LocalCompletionEvidence {
     },
     validateTransition = true,
   ): void {
-    const currentRow = this.database
-      .prepare("SELECT state_json FROM run_state_snapshots WHERE run_id = ?")
-      .get(request.runId) as { state_json: string } | undefined;
-    if (currentRow === undefined)
-      throw new AuthorityIntegrityError(
-        "Local completion run state is missing",
-      );
-    const currentState = JSON.parse(
-      currentRow.state_json,
-    ) as NonterminalRunState;
+    const { currentState, payload, inputContentHash } = this.authenticateRender(
+      request,
+      "planArtifactId",
+    );
+    if (!validateTransition) return;
     if (currentState.state !== "baseline_review")
       throw new AuthorityIntegrityError("Current plan is missing");
-    const commandRow = this.database
-      .prepare(
-        "SELECT specification_json FROM logical_commands WHERE command_id = ?",
-      )
-      .get(request.commandId) as { specification_json: string } | undefined;
-    if (commandRow === undefined)
-      throw new AuthorityIntegrityError("Local render command is missing");
-    const command = JSON.parse(commandRow.specification_json) as Record<
-      string,
-      unknown
-    >;
-    const payload = command.payload as Record<string, unknown>;
-    const planRow = this.database
-      .prepare("SELECT content_hash FROM artifacts WHERE artifact_id = ?")
-      .get(String(payload.planArtifactId)) as
-      { content_hash: string } | undefined;
-    if (planRow === undefined)
-      throw new AuthorityIntegrityError("Plan render input is missing");
-    const expectedRender = renderPlan(
-      this.readRegisteredObject(planRow.content_hash),
-    );
-    const actualRender = this.readStagedArtifactBytes(request.resultArtifact);
-    if (
-      !actualRender.equals(expectedRender.bytes) ||
-      expectedRender.contentHash !== request.resultArtifact.contentHash ||
-      request.resultArtifact.kind !== "rendered_plan" ||
-      request.resultArtifact.mediaType !== expectedRender.mediaType
-    )
-      throw new TypeError(
-        "Plan render result does not match deterministic output",
-      );
-    if (!validateTransition) return;
     const expected = completePlanRender(
       currentState,
       {
@@ -447,7 +374,7 @@ export class LocalCompletionEvidence {
         expectedStateVersion: domain.expectedStateVersion,
         commandId: request.commandId,
         planVersionId: String(payload.planVersionId),
-        planContentHash: planRow.content_hash,
+        planContentHash: inputContentHash,
         renderedArtifactId: request.resultArtifact.artifactId,
         renderedContentHash: request.resultArtifact.contentHash,
         actor: {
@@ -462,5 +389,60 @@ export class LocalCompletionEvidence {
       throw new TypeError(
         "Plan render domain outcome does not match deterministic output",
       );
+  }
+
+  private authenticateRender(
+    request: CompleteAttemptRequest,
+    inputField: "ledgerArtifactId" | "planArtifactId",
+  ): {
+    currentState: NonterminalRunState;
+    payload: Record<string, unknown>;
+    inputContentHash: string;
+  } {
+    const currentRow = this.database
+      .prepare("SELECT state_json FROM run_state_snapshots WHERE run_id = ?")
+      .get(request.runId) as { state_json: string } | undefined;
+    if (currentRow === undefined)
+      throw new AuthorityIntegrityError(
+        "Local completion run state is missing",
+      );
+    const commandRow = this.database
+      .prepare(
+        "SELECT specification_json FROM logical_commands WHERE command_id = ?",
+      )
+      .get(request.commandId) as { specification_json: string } | undefined;
+    if (commandRow === undefined)
+      throw new AuthorityIntegrityError("Local render command is missing");
+    const command = JSON.parse(commandRow.specification_json) as Record<
+      string,
+      unknown
+    >;
+    const payload = command.payload as Record<string, unknown>;
+    const inputRow = this.database
+      .prepare("SELECT content_hash FROM artifacts WHERE artifact_id = ?")
+      .get(String(payload[inputField])) as { content_hash: string } | undefined;
+    if (inputRow === undefined)
+      throw new AuthorityIntegrityError("Local render input is missing");
+    const expected =
+      inputField === "ledgerArtifactId"
+        ? renderLedger(this.readRegisteredObject(inputRow.content_hash))
+        : renderPlan(this.readRegisteredObject(inputRow.content_hash));
+    const actual = this.readStagedArtifactBytes(request.resultArtifact);
+    const expectedKind =
+      inputField === "ledgerArtifactId" ? "rendered_ledger" : "rendered_plan";
+    if (
+      !actual.equals(expected.bytes) ||
+      expected.contentHash !== request.resultArtifact.contentHash ||
+      request.resultArtifact.kind !== expectedKind ||
+      request.resultArtifact.mediaType !== expected.mediaType
+    )
+      throw new TypeError(
+        "Local render result does not match deterministic output",
+      );
+    return {
+      currentState: JSON.parse(currentRow.state_json) as NonterminalRunState,
+      payload,
+      inputContentHash: inputRow.content_hash,
+    };
   }
 }
