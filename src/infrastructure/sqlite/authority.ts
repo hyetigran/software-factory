@@ -51,6 +51,7 @@ import { decodeAuditEntry, type AuditRow } from "./audit-codec.js";
 import { appendAuditEntries } from "./audit-journal.js";
 import { AuthorityIntegrityError, StaleStateError } from "./errors.js";
 import { SqliteOperationalCompletion } from "./operational-completion.js";
+import { SqliteLocalAttemptFailure } from "./local-attempt-failure.js";
 import { SqliteProviderCompletion } from "./provider-completion.js";
 import { SqliteProviderFailure } from "./provider-failure.js";
 import { SqlitePreparedRequestRegistration } from "./prepared-request-registration.js";
@@ -133,6 +134,7 @@ export class SqliteAuthority
     PreparedProviderRequestRegistrationPort
 {
   private readonly operationalCompletion: SqliteOperationalCompletion;
+  private readonly localAttemptFailure: SqliteLocalAttemptFailure;
   private readonly providerCompletion: SqliteProviderCompletion;
   private readonly providerFailure: SqliteProviderFailure;
   private readonly preparedRequestRegistration?: SqlitePreparedRequestRegistration;
@@ -151,11 +153,21 @@ export class SqliteAuthority
       assertWritable: () => this.assertWritable(),
       verifyAuditChain: () => this.verifyAuditChain(),
       verifyStagedArtifact: (artifact) => this.verifyStagedArtifact(artifact),
+      readStagedArtifactBytes: (artifact) =>
+        this.readVerifiedStagedArtifact(artifact),
       persistArtifactMetadata: (artifact) =>
         this.persistArtifactMetadata(artifact),
       quarantine: (reason) => this.quarantine(reason),
       persistTransition: (runId, expectedStateVersion, result) =>
         this.persistAcceptedTransition({ runId, expectedStateVersion }, result),
+    });
+    this.localAttemptFailure = new SqliteLocalAttemptFailure({
+      database,
+      workspaceId,
+      now,
+      assertWritable: () => this.assertWritable(),
+      verifyAuditChain: () => this.verifyAuditChain(),
+      quarantine: (reason) => this.quarantine(reason),
     });
     this.providerCompletion = new SqliteProviderCompletion({
       database,
@@ -1354,7 +1366,7 @@ export class SqliteAuthority
   async failLocalAttempt(request: FailLocalAttemptRequest): Promise<void> {
     this.assertWritable();
     await this.verifyIntegrity();
-    this.operationalCompletion.fail(request);
+    this.localAttemptFailure.fail(request);
   }
   async completeLocalTransition(
     request: CompleteAttemptRequest,

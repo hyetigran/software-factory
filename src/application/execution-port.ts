@@ -325,6 +325,7 @@ export type FailLocalAttemptRequest = {
   ownerProcess: string;
   correlationId: string;
   failureMessage: string;
+  failureKind: "invalid_output" | "integrity";
 };
 
 export interface CommandExecutionPort {

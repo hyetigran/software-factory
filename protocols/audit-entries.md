@@ -55,11 +55,12 @@ Evidence references use stable artifact, requirement, section, finding, observat
 ## Fact catalog
 
 | Fact type                       | Required payload                                             |
-|---|---|
+| ------------------------------- | ------------------------------------------------------------ |
 | `run_started`                   | source artifact, configuration hash, parent run if any       |
 | `source_registered`             | artifact ID, content hash, provenance path                   |
 | `ledger_submitted`              | ledger version and artifact hash                             |
 | `source_exclusion_approved`     | source range and reason                                      |
+| `ledger_validation_completed`   | command, ledger version, coverage result, validation flags   |
 | `ledger_approved`               | ledger version, coverage report, human actor                 |
 | `downstream_invalidated`        | cause and affected artifact/gate IDs                         |
 | `planning_requested`            | plan purpose and Planner assignment                          |

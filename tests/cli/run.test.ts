@@ -127,7 +127,14 @@ describe("factory executable", () => {
             display_id: "REQ-1",
             statement: "Build it safely.",
             status: "active",
-            source_ranges: [{ start_byte: 0, end_byte: 10 }],
+            source_ranges: [
+              {
+                start_byte: 0,
+                end_byte: Buffer.byteLength(
+                  "# Requirements\n\nBuild it safely.\n",
+                ),
+              },
+            ],
             lineage_roots: ["requirement_1"],
             change_kind: "original",
           },
@@ -248,7 +255,7 @@ describe("factory executable", () => {
         validationStatus: "validated",
         validation: {
           coverageReportArtifactId: executed.data.execution.resultArtifactId,
-          coverageComplete: false,
+          coverageComplete: true,
         },
       },
     });
@@ -260,6 +267,27 @@ describe("factory executable", () => {
         expect.objectContaining({ factType: "command_attempt_completed" }),
       ]),
     );
+    const approvalLines: string[] = [];
+    await expect(
+      runCliAsync(
+        ["approve", "ledger", started.data.runId, "--json"],
+        (line) => approvalLines.push(line),
+        operations,
+        projectRoot,
+      ),
+    ).resolves.toBe(CliExit.success);
+    expect(JSON.parse(approvalLines[0] ?? "null")).toMatchObject({
+      ok: true,
+      command: "approve ledger",
+      data: {
+        state: {
+          state: "requirements_approved",
+          stateVersion: 5,
+          currentLedger: { validationStatus: "approved" },
+        },
+        coverageReportArtifactId: executed.data.execution.resultArtifactId,
+      },
+    });
 
     const conflictLines: string[] = [];
     const conflictExit = await runCliAsync(
@@ -447,6 +475,7 @@ describe("factory executable", () => {
       submitLedger: vi.fn(),
       approveSourceExclusion: vi.fn(),
       executeNext: vi.fn(),
+      approveLedger: vi.fn(),
       listRuns,
       loadRun: vi.fn(),
       listAudit: vi.fn(),
@@ -503,6 +532,7 @@ describe("factory executable", () => {
       submitLedger: vi.fn(),
       approveSourceExclusion: vi.fn(),
       executeNext: vi.fn(),
+      approveLedger: vi.fn(),
       listRuns: vi.fn(),
       loadRun: vi.fn().mockResolvedValue({ runId: "run_1" }),
       listAudit: vi.fn(),
@@ -577,6 +607,7 @@ describe("factory executable", () => {
       submitLedger: vi.fn(),
       approveSourceExclusion: vi.fn(),
       executeNext: vi.fn(),
+      approveLedger: vi.fn(),
       listRuns: vi.fn(),
       loadRun: vi.fn(),
       listAudit: vi.fn(),

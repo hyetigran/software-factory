@@ -18,6 +18,13 @@ type Writer = (line: string) => void;
 type ParsedCommand =
   | { kind: "init"; publicName: "init"; json: boolean; projectRoot: string }
   | {
+      kind: "approve_ledger";
+      publicName: "approve ledger";
+      json: boolean;
+      projectRoot: string;
+      runId: string;
+    }
+  | {
       kind: "execute_next";
       publicName: "execute next";
       json: boolean;
@@ -95,7 +102,7 @@ type ParsedCommand =
     };
 
 const usage =
-  "Usage: factory init | configure [project-config.json] [overrides.json] | run start <source.md> <configuration-artifact-id> | run list | run status <run-id> | submit ledger <run-id> <ledger.json> | approve exclusion <run-id> <id> <start> <end> <reason> | execute next <run-id> | inspect <state|findings|usage|gates> <run-id> | inspect <audit|artifacts> [run-id] [--json] [--project <path>]";
+  "Usage: factory init | configure [project-config.json] [overrides.json] | run start <source.md> <configuration-artifact-id> | run list | run status <run-id> | submit ledger <run-id> <ledger.json> | approve ledger <run-id> | approve exclusion <run-id> <id> <start> <end> <reason> | execute next <run-id> | inspect <state|findings|usage|gates> <run-id> | inspect <audit|artifacts> [run-id] [--json] [--project <path>]";
 
 export function runCli(args: string[], write: Writer): number {
   if (args.includes("--version")) {
@@ -151,6 +158,19 @@ function parseArgs(args: string[], cwd: string): ParsedCommand {
   const projectRoot = resolve(project ?? cwd);
   if (positional.length === 1 && positional[0] === "init") {
     return { kind: "init", publicName: "init", json, projectRoot };
+  }
+  if (
+    positional.length === 3 &&
+    positional[0] === "approve" &&
+    positional[1] === "ledger"
+  ) {
+    return {
+      kind: "approve_ledger",
+      publicName: "approve ledger",
+      json,
+      projectRoot,
+      runId: positional[2] ?? "",
+    };
   }
   if (
     positional.length === 3 &&
@@ -442,6 +462,19 @@ export async function runCliAsync(
           command,
           approved,
           `Approved source exclusion ${command.exclusionId}`,
+        );
+        return CliExit.success;
+      }
+      case "approve_ledger": {
+        const approved = await operations.approveLedger(
+          command.projectRoot,
+          command.runId,
+        );
+        writeSuccess(
+          write,
+          command,
+          approved,
+          `Approved ledger with coverage ${approved.coverageReportArtifactId}`,
         );
         return CliExit.success;
       }

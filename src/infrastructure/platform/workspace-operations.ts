@@ -15,6 +15,7 @@ import { submitLedger } from "../../application/submit-ledger.js";
 import { loadPinnedConfiguration } from "../../application/load-pinned-configuration.js";
 import { approveSourceExclusion } from "../../application/approve-source-exclusion.js";
 import { executeNextLocalCommand } from "../../application/execute-local-command.js";
+import { approveLedger } from "../../application/approve-ledger.js";
 import {
   DomainTransitionError,
   type NonterminalRunState,
@@ -427,6 +428,80 @@ export function createWorkspaceOperations(): WorkspaceOperations {
           configuration,
           ownerProcess: `factory-cli:${process.pid}`,
         });
+      } finally {
+        authority.close();
+      }
+    },
+    async approveLedger(projectRoot, runId) {
+      const store = await ContentAddressedArtifactStore.open(projectRoot);
+      const state = await withReadModel(projectRoot, (model) =>
+        model.loadRun(runId),
+      );
+      if (state === null)
+        throw new WorkspaceOperationError(
+          "RUN_NOT_FOUND",
+          `Run not found: ${runId}`,
+          { runId },
+        );
+      const reportHash = (
+        state as {
+          currentLedger?: {
+            validation?: { coverageReportContentHash?: unknown };
+          };
+        }
+      ).currentLedger?.validation?.coverageReportContentHash;
+      if (typeof reportHash !== "string")
+        throw new WorkspaceOperationError(
+          "CONFLICT",
+          "Ledger has no accepted validation result",
+        );
+      let coverageReportBytes: Uint8Array;
+      try {
+        coverageReportBytes = await store.readVerified(reportHash);
+      } catch (error) {
+        throw new WorkspaceOperationError(
+          "INTEGRITY_ERROR",
+          "Coverage report is missing or corrupt",
+          { cause: error instanceof Error ? error.message : String(error) },
+        );
+      }
+      const configuration = await loadPinnedConfiguration({
+        runId,
+        read: {
+          loadRun: (id) =>
+            withReadModel(projectRoot, (model) => model.loadRun(id)),
+          listArtifacts: () =>
+            withReadModel(projectRoot, (model) => model.listArtifacts()),
+          readVerified: (contentHash) => store.readVerified(contentHash),
+        },
+      });
+      const authority = SqliteAuthority.open(
+        join(store.workspace.root, "state.db"),
+        { artifactStore: store },
+      );
+      try {
+        return await approveLedger({
+          authority,
+          runId,
+          coverageReportBytes,
+          configuration,
+          actor: {
+            kind: "human",
+            displayName: configuration.humanActorDisplayName,
+            osAccount: userInfo().username,
+          },
+        });
+      } catch (error) {
+        if (
+          error instanceof WorkspaceOperationError ||
+          error instanceof DomainTransitionError
+        ) {
+          if (error instanceof WorkspaceOperationError) throw error;
+          throw new WorkspaceOperationError("CONFLICT", error.message, {
+            domainCode: error.code,
+          });
+        }
+        throw error;
       } finally {
         authority.close();
       }

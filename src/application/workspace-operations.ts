@@ -159,6 +159,10 @@ export interface WorkspaceOperations {
     commandType: string;
     resultArtifactId: string;
   } | null>;
+  approveLedger(
+    projectRoot: string,
+    runId: string,
+  ): Promise<{ state: object; coverageReportArtifactId: string }>;
   listRuns(projectRoot: string): Promise<RunSummary[]>;
   loadRun(projectRoot: string, runId: string): Promise<object | null>;
   listAudit(projectRoot: string, runId?: string): Promise<AuditSummary[]>;

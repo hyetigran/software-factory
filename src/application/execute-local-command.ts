@@ -212,6 +212,7 @@ export async function executeNextLocalCommand(input: {
         ownerProcess: input.ownerProcess,
         correlationId,
         failureMessage: error instanceof Error ? error.message : String(error),
+        failureKind: "integrity",
       });
       throw new WorkspaceOperationError(
         "INTEGRITY_ERROR",

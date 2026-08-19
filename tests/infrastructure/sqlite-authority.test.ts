@@ -737,7 +737,7 @@ describe("SQLite authority", () => {
       createdBy: "system:test",
       provenance: {
         method: "application_generated",
-        purpose: "ledger_validation",
+        purpose: "source_registration",
         sourceArtifactIds: ["artifact_source"],
         commandId: "command_execute",
         attemptId: "attempt_execute_1",

@@ -35,6 +35,8 @@ export type ArtifactProvenance =
         | "structured_provider_output"
         | "provider_failure_evidence"
         | "ledger_validation"
+        | "source_registration"
+        | "ledger_approval"
         | "local_usage"
         | "terminal_policy_decision"
         | "terminal_budget_report"
@@ -162,6 +164,8 @@ export function artifactRegistrationIsValid(
             "structured_provider_output",
             "provider_failure_evidence",
             "ledger_validation",
+            "source_registration",
+            "ledger_approval",
             "local_usage",
           ].includes(provenance.purpose) &&
           identifiers(provenance.sourceArtifactIds) &&
