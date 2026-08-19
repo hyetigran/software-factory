@@ -106,6 +106,38 @@ export class LocalCompletionEvidence {
       );
   }
 
+  assertUsage(request: CompleteAttemptRequest): void {
+    const usage: unknown = JSON.parse(
+      this.readStagedArtifactBytes(request.nativeUsageArtifact).toString(
+        "utf8",
+      ),
+    );
+    if (
+      usage === null ||
+      typeof usage !== "object" ||
+      Array.isArray(usage) ||
+      canonicalJson(usage) !==
+        canonicalJson({
+          commandId: request.commandId,
+          attemptId: request.attemptId,
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsdMicros: 0,
+        }) ||
+      canonicalJson(request.actualUsage) !==
+        canonicalJson({
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsdMicros: 0,
+        })
+    )
+      throw new TypeError(
+        "Local usage evidence does not match the completed attempt",
+      );
+  }
+
   assertValidationDomain(
     request: CompleteAttemptRequest,
     domain: {

@@ -167,6 +167,7 @@ export class SqliteOperationalCompletion {
         );
       }
       this.evidence.assertProvenance(request, command);
+      this.evidence.assertUsage(request);
       if (domain !== undefined)
         this.evidence.assertValidationDomain(request, domain);
       const reservation = this.loadReservation(request.attemptId);

@@ -743,7 +743,17 @@ describe("SQLite authority", () => {
         attemptId: "attempt_execute_1",
       },
     });
-    const usage = await store.stageArtifact(Buffer.from("{}"), {
+    const usageBytes = Buffer.from(
+      canonicalJson({
+        commandId: "command_execute",
+        attemptId: "attempt_execute_1",
+        calls: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsdMicros: 0,
+      }),
+    );
+    const usage = await store.stageArtifact(usageBytes, {
       artifactId: "artifact_usage",
       kind: "native_usage",
       mediaType: "application/json",
@@ -756,6 +766,28 @@ describe("SQLite authority", () => {
         attemptId: "attempt_execute_1",
       },
     });
+    const invalidUsage = await store.stageArtifact(Buffer.from("{}"), {
+      ...usage,
+      artifactId: "artifact_invalid_usage",
+    });
+    await expect(
+      authority.completeAttempt({
+        runId: "run_execute",
+        commandId: "command_execute",
+        attemptId: "attempt_execute_1",
+        correlationId: "correlation_execute_1",
+        ownerProcess: "pid:123",
+        resultArtifact: result,
+        nativeUsageArtifact: invalidUsage,
+        actualUsage: {
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsdMicros: 0,
+        },
+        providerEvidence: {},
+      }),
+    ).rejects.toThrow("usage evidence");
     await expect(
       authority.completeAttempt({
         runId: "run_execute",
@@ -773,7 +805,7 @@ describe("SQLite authority", () => {
         },
         providerEvidence: {},
       }),
-    ).rejects.toThrow("exceeds the reserved maximum");
+    ).rejects.toThrow("usage evidence");
     await expect(
       authority.completeAttempt({
         runId: "run_execute",

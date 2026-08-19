@@ -147,6 +147,8 @@ export async function executeNextLocalCommand(input: {
       );
       const usageBytes = Buffer.from(
         canonicalJson({
+          commandId: command.commandId,
+          attemptId,
           calls: 0,
           costUsdMicros: 0,
           inputTokens: 0,
