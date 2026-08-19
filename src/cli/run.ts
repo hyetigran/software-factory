@@ -18,6 +18,13 @@ type Writer = (line: string) => void;
 type ParsedCommand =
   | { kind: "init"; publicName: "init"; json: boolean; projectRoot: string }
   | {
+      kind: "plan_request";
+      publicName: "plan request";
+      json: boolean;
+      projectRoot: string;
+      runId: string;
+    }
+  | {
       kind: "approve_ledger";
       publicName: "approve ledger";
       json: boolean;
@@ -102,7 +109,7 @@ type ParsedCommand =
     };
 
 const usage =
-  "Usage: factory init | configure [project-config.json] [overrides.json] | run start <source.md> <configuration-artifact-id> | run list | run status <run-id> | submit ledger <run-id> <ledger.json> | approve ledger <run-id> | approve exclusion <run-id> <id> <start> <end> <reason> | execute next <run-id> | inspect <state|findings|usage|gates> <run-id> | inspect <audit|artifacts> [run-id] [--json] [--project <path>]";
+  "Usage: factory init | configure [project-config.json] [overrides.json] | run start <source.md> <configuration-artifact-id> | run list | run status <run-id> | submit ledger <run-id> <ledger.json> | approve ledger <run-id> | approve exclusion <run-id> <id> <start> <end> <reason> | plan request <run-id> --accept-policy --accept-budgets --ack-provider-boundary | execute next <run-id> | inspect <state|findings|usage|gates> <run-id> | inspect <audit|artifacts> [run-id] [--json] [--project <path>]";
 
 export function runCli(args: string[], write: Writer): number {
   if (args.includes("--version")) {
@@ -132,12 +139,27 @@ export function runCli(args: string[], write: Writer): number {
 function parseArgs(args: string[], cwd: string): ParsedCommand {
   let json = false;
   let project: string | undefined;
+  let acceptPolicy = false;
+  let acceptBudgets = false;
+  let acknowledgeProvider = false;
   const positional: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index] ?? "";
     if (token === "--json") {
       if (json) throw new TypeError("Duplicate option: --json");
       json = true;
+    } else if (token === "--accept-policy") {
+      if (acceptPolicy)
+        throw new TypeError("Duplicate option: --accept-policy");
+      acceptPolicy = true;
+    } else if (token === "--accept-budgets") {
+      if (acceptBudgets)
+        throw new TypeError("Duplicate option: --accept-budgets");
+      acceptBudgets = true;
+    } else if (token === "--ack-provider-boundary") {
+      if (acknowledgeProvider)
+        throw new TypeError("Duplicate option: --ack-provider-boundary");
+      acknowledgeProvider = true;
     } else if (token === "--project") {
       const value = args[index + 1];
       if (
@@ -156,6 +178,28 @@ function parseArgs(args: string[], cwd: string): ParsedCommand {
     }
   }
   const projectRoot = resolve(project ?? cwd);
+  const planningRequest =
+    positional.length === 3 &&
+    positional[0] === "plan" &&
+    positional[1] === "request";
+  if (
+    (acceptPolicy || acceptBudgets || acknowledgeProvider) &&
+    !planningRequest
+  )
+    throw new TypeError("Planning acceptance options require plan request");
+  if (planningRequest) {
+    if (!acceptPolicy || !acceptBudgets || !acknowledgeProvider)
+      throw new TypeError(
+        "plan request requires --accept-policy, --accept-budgets, and --ack-provider-boundary",
+      );
+    return {
+      kind: "plan_request",
+      publicName: "plan request",
+      json,
+      projectRoot,
+      runId: positional[2] ?? "",
+    };
+  }
   if (positional.length === 1 && positional[0] === "init") {
     return { kind: "init", publicName: "init", json, projectRoot };
   }
@@ -475,6 +519,20 @@ export async function runCliAsync(
           command,
           approved,
           `Approved ledger with coverage ${approved.coverageReportArtifactId}`,
+        );
+        return CliExit.success;
+      }
+      case "plan_request": {
+        const planned = await operations.requestPlanning(
+          command.projectRoot,
+          command.runId,
+          { policy: true, budgets: true, providerBoundary: true },
+        );
+        writeSuccess(
+          write,
+          command,
+          planned,
+          `Requested planning with command ${planned.commandId}`,
         );
         return CliExit.success;
       }

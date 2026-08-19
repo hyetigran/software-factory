@@ -307,6 +307,47 @@ describe("factory executable", () => {
         coverageReportArtifactId: executed.data.execution.resultArtifactId,
       },
     });
+    const planningLines: string[] = [];
+    await expect(
+      runCliAsync(
+        [
+          "plan",
+          "request",
+          started.data.runId,
+          "--accept-policy",
+          "--accept-budgets",
+          "--ack-provider-boundary",
+          "--json",
+        ],
+        (line) => planningLines.push(line),
+        operations,
+        projectRoot,
+      ),
+    ).resolves.toBe(CliExit.success);
+    const planning = JSON.parse(planningLines[0] ?? "null") as {
+      data: { commandId: string };
+    };
+    expect(planning).toMatchObject({
+      ok: true,
+      command: "plan request",
+      data: {
+        state: { state: "planning", stateVersion: 6 },
+      },
+    });
+    const planningDatabase = new DatabaseSync(
+      join(projectRoot, ".factory", "state.db"),
+    );
+    try {
+      expect(
+        planningDatabase
+          .prepare(
+            "SELECT command_type, status FROM logical_commands WHERE command_id = ?",
+          )
+          .get(planning.data.commandId),
+      ).toEqual({ command_type: "generate_plan", status: "planned" });
+    } finally {
+      planningDatabase.close();
+    }
 
     const conflictLines: string[] = [];
     const conflictExit = await runCliAsync(
@@ -495,6 +536,7 @@ describe("factory executable", () => {
       approveSourceExclusion: vi.fn(),
       executeNext: vi.fn(),
       approveLedger: vi.fn(),
+      requestPlanning: vi.fn(),
       listRuns,
       loadRun: vi.fn(),
       listAudit: vi.fn(),
@@ -552,6 +594,7 @@ describe("factory executable", () => {
       approveSourceExclusion: vi.fn(),
       executeNext: vi.fn(),
       approveLedger: vi.fn(),
+      requestPlanning: vi.fn(),
       listRuns: vi.fn(),
       loadRun: vi.fn().mockResolvedValue({ runId: "run_1" }),
       listAudit: vi.fn(),
@@ -627,6 +670,7 @@ describe("factory executable", () => {
       approveSourceExclusion: vi.fn(),
       executeNext: vi.fn(),
       approveLedger: vi.fn(),
+      requestPlanning: vi.fn(),
       listRuns: vi.fn(),
       loadRun: vi.fn(),
       listAudit: vi.fn(),

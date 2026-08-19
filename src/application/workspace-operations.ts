@@ -163,6 +163,15 @@ export interface WorkspaceOperations {
     projectRoot: string,
     runId: string,
   ): Promise<{ state: object; coverageReportArtifactId: string }>;
+  requestPlanning(
+    projectRoot: string,
+    runId: string,
+    acceptance: {
+      policy: boolean;
+      budgets: boolean;
+      providerBoundary: boolean;
+    },
+  ): Promise<{ state: object; commandId: string }>;
   listRuns(projectRoot: string): Promise<RunSummary[]>;
   loadRun(projectRoot: string, runId: string): Promise<object | null>;
   listAudit(projectRoot: string, runId?: string): Promise<AuditSummary[]>;

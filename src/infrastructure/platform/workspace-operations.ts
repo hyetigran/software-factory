@@ -16,6 +16,7 @@ import { loadPinnedConfiguration } from "../../application/load-pinned-configura
 import { approveSourceExclusion } from "../../application/approve-source-exclusion.js";
 import { executeNextLocalCommand } from "../../application/execute-local-command.js";
 import { approveLedger } from "../../application/approve-ledger.js";
+import { requestPlanning } from "../../application/request-planning.js";
 import {
   DomainTransitionError,
   type NonterminalRunState,
@@ -501,6 +502,53 @@ export function createWorkspaceOperations(): WorkspaceOperations {
             domainCode: error.code,
           });
         }
+        throw error;
+      } finally {
+        authority.close();
+      }
+    },
+    async requestPlanning(projectRoot, runId, acceptance) {
+      const store = await ContentAddressedArtifactStore.open(projectRoot);
+      const configuration = await loadPinnedConfiguration({
+        runId,
+        read: {
+          loadRun: (id) =>
+            withReadModel(projectRoot, (model) => model.loadRun(id)),
+          listArtifacts: () =>
+            withReadModel(projectRoot, (model) => model.listArtifacts()),
+          readVerified: (contentHash) => store.readVerified(contentHash),
+        },
+      });
+      const [registeredArtifacts, usage] = await Promise.all([
+        withReadModel(projectRoot, (model) => model.listArtifacts()),
+        withReadModel(projectRoot, (model) => model.loadUsage(runId)),
+      ]);
+      const authority = SqliteAuthority.open(
+        join(store.workspace.root, "state.db"),
+        { artifactStore: store },
+      );
+      try {
+        return await requestPlanning({
+          authority,
+          runId,
+          configuration,
+          registeredArtifacts,
+          usage,
+          policyAccepted: acceptance.policy,
+          budgetsAccepted: acceptance.budgets,
+          providerBoundaryAcknowledged: acceptance.providerBoundary,
+          actor: {
+            kind: "human",
+            displayName: configuration.humanActorDisplayName,
+            osAccount: userInfo().username,
+          },
+        });
+      } catch (error) {
+        if (error instanceof WorkspaceOperationError) throw error;
+        if (error instanceof DomainTransitionError)
+          throw new WorkspaceOperationError("CONFLICT", error.message, {
+            domainCode: error.code,
+          });
         throw error;
       } finally {
         authority.close();
