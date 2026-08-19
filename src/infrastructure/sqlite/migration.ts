@@ -14,37 +14,12 @@ import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
 
 import { canonicalJson } from "../../domain/canonical-json.js";
+import { decodeAuditEntry, type AuditRow } from "./audit-codec.js";
 
 const ZERO_HASH = "0".repeat(64);
-type AuditRow = Record<string, string | number | null>;
 
 function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function auditEntryFromRow(row: AuditRow) {
-  return {
-    sequence: Number(row.sequence),
-    runId: String(row.run_id),
-    stateVersionBefore: Number(row.state_version_before),
-    stateVersionAfter: Number(row.state_version_after),
-    previousEntryHash: String(row.previous_entry_hash),
-    entryHash: String(row.entry_hash),
-    auditEntryId: String(row.audit_entry_id),
-    factType: String(row.fact_type),
-    schemaVersion: 1 as const,
-    actor: JSON.parse(String(row.actor_json)) as object,
-    ...(row.reason === null ? {} : { reason: String(row.reason) }),
-    evidence: JSON.parse(String(row.evidence_json)) as unknown[],
-    ...(row.causation_id === null
-      ? {}
-      : { causationId: String(row.causation_id) }),
-    ...(row.correlation_id === null
-      ? {}
-      : { correlationId: String(row.correlation_id) }),
-    recordedAt: String(row.recorded_at),
-    payload: JSON.parse(String(row.payload_json)) as object,
-  };
 }
 
 export class SqliteMigration {
@@ -83,7 +58,7 @@ export class SqliteMigration {
     let previousHash = ZERO_HASH;
     const versions = new Map<string, number>();
     for (const [index, row] of rows.entries()) {
-      const entry = auditEntryFromRow(row);
+      const entry = decodeAuditEntry(row, (message) => this.fail(message));
       const { entryHash, ...withoutHash } = entry;
       if (
         entry.sequence !== index + 1 ||
