@@ -99,6 +99,29 @@ describe("workspace and content-addressed artifact store", () => {
         createdBy: "human:tig",
       }),
     );
+    await expect(
+      store.stageArtifact(Buffer.from("copied", "utf8"), {
+        artifactId: "artifact_copied_invalid_01JTEST",
+        kind: "raw_requirements",
+        mediaType: "text/plain",
+        createdBy: "system:test",
+        provenance: { method: "copied" } as never,
+      }),
+    ).rejects.toThrow("registration is invalid");
+    await expect(
+      store.stageArtifact(Buffer.from("provider", "utf8"), {
+        artifactId: "artifact_provider_invalid_01JTEST",
+        kind: "review",
+        mediaType: "application/json",
+        createdBy: "reviewer:test",
+        provenance: {
+          method: "provider_generated",
+          sourceArtifactIds: ["artifact_plan_01JTEST"],
+          commandId: "",
+          attemptId: "",
+        },
+      }),
+    ).rejects.toThrow("registration is invalid");
   });
 
   it("stages deterministic complete configuration and rejects credential values", async () => {
@@ -112,8 +135,27 @@ describe("workspace and content-addressed artifact store", () => {
         provider: "anthropic" as const,
         modelId: "claude-pinned",
       },
-      artifactHashes: { reviewSchema: "b".repeat(64) },
-      budgets: { calls: 4, costUsdMicros: 100_000_000 },
+      artifactHashes: {
+        requirementsSchema: "b".repeat(64),
+        artifactSchema: "c".repeat(64),
+        planSchema: "d".repeat(64),
+        reviewSchema: "e".repeat(64),
+        taxonomy: "f".repeat(64),
+        componentRegistry: "1".repeat(64),
+        plannerPrompt: "2".repeat(64),
+        reviewerPrompt: "3".repeat(64),
+        reviewPolicy: "4".repeat(64),
+      },
+      hardCeilings: {
+        calls: 4,
+        inputTokens: 100_000,
+        outputTokens: 40_000,
+        costUsdMicros: 100_000_000,
+        retries: 2,
+        repairs: 1,
+        remediationCycles: 3,
+        closureCycles: 2,
+      },
       credentialReferences: {
         openai: { kind: "environment" as const, reference: "OPENAI_API_KEY" },
       },
@@ -136,6 +178,53 @@ describe("workspace and content-addressed artifact store", () => {
         { ...configuration, apiKey: "secret-value" } as typeof configuration,
         {
           artifactId: "artifact_configuration_bad_01JTEST",
+          createdBy: "human:tig",
+        },
+      ),
+    ).rejects.toThrow("secret-free");
+    await expect(
+      stageResolvedConfiguration(
+        store,
+        {
+          ...configuration,
+          credentialReferences: {
+            openai: { kind: "environment", reference: "sk-live-secret-value" },
+          },
+        },
+        {
+          artifactId: "artifact_configuration_secret_01JTEST",
+          createdBy: "human:tig",
+        },
+      ),
+    ).rejects.toThrow("secret-free");
+    await expect(
+      stageResolvedConfiguration(
+        store,
+        {
+          ...configuration,
+          artifactHashes: {
+            ...configuration.artifactHashes,
+            taxonomy: undefined,
+          },
+        } as unknown as typeof configuration,
+        {
+          artifactId: "artifact_configuration_partial_01JTEST",
+          createdBy: "human:tig",
+        },
+      ),
+    ).rejects.toThrow("secret-free");
+    await expect(
+      stageResolvedConfiguration(
+        store,
+        {
+          ...configuration,
+          hardCeilings: {
+            ...configuration.hardCeilings,
+            closureCycles: undefined,
+          },
+        } as unknown as typeof configuration,
+        {
+          artifactId: "artifact_configuration_bounds_01JTEST",
           createdBy: "human:tig",
         },
       ),

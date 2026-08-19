@@ -39,18 +39,21 @@ export type ArtifactKind =
   | "backup_manifest"
   | "other";
 
-export type ArtifactProvenance = {
-  method:
-    | "copied"
-    | "human_submitted"
-    | "provider_generated"
-    | "deterministic_render"
-    | "exported";
-  sourcePath?: string;
-  sourceArtifactIds?: string[];
-  commandId?: string;
-  attemptId?: string;
-};
+export type ArtifactProvenance =
+  | { method: "copied"; sourcePath: string }
+  | { method: "human_submitted"; sourceArtifactIds?: string[] }
+  | {
+      method: "provider_generated";
+      sourceArtifactIds: string[];
+      commandId: string;
+      attemptId: string;
+    }
+  | {
+      method: "deterministic_render";
+      sourceArtifactIds: string[];
+      commandId: string;
+    }
+  | { method: "exported"; sourceArtifactIds: string[] };
 
 export type ArtifactRegistration = {
   artifactId: string;
@@ -89,6 +92,48 @@ export class ArtifactIntegrityError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "ArtifactIntegrityError";
+  }
+}
+
+function identifiersAreValid(values: unknown): values is string[] {
+  return (
+    Array.isArray(values) &&
+    values.length > 0 &&
+    new Set(values).size === values.length &&
+    values.every(
+      (value) => typeof value === "string" && value.trim().length > 0,
+    )
+  );
+}
+
+function provenanceIsValid(provenance: ArtifactProvenance): boolean {
+  switch (provenance.method) {
+    case "copied":
+      return (
+        typeof provenance.sourcePath === "string" &&
+        provenance.sourcePath.trim().length > 0
+      );
+    case "human_submitted":
+      return (
+        provenance.sourceArtifactIds === undefined ||
+        identifiersAreValid(provenance.sourceArtifactIds)
+      );
+    case "provider_generated":
+      return (
+        identifiersAreValid(provenance.sourceArtifactIds) &&
+        typeof provenance.commandId === "string" &&
+        provenance.commandId.trim().length > 0 &&
+        typeof provenance.attemptId === "string" &&
+        provenance.attemptId.trim().length > 0
+      );
+    case "deterministic_render":
+      return (
+        identifiersAreValid(provenance.sourceArtifactIds) &&
+        typeof provenance.commandId === "string" &&
+        provenance.commandId.trim().length > 0
+      );
+    case "exported":
+      return identifiersAreValid(provenance.sourceArtifactIds);
   }
 }
 
@@ -183,7 +228,8 @@ export class ContentAddressedArtifactStore {
     if (
       !/^[A-Za-z][A-Za-z0-9_-]{2,127}$/u.test(registration.artifactId) ||
       registration.mediaType.trim().length === 0 ||
-      registration.createdBy.trim().length === 0
+      registration.createdBy.trim().length === 0 ||
+      !provenanceIsValid(registration.provenance)
     ) {
       throw new TypeError("Artifact registration is invalid");
     }
