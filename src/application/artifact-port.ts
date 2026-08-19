@@ -2,6 +2,7 @@ export const artifactKinds = [
   "raw_requirements",
   "requirements_ledger",
   "coverage_report",
+  "rendered_ledger",
   "structured_plan",
   "rendered_plan",
   "external_edit",

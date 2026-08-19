@@ -197,6 +197,50 @@ describe("factory executable", () => {
       },
     });
 
+    const executeLines: string[] = [];
+    await expect(
+      runCliAsync(
+        ["execute", "next", started.data.runId, "--json"],
+        (line) => executeLines.push(line),
+        operations,
+        projectRoot,
+      ),
+    ).resolves.toBe(CliExit.success);
+    const executed = JSON.parse(executeLines[0] ?? "null") as {
+      data: {
+        execution: {
+          commandId: string;
+          commandType: string;
+          resultArtifactId: string;
+        };
+      };
+    };
+    expect(executed).toMatchObject({
+      ok: true,
+      command: "execute next",
+      data: { execution: { commandType: "validate_ledger" } },
+    });
+    const database = new DatabaseSync(
+      join(projectRoot, ".factory", "state.db"),
+    );
+    try {
+      expect(
+        database
+          .prepare("SELECT status FROM logical_commands WHERE command_id = ?")
+          .get(executed.data.execution.commandId),
+      ).toEqual({ status: "succeeded" });
+      expect(
+        database.prepare("SELECT COUNT(*) AS count FROM mutation_lease").get(),
+      ).toEqual({ count: 0 });
+      expect(
+        database
+          .prepare("SELECT kind FROM artifacts WHERE artifact_id = ?")
+          .get(executed.data.execution.resultArtifactId),
+      ).toEqual({ kind: "coverage_report" });
+    } finally {
+      database.close();
+    }
+
     const conflictLines: string[] = [];
     const conflictExit = await runCliAsync(
       [
@@ -382,6 +426,7 @@ describe("factory executable", () => {
       startRun: vi.fn(),
       submitLedger: vi.fn(),
       approveSourceExclusion: vi.fn(),
+      executeNext: vi.fn(),
       listRuns,
       loadRun: vi.fn(),
       listAudit: vi.fn(),
@@ -437,6 +482,7 @@ describe("factory executable", () => {
       startRun: vi.fn(),
       submitLedger: vi.fn(),
       approveSourceExclusion: vi.fn(),
+      executeNext: vi.fn(),
       listRuns: vi.fn(),
       loadRun: vi.fn().mockResolvedValue({ runId: "run_1" }),
       listAudit: vi.fn(),
@@ -510,6 +556,7 @@ describe("factory executable", () => {
       startRun: vi.fn(),
       submitLedger: vi.fn(),
       approveSourceExclusion: vi.fn(),
+      executeNext: vi.fn(),
       listRuns: vi.fn(),
       loadRun: vi.fn(),
       listAudit: vi.fn(),

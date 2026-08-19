@@ -151,6 +151,14 @@ export interface WorkspaceOperations {
     endOffset: number,
     reason: string,
   ): Promise<{ state: object }>;
+  executeNext(
+    projectRoot: string,
+    runId: string,
+  ): Promise<{
+    commandId: string;
+    commandType: string;
+    resultArtifactId: string;
+  } | null>;
   listRuns(projectRoot: string): Promise<RunSummary[]>;
   loadRun(projectRoot: string, runId: string): Promise<object | null>;
   listAudit(projectRoot: string, runId?: string): Promise<AuditSummary[]>;

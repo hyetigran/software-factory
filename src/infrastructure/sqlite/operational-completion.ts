@@ -126,6 +126,8 @@ export class SqliteOperationalCompletion {
       if (
         ![
           "render_source_registration_report",
+          "validate_ledger",
+          "render_ledger",
           "render_ledger_approval",
         ].includes(command.commandType) ||
         command.provider !== "local"

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 
 import { canonicalJson } from "../../src/domain/canonical-json.js";
 import {
@@ -7,6 +8,10 @@ import {
   validateLedger,
   verifyProjection,
 } from "../../src/application/deterministic-documents.js";
+
+const ledgerSchema: unknown = JSON.parse(
+  readFileSync("schemas/requirements-ledger.v1.schema.json", "utf8"),
+);
 
 const source = Buffer.from("build api", "utf8");
 const ledger = {
@@ -71,6 +76,7 @@ const plan = {
 describe("deterministic documents", () => {
   it("validates complete byte coverage and reports gaps", () => {
     const valid = validateLedger({
+      ledgerSchema,
       ledgerBytes: Buffer.from(canonicalJson(ledger)),
       sourceBytes: source,
       expectedSourceArtifactId: "artifact_source",
@@ -83,6 +89,7 @@ describe("deterministic documents", () => {
     partial.requirements[0]!.source_ranges = [{ start_byte: 0, end_byte: 5 }];
     expect(
       validateLedger({
+        ledgerSchema,
         ledgerBytes: Buffer.from(canonicalJson(partial)),
         sourceBytes: source,
         expectedSourceArtifactId: "artifact_source",
@@ -98,6 +105,7 @@ describe("deterministic documents", () => {
     delete withoutOptionalPredecessors.requirements[0]!.predecessor_ids;
     expect(() =>
       validateLedger({
+        ledgerSchema,
         ledgerBytes: Buffer.from(canonicalJson(withoutOptionalPredecessors)),
         sourceBytes: source,
         expectedSourceArtifactId: "artifact_source",
@@ -107,6 +115,7 @@ describe("deterministic documents", () => {
 
     expect(() =>
       validateLedger({
+        ledgerSchema,
         ledgerBytes: Buffer.from(canonicalJson(ledger)),
         sourceBytes: source,
         expectedSourceArtifactId: "artifact_other",
@@ -128,6 +137,7 @@ describe("deterministic documents", () => {
     ];
     expect(() =>
       validateLedger({
+        ledgerSchema,
         ledgerBytes: Buffer.from(canonicalJson(excluded)),
         sourceBytes: source,
         expectedSourceArtifactId: "artifact_source",
@@ -136,6 +146,7 @@ describe("deterministic documents", () => {
     ).toThrow("human approval");
     expect(() =>
       validateLedger({
+        ledgerSchema,
         ledgerBytes: Buffer.from(canonicalJson(excluded)),
         sourceBytes: source,
         expectedSourceArtifactId: "artifact_source",
@@ -150,6 +161,7 @@ describe("deterministic documents", () => {
     ).toThrow("human approval");
     expect(
       validateLedger({
+        ledgerSchema,
         ledgerBytes: Buffer.from(canonicalJson(excluded)),
         sourceBytes: source,
         expectedSourceArtifactId: "artifact_source",
@@ -169,6 +181,7 @@ describe("deterministic documents", () => {
     cyclic.requirements[0]!.predecessor_ids = ["requirement_api"];
     expect(() =>
       validateLedger({
+        ledgerSchema,
         ledgerBytes: Buffer.from(canonicalJson(cyclic)),
         sourceBytes: source,
         expectedSourceArtifactId: "artifact_source",

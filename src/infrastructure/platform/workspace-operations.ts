@@ -14,6 +14,7 @@ import { startConfiguredRun } from "../../application/start-configured-run.js";
 import { submitLedger } from "../../application/submit-ledger.js";
 import { loadPinnedConfiguration } from "../../application/load-pinned-configuration.js";
 import { approveSourceExclusion } from "../../application/approve-source-exclusion.js";
+import { executeNextLocalCommand } from "../../application/execute-local-command.js";
 import { DomainTransitionError } from "../../domain/index.js";
 import {
   resolveAndRegisterConfiguration,
@@ -364,6 +365,65 @@ export function createWorkspaceOperations(): WorkspaceOperations {
         if (error instanceof TypeError)
           throw new WorkspaceOperationError("INVALID_INPUT", error.message);
         throw error;
+      } finally {
+        authority.close();
+      }
+    },
+    async executeNext(projectRoot, runId) {
+      const store = await ContentAddressedArtifactStore.open(projectRoot);
+      const state = await withReadModel(projectRoot, (model) =>
+        model.loadRun(runId),
+      );
+      if (state === null)
+        throw new WorkspaceOperationError(
+          "RUN_NOT_FOUND",
+          `Run not found: ${runId}`,
+          { runId },
+        );
+      const identity = state as {
+        configurationArtifactId?: unknown;
+        configurationContentHash?: unknown;
+        stateVersion?: unknown;
+      };
+      if (
+        typeof identity.configurationArtifactId !== "string" ||
+        typeof identity.configurationContentHash !== "string" ||
+        !Number.isInteger(identity.stateVersion)
+      )
+        throw new WorkspaceOperationError(
+          "INTEGRITY_ERROR",
+          `Run configuration identity is invalid: ${runId}`,
+        );
+      const [configuration, registeredArtifacts] = await Promise.all([
+        loadPinnedConfiguration({
+          runId,
+          read: {
+            loadRun: (id) =>
+              withReadModel(projectRoot, (model) => model.loadRun(id)),
+            listArtifacts: () =>
+              withReadModel(projectRoot, (model) => model.listArtifacts()),
+            readVerified: (contentHash) => store.readVerified(contentHash),
+          },
+        }),
+        withReadModel(projectRoot, (model) => model.listArtifacts()),
+      ]);
+      const authority = SqliteAuthority.open(
+        join(store.workspace.root, "state.db"),
+        { artifactStore: store },
+      );
+      try {
+        return await executeNextLocalCommand({
+          execution: authority,
+          staging: store,
+          readVerified: (contentHash) => store.readVerified(contentHash),
+          registeredArtifacts,
+          runId,
+          currentStateVersion: identity.stateVersion as number,
+          configurationArtifactId: identity.configurationArtifactId,
+          configurationContentHash: identity.configurationContentHash,
+          configuration,
+          ownerProcess: `factory-cli:${process.pid}`,
+        });
       } finally {
         authority.close();
       }

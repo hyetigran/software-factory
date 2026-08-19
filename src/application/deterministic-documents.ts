@@ -90,6 +90,7 @@ function validRange(range: ByteRange, sourceLength: number): boolean {
 
 export function validateLedger(input: {
   ledgerBytes: Uint8Array;
+  ledgerSchema: unknown;
   sourceBytes: Uint8Array;
   expectedSourceArtifactId: string;
   approvedExclusions: Array<{
@@ -101,7 +102,7 @@ export function validateLedger(input: {
   const parsed: unknown = JSON.parse(
     Buffer.from(input.ledgerBytes).toString("utf8"),
   );
-  assertJsonSchema(parsed, schema("requirements-ledger.v1.schema.json"));
+  assertJsonSchema(parsed, input.ledgerSchema);
   const ledger = parsed as Record<string, unknown>;
   const requirements = ledger.requirements as Array<Record<string, unknown>>;
   const exclusions = ledger.source_exclusions as Array<Record<string, unknown>>;
