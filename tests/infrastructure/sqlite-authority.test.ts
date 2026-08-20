@@ -59,6 +59,12 @@ const directories: string[] = [];
 const requirementsLedgerSchema = JSON.parse(
   readFileSync(resolve("schemas/requirements-ledger.v1.schema.json"), "utf8"),
 ) as unknown;
+const planSchema = JSON.parse(
+  readFileSync(resolve("schemas/plan.v1.schema.json"), "utf8"),
+) as unknown;
+const reviewSchema = JSON.parse(
+  readFileSync(resolve("schemas/review.v1.schema.json"), "utf8"),
+) as unknown;
 
 const executionConfiguration: ResolvedConfigurationSnapshot = {
   schemaVersion: 1,
@@ -1363,6 +1369,7 @@ describe("SQLite authority", () => {
         stateVersion: 3,
         planVersionId: "plan_v1",
         allowedRequirementIds: ["req_1"],
+        schema: planSchema,
       }),
     ).toThrow("coverage is incomplete");
     expect(() =>
@@ -1372,8 +1379,22 @@ describe("SQLite authority", () => {
         stateVersion: 3,
         planVersionId: "plan_v1",
         allowedRequirementIds: ["req_1"],
+        schema: planSchema,
       }),
     ).not.toThrow();
+    expect(() =>
+      ValidatedProjection.fromPlanArtifact({
+        bytes: planBytes,
+        contentHash: createHash("sha256").update(planBytes).digest("hex"),
+        stateVersion: 3,
+        planVersionId: "plan_v1",
+        allowedRequirementIds: ["req_1"],
+        schema: {
+          type: "object",
+          required: ["pinned_only_field"],
+        },
+      }),
+    ).toThrow("normative JSON schema");
 
     const policyHash = "a".repeat(64);
     const review = {
@@ -1416,6 +1437,7 @@ describe("SQLite authority", () => {
       suppliedEvidenceArtifactIds: ["artifact_plan"],
       expectedPriorFindingIds: [],
       findings: [{ findingId: "finding_1", observationId: "observation_1" }],
+      schema: reviewSchema,
     };
     expect(() =>
       ValidatedProjection.fromBaselineReviewArtifact({
@@ -1435,6 +1457,15 @@ describe("SQLite authority", () => {
         suppliedEvidenceArtifactIds: [],
       }),
     ).toThrow("controlled references");
+    expect(() =>
+      ValidatedProjection.fromBaselineReviewArtifact({
+        ...reviewInput,
+        schema: {
+          type: "object",
+          required: ["pinned_only_field"],
+        },
+      }),
+    ).toThrow("normative JSON schema");
   });
 
   it("backs up and migrates a populated schema-v1 database", async () => {

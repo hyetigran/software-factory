@@ -109,15 +109,6 @@ export type ValidatedProjectionData = {
 
 const validatedProjectionBrand = Symbol("ValidatedProjection");
 
-function schema(name: string): unknown {
-  return JSON.parse(
-    readFileSync(
-      resolve(dirname(fileURLToPath(import.meta.url)), `../../schemas/${name}`),
-      "utf8",
-    ),
-  ) as unknown;
-}
-
 function immutableCopy<T>(value: T): T {
   const copy = structuredClone(value);
   const freeze = (nested: unknown): void => {
@@ -231,6 +222,7 @@ export class ValidatedProjection {
     stateVersion: number;
     planVersionId: string;
     allowedRequirementIds: string[];
+    schema: unknown;
   }): ValidatedProjection {
     if (
       createHash("sha256").update(input.bytes).digest("hex") !==
@@ -241,7 +233,7 @@ export class ValidatedProjection {
     const parsed: unknown = JSON.parse(
       Buffer.from(input.bytes).toString("utf8"),
     );
-    assertJsonSchema(parsed, schema("plan.v1.schema.json"));
+    assertJsonSchema(parsed, input.schema);
     const plan = parsed as Record<string, unknown>;
     if (plan.plan_id !== input.planVersionId) {
       throw new TypeError("Plan artifact identity does not match projection");
@@ -347,6 +339,7 @@ export class ValidatedProjection {
     suppliedEvidenceArtifactIds: string[];
     expectedPriorFindingIds: string[];
     findings: Array<{ findingId: string; observationId: string }>;
+    schema: unknown;
   }): ValidatedProjection {
     if (
       createHash("sha256").update(input.bytes).digest("hex") !==
@@ -359,7 +352,7 @@ export class ValidatedProjection {
     const parsed: unknown = JSON.parse(
       Buffer.from(input.bytes).toString("utf8"),
     );
-    assertJsonSchema(parsed, schema("review.v1.schema.json"));
+    assertJsonSchema(parsed, input.schema);
     const review = parsed as Record<string, unknown>;
     const concerns = review.new_concerns as Array<Record<string, unknown>>;
     const reviewedPriorFindingIds = (
@@ -517,9 +510,6 @@ export interface AuthorityPort {
   transaction<T>(work: (transaction: AuthorityTransaction) => T): Promise<T>;
 }
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { assertJsonSchema } from "./json-schema-validator.js";
 import type { StagedArtifactRegistration } from "./artifact-port.js";
