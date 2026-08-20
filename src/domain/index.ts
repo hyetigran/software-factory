@@ -219,6 +219,7 @@ export type AdvancedRunState = AdvancedStateBase &
         policyLocked: true;
         currentPlan: CurrentPlan;
         activeFindings: ActiveFinding[];
+        blockingFindingIds: string[];
         activeReview: ActiveReview;
         reviewContext: ReviewContext;
         renderedPlan: Omit<ArtifactEvidenceReference, "kind">;
@@ -645,6 +646,50 @@ export type ReviewAccepted = {
   actor: ModelActor & { kind: "reviewer" };
 };
 
+export type RemediationClaimInput = {
+  claimId: string;
+  findingId: string;
+  changedSectionIds: string[];
+};
+
+export type RemediationClaimsValidation = {
+  validator: "deterministic-remediation-claims-v1";
+  validatedRemediationContentHash: string;
+  claimsMatchArtifact: boolean;
+  changedSectionsDeclared: boolean;
+};
+
+export type RemediationGenerated = {
+  type: "RemediationGenerated";
+  runId: string;
+  expectedStateVersion: number;
+  remediationPurposeId: string;
+  originatingCommandId: string;
+  acceptedAttempt: AcceptedAttemptResolution;
+  remediationArtifact: VerifiedArtifactInput;
+  remediationRequestArtifact: VerifiedArtifactInput;
+  providerUsageArtifact: VerifiedArtifactInput;
+  outputValid: boolean;
+  claims: RemediationClaimInput[];
+  claimsValidation: RemediationClaimsValidation;
+  planVersionId: string;
+  planArtifact: VerifiedArtifactInput;
+  sectionTransitionValidation: SectionTransitionValidation;
+  sectionTransitionMapArtifact: VerifiedArtifactInput;
+  provenanceArtifact: VerifiedArtifactInput;
+  verifyCommandId: string;
+  verifyBudgetMaximum: BudgetReservation;
+  verifyTimeoutMs: number;
+  verifyReasoning: string | null;
+  verifyRequestPolicyResolved: boolean;
+  availableBudget: BudgetReservation;
+  auditChainVerified: boolean;
+  databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
+  actor: ModelActor & { kind: "planner" };
+};
+
 export type ProviderOutcomeFailed = {
   type: "ProviderOutcomeFailed";
   runId: string;
@@ -924,6 +969,30 @@ export type GenerateRemediation = {
   };
 };
 
+export type VerifyRemediation = {
+  commandId: string;
+  commandKey: string;
+  commandType: "verify_remediation";
+  schemaVersion: 1;
+  runId: string;
+  triggeringStateVersion: number;
+  purposeId: string;
+  inputArtifactHashes: string[];
+  policyHash: string;
+  provider: ProviderModelAssignment["provider"];
+  modelId: string;
+  budgetReservation: BudgetReservation;
+  providerRequestPolicy: ProviderRequestPolicy;
+  payload: {
+    ledgerVersionId: string;
+    planVersionId: string;
+    planArtifactId: string;
+    remediationArtifactId: string;
+    claimIds: string[];
+    providerStorage: "minimize";
+  };
+};
+
 export type ClosureReview = {
   commandId: string;
   commandKey: string;
@@ -1035,6 +1104,7 @@ export type CommandPlannedFact = {
       | "render_plan"
       | "baseline_review"
       | "generate_remediation"
+      | "verify_remediation"
       | "closure_review"
       | "export_terminal";
     reservation: BudgetReservation;
@@ -1194,6 +1264,23 @@ export type ReviewAcceptedFact = {
   };
 };
 
+export type RemediationProposedFact = {
+  type: "remediation_proposed";
+  actor: ModelActor & { kind: "planner" };
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    planVersionId: string;
+    previousPlanVersionId: string;
+    planArtifactId: string;
+    planContentHash: string;
+    remediationArtifactId: string;
+    remediationContentHash: string;
+    claims: RemediationClaimInput[];
+    originatingCommandId: string;
+  };
+};
+
 export type FindingCreatedFact = {
   type: "finding_created";
   actor: SystemActor;
@@ -1278,6 +1365,7 @@ export type TransitionResult = {
     | RenderPlan
     | BaselineReview
     | GenerateRemediation
+    | VerifyRemediation
     | ClosureReview
   >;
   auditFacts: Array<
@@ -1293,6 +1381,7 @@ export type TransitionResult = {
     | PlanningRequestedFact
     | PlanVersionAcceptedFact
     | ReviewAcceptedFact
+    | RemediationProposedFact
     | FindingCreatedFact
     | IndependenceOverrideGrantedFact
     | RerunAuthorizedFact
@@ -1320,6 +1409,7 @@ type PlannedCommand =
   | GeneratePlan
   | BaselineReview
   | GenerateRemediation
+  | VerifyRemediation
   | ClosureReview;
 
 function zeroBudgetReservation(): BudgetReservation {
@@ -1515,6 +1605,7 @@ type NonterminalDomainInput =
   | PlanGenerated
   | PlanSubmitted
   | ReviewAccepted
+  | RemediationGenerated
   | IndependenceOverrideGranted
   | RerunAuthorized
   | ExternalEditDetected
@@ -1741,6 +1832,8 @@ export function transition(
       return acceptPlanForBaseline(previousState, input, policy);
     case "ReviewAccepted":
       return acceptBaselineReview(previousState, input, policy);
+    case "RemediationGenerated":
+      return proposeRemediation(previousState, input, policy);
     case "ProviderOutcomeFailed":
       return haltAfterProviderFailure(previousState, input, policy);
     case "PinnedModelUnavailable":
@@ -3571,6 +3664,7 @@ function evolveAfterBaselineReview(
         state: "remediation",
         stateVersion: nextStateVersion,
         activeFindings: findings,
+        blockingFindingIds: command.payload.blockingFindingIds,
         activeReview,
         renderedPlan,
         baselineReview,
@@ -3791,6 +3885,278 @@ function acceptBaselineReview(
             previousState.currentPlan.contentHash,
           ),
         ],
+      ),
+    ],
+  };
+}
+
+function proposeRemediation(
+  previousState: NonterminalRunState | null,
+  input: RemediationGenerated,
+  policy: PinnedRunPolicy,
+): TransitionResult {
+  if (
+    previousState === null ||
+    previousState.state !== "remediation" ||
+    previousState.runId !== input.runId
+  ) {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      "RemediationGenerated requires the matching remediation run",
+    );
+  }
+
+  const acceptedAttempt = input.acceptedAttempt;
+  const acceptedAttemptValid =
+    acceptedAttempt.validator === "accepted-provider-attempt-v1" &&
+    acceptedAttempt.commandId === previousState.activePlanning.commandId &&
+    acceptedAttempt.attemptId.length > 0 &&
+    acceptedAttempt.requestArtifactId ===
+      input.remediationRequestArtifact.artifactId &&
+    acceptedAttempt.requestContentHash ===
+      input.remediationRequestArtifact.contentHash &&
+    acceptedAttempt.responseArtifactId ===
+      input.remediationArtifact.artifactId &&
+    acceptedAttempt.responseContentHash ===
+      input.remediationArtifact.contentHash &&
+    acceptedAttempt.rawResponseArtifactId.length > 0 &&
+    /^[a-f0-9]{64}$/u.test(acceptedAttempt.rawResponseContentHash) &&
+    acceptedAttempt.nativeUsageArtifactId ===
+      input.providerUsageArtifact.artifactId &&
+    acceptedAttempt.nativeUsageContentHash ===
+      input.providerUsageArtifact.contentHash;
+  const artifactsValid = [
+    input.remediationArtifact,
+    input.remediationRequestArtifact,
+    input.providerUsageArtifact,
+    input.planArtifact,
+    input.sectionTransitionMapArtifact,
+    input.provenanceArtifact,
+  ].every(verifiedArtifactInputIsValid);
+  const sectionTransitionValidation = input.sectionTransitionValidation;
+  const sectionTransitionValid =
+    sectionTransitionValidation.validator ===
+      "deterministic-section-transition-v1" &&
+    sectionTransitionValidation.validatedPlanContentHash ===
+      input.planArtifact.contentHash &&
+    sectionTransitionValidation.validatedTransitionMapContentHash ===
+      input.sectionTransitionMapArtifact.contentHash &&
+    sectionTransitionValidation.classificationsComplete &&
+    sectionTransitionValidation.existingSectionIdsPreserved &&
+    sectionTransitionValidation.onlyDeclaredNewSectionsAssignedIds;
+  const claimIds = input.claims.map(({ claimId }) => claimId);
+  const claimedFindingIds = input.claims.map(({ findingId }) => findingId);
+  const blockingFindingIds = new Set(previousState.blockingFindingIds);
+  const claimsValid =
+    input.claimsValidation.validator ===
+      "deterministic-remediation-claims-v1" &&
+    input.claimsValidation.validatedRemediationContentHash ===
+      input.remediationArtifact.contentHash &&
+    input.claimsValidation.claimsMatchArtifact &&
+    input.claimsValidation.changedSectionsDeclared &&
+    input.claims.length > 0 &&
+    new Set(claimIds).size === claimIds.length &&
+    new Set(claimedFindingIds).size === claimedFindingIds.length &&
+    claimedFindingIds.every((findingId) => blockingFindingIds.has(findingId)) &&
+    [...blockingFindingIds].every((findingId) =>
+      claimedFindingIds.includes(findingId),
+    ) &&
+    input.claims.every(
+      ({ claimId, changedSectionIds }) =>
+        claimId.length > 0 &&
+        changedSectionIds.every((sectionId) => sectionId.length > 0) &&
+        new Set(changedSectionIds).size === changedSectionIds.length,
+    );
+  const plannerAuthorized =
+    input.actor.provider === policy.plannerAssignment.provider &&
+    input.actor.modelId === policy.plannerAssignment.modelId &&
+    providerModelAssignmentsEqual(
+      previousState.activePlanning.plannerAssignment,
+      policy.plannerAssignment,
+    );
+
+  if (
+    input.expectedStateVersion !== previousState.stateVersion ||
+    policy.policyHash !== previousState.policyHash ||
+    input.remediationPurposeId !== previousState.activePlanning.purposeId ||
+    input.originatingCommandId !== previousState.activePlanning.commandId ||
+    !acceptedAttemptValid ||
+    !artifactsValid ||
+    !input.outputValid ||
+    input.planVersionId.length === 0 ||
+    input.planVersionId === previousState.currentPlan.versionId ||
+    !sectionTransitionValid ||
+    !claimsValid ||
+    !plannerAuthorized ||
+    !providerBudgetIsEligible(
+      input.verifyBudgetMaximum,
+      input.availableBudget,
+    ) ||
+    !providerBudgetsEqual(
+      input.verifyBudgetMaximum,
+      policy.providerRequestBudgets?.reviewer,
+    ) ||
+    !providerRequestSettingsAreValid(
+      input.verifyTimeoutMs,
+      input.verifyReasoning,
+      input.verifyRequestPolicyResolved,
+    ) ||
+    input.verifyCommandId.length === 0 ||
+    input.verifyCommandId === input.originatingCommandId ||
+    !input.auditChainVerified ||
+    !input.databaseIntegrityVerified ||
+    !input.schemaCompatible ||
+    !input.mutationLeaseAvailable
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "RemediationGenerated requires verified revised output with claims covering every blocking finding",
+    );
+  }
+
+  const nextStateVersion = previousState.stateVersion + 1;
+  const verifyPurposeId = `${input.runId}:plan:${input.planVersionId}:verify:${previousState.activeReview.cycle}`;
+  const remediationEvidence = artifactEvidence(
+    input.remediationArtifact.artifactId,
+    input.remediationArtifact.contentHash,
+  );
+  const revisedPlanEvidence = artifactEvidence(
+    input.planArtifact.artifactId,
+    input.planArtifact.contentHash,
+  );
+  const verifyInputEvidence = uniqueArtifactEvidence([
+    artifactEvidence(
+      previousState.currentLedger.artifactId,
+      previousState.currentLedger.contentHash,
+    ),
+    artifactEvidence(
+      previousState.currentPlan.artifactId,
+      previousState.currentPlan.contentHash,
+    ),
+    revisedPlanEvidence,
+    remediationEvidence,
+    artifactEvidence(
+      input.sectionTransitionMapArtifact.artifactId,
+      input.sectionTransitionMapArtifact.contentHash,
+    ),
+    artifactEvidence(
+      input.provenanceArtifact.artifactId,
+      input.provenanceArtifact.contentHash,
+    ),
+    artifactEvidence(
+      previousState.reviewContext.prompt.artifactId,
+      previousState.reviewContext.prompt.contentHash,
+    ),
+    artifactEvidence(
+      previousState.reviewContext.schema.artifactId,
+      previousState.reviewContext.schema.contentHash,
+    ),
+    artifactEvidence(
+      previousState.reviewContext.taxonomy.artifactId,
+      previousState.reviewContext.taxonomy.contentHash,
+    ),
+    artifactEvidence(
+      previousState.reviewContext.policy.artifactId,
+      previousState.reviewContext.policy.contentHash,
+    ),
+  ]);
+  const verifyCommand = planCommand<VerifyRemediation>(input.verifyCommandId, {
+    commandType: "verify_remediation",
+    schemaVersion: 1,
+    runId: input.runId,
+    triggeringStateVersion: nextStateVersion,
+    purposeId: verifyPurposeId,
+    inputArtifactHashes: verifyInputEvidence.map(
+      ({ contentHash }) => contentHash,
+    ),
+    policyHash: policy.policyHash,
+    provider: previousState.activeReview.reviewerAssignment.provider,
+    modelId: previousState.activeReview.reviewerAssignment.modelId,
+    budgetReservation: input.verifyBudgetMaximum,
+    providerRequestPolicy: providerRequestPolicy(
+      "reviewer",
+      previousState.reviewContext.prompt,
+      previousState.reviewContext.schema,
+      input.verifyBudgetMaximum,
+      input.verifyTimeoutMs,
+      input.verifyReasoning,
+      {
+        artifactId: previousState.configurationArtifactId,
+        contentHash: previousState.configurationContentHash,
+      },
+      policy.policyHash,
+    ),
+    payload: {
+      ledgerVersionId: previousState.currentLedger.versionId,
+      planVersionId: input.planVersionId,
+      planArtifactId: input.planArtifact.artifactId,
+      remediationArtifactId: input.remediationArtifact.artifactId,
+      claimIds,
+      providerStorage: "minimize",
+    },
+  });
+
+  return {
+    nextState: {
+      ...previousState,
+      stateVersion: nextStateVersion,
+      currentPlan: {
+        versionId: input.planVersionId,
+        artifactId: input.planArtifact.artifactId,
+        contentHash: input.planArtifact.contentHash,
+        sectionTransitionMap: {
+          artifactId: input.sectionTransitionMapArtifact.artifactId,
+          contentHash: input.sectionTransitionMapArtifact.contentHash,
+        },
+        provenance: {
+          artifactId: input.provenanceArtifact.artifactId,
+          contentHash: input.provenanceArtifact.contentHash,
+        },
+        origin: {
+          kind: "planner",
+          assignment: policy.plannerAssignment,
+          originatingCommandId: input.originatingCommandId,
+        },
+      },
+      activeReview: {
+        ...previousState.activeReview,
+        commandId: input.verifyCommandId,
+        reviewPurposeId: verifyPurposeId,
+      },
+    },
+    commands: [verifyCommand],
+    auditFacts: [
+      {
+        type: "remediation_proposed",
+        actor: input.actor,
+        reason: "Propose verified remediation claims for independent review",
+        evidence: [
+          remediationEvidence,
+          revisedPlanEvidence,
+          artifactEvidence(
+            input.remediationRequestArtifact.artifactId,
+            input.remediationRequestArtifact.contentHash,
+          ),
+          artifactEvidence(
+            input.providerUsageArtifact.artifactId,
+            input.providerUsageArtifact.contentHash,
+          ),
+        ],
+        payload: {
+          planVersionId: input.planVersionId,
+          previousPlanVersionId: previousState.currentPlan.versionId,
+          planArtifactId: input.planArtifact.artifactId,
+          planContentHash: input.planArtifact.contentHash,
+          remediationArtifactId: input.remediationArtifact.artifactId,
+          remediationContentHash: input.remediationArtifact.contentHash,
+          claims: input.claims,
+          originatingCommandId: input.originatingCommandId,
+        },
+      },
+      commandPlannedFact(
+        verifyCommand,
+        "Independently verify remediation claims",
+        [remediationEvidence, revisedPlanEvidence],
       ),
     ],
   };

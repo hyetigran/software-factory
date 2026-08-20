@@ -24,6 +24,7 @@ import {
   type PlanningRequested,
   type PinnedModelUnavailable,
   type ProviderOutcomeFailed,
+  type RemediationGenerated,
   type ReviewAccepted,
   type RunStarted,
   type SourceExclusionApproved,
@@ -615,6 +616,124 @@ function reviewAcceptedInput(blockingFindingIds: string[]): ReviewAccepted {
       kind: "reviewer",
       provider: "anthropic",
       modelId: "claude-frontier-pinned-20260801",
+    },
+  };
+}
+
+const remediationContentHash = "ab".repeat(32);
+const revisedPlanContentHash = "cd".repeat(32);
+const revisedSectionMapContentHash = "ef".repeat(32);
+
+function remediationState(): AdvancedRunState & { state: "remediation" } {
+  const result = transition(
+    baselineReviewState(),
+    reviewAcceptedInput(["finding_architecture_01JTEST"]),
+    pinnedPolicy,
+  ).nextState;
+  if (result.state !== "remediation") {
+    throw new Error("Expected remediation state fixture");
+  }
+  return result;
+}
+
+function remediationGeneratedInput(): RemediationGenerated {
+  return {
+    type: "RemediationGenerated",
+    runId: "run_01JTEST0000000000000000000",
+    expectedStateVersion: 9,
+    remediationPurposeId:
+      "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:remediation:1",
+    originatingCommandId: "command_after_baseline_01JTEST",
+    acceptedAttempt: {
+      validator: "accepted-provider-attempt-v1",
+      commandId: "command_after_baseline_01JTEST",
+      attemptId: "attempt_generate_remediation_01JTEST_1",
+      requestArtifactId: "artifact_remediation_request_01JTEST",
+      requestContentHash: "5".repeat(64),
+      responseArtifactId: "artifact_remediation_01JTEST",
+      responseContentHash: remediationContentHash,
+      rawResponseArtifactId: "artifact_remediation_raw_response_01JTEST",
+      rawResponseContentHash: "6".repeat(64),
+      nativeUsageArtifactId: "artifact_remediation_usage_01JTEST",
+      nativeUsageContentHash: "7".repeat(64),
+    },
+    remediationArtifact: {
+      artifactId: "artifact_remediation_01JTEST",
+      contentHash: remediationContentHash,
+      verified: true,
+    },
+    remediationRequestArtifact: {
+      artifactId: "artifact_remediation_request_01JTEST",
+      contentHash: "5".repeat(64),
+      verified: true,
+    },
+    providerUsageArtifact: {
+      artifactId: "artifact_remediation_usage_01JTEST",
+      contentHash: "7".repeat(64),
+      verified: true,
+    },
+    outputValid: true,
+    claims: [
+      {
+        claimId: "claim_architecture_01JTEST",
+        findingId: "finding_architecture_01JTEST",
+        changedSectionIds: ["section_architecture_01JTEST"],
+      },
+    ],
+    claimsValidation: {
+      validator: "deterministic-remediation-claims-v1",
+      validatedRemediationContentHash: remediationContentHash,
+      claimsMatchArtifact: true,
+      changedSectionsDeclared: true,
+    },
+    planVersionId: "plan_version_02JTEST",
+    planArtifact: {
+      artifactId: "artifact_plan_02JTEST",
+      contentHash: revisedPlanContentHash,
+      verified: true,
+    },
+    sectionTransitionValidation: {
+      validator: "deterministic-section-transition-v1",
+      validatedPlanContentHash: revisedPlanContentHash,
+      validatedTransitionMapContentHash: revisedSectionMapContentHash,
+      classificationsComplete: true,
+      existingSectionIdsPreserved: true,
+      onlyDeclaredNewSectionsAssignedIds: true,
+    },
+    sectionTransitionMapArtifact: {
+      artifactId: "artifact_section_map_02JTEST",
+      contentHash: revisedSectionMapContentHash,
+      verified: true,
+    },
+    provenanceArtifact: {
+      artifactId: "artifact_plan_provenance_02JTEST",
+      contentHash: "8".repeat(64),
+      verified: true,
+    },
+    verifyCommandId: "command_verify_remediation_01JTEST",
+    verifyBudgetMaximum: {
+      calls: 1,
+      inputTokens: 70_000,
+      outputTokens: 28_000,
+      costUsdMicros: 40_000_000,
+    },
+    verifyTimeoutMs: 120_000,
+    verifyReasoning: "high",
+    verifyRequestPolicyResolved: true,
+    availableBudget: {
+      calls: 2,
+      inputTokens: 100_000,
+      outputTokens: 40_000,
+      costUsdMicros: 50_000_000,
+    },
+    auditChainVerified: true,
+    databaseIntegrityVerified: true,
+    schemaCompatible: true,
+    mutationLeaseAvailable: true,
+    actor: {
+      kind: "planner",
+      provider: "openai",
+      modelId: "gpt-5.6-2026-08-01",
     },
   };
 }
@@ -3063,6 +3182,261 @@ describe("transition", () => {
       "finding_created",
       "command_planned",
     ]);
+  });
+
+  it("records blocking findings on the remediation state", () => {
+    expect(remediationState().blockingFindingIds).toEqual([
+      "finding_architecture_01JTEST",
+    ]);
+  });
+
+  it("accepts a remediation proposal and plans independent verification", () => {
+    const result = transition(
+      remediationState(),
+      remediationGeneratedInput(),
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.state).toBe("remediation");
+    expect(result.nextState.stateVersion).toBe(10);
+    if (result.nextState.state !== "remediation") {
+      throw new Error("Expected remediation state");
+    }
+    expect(result.nextState.currentPlan).toEqual({
+      versionId: "plan_version_02JTEST",
+      artifactId: "artifact_plan_02JTEST",
+      contentHash: revisedPlanContentHash,
+      sectionTransitionMap: {
+        artifactId: "artifact_section_map_02JTEST",
+        contentHash: revisedSectionMapContentHash,
+      },
+      provenance: {
+        artifactId: "artifact_plan_provenance_02JTEST",
+        contentHash: "8".repeat(64),
+      },
+      origin: {
+        kind: "planner",
+        assignment: configuredPlannerAssignment,
+        originatingCommandId: "command_after_baseline_01JTEST",
+      },
+    });
+    expect(result.nextState.activeReview.commandId).toBe(
+      "command_verify_remediation_01JTEST",
+    );
+    expect(result.nextState.activeReview.reviewPurposeId).toBe(
+      "run_01JTEST0000000000000000000:plan:plan_version_02JTEST:verify:1",
+    );
+    expect(result.nextState.blockingFindingIds).toEqual([
+      "finding_architecture_01JTEST",
+    ]);
+    const verifyCommand = result.commands[0];
+    if (verifyCommand?.commandType !== "verify_remediation") {
+      throw new Error("Expected a planned verify_remediation command");
+    }
+    expect(verifyCommand).toEqual(
+      expect.objectContaining({
+        commandId: "command_verify_remediation_01JTEST",
+        runId: "run_01JTEST0000000000000000000",
+        triggeringStateVersion: 10,
+        purposeId:
+          "run_01JTEST0000000000000000000:plan:plan_version_02JTEST:verify:1",
+        policyHash,
+        provider: "anthropic",
+        modelId: "claude-frontier-pinned-20260801",
+        budgetReservation: {
+          calls: 1,
+          inputTokens: 70_000,
+          outputTokens: 28_000,
+          costUsdMicros: 40_000_000,
+        },
+      }),
+    );
+    expect(result.commands).toHaveLength(1);
+    expect(verifyCommand.providerRequestPolicy).toEqual({
+      configurationArtifactId: "artifact_config_01JTEST",
+      configurationContentHash,
+      policyHash,
+      role: "reviewer",
+      promptArtifactId: "artifact_reviewer_prompt_01JTEST",
+      promptContentHash: reviewerPromptContentHash,
+      outputSchemaArtifactId: "artifact_review_schema_01JTEST",
+      outputSchemaContentHash: reviewSchemaContentHash,
+      maxOutputTokens: 28_000,
+      timeoutMs: 120_000,
+      reasoning: "high",
+      providerStorage: "minimize",
+    });
+    expect(verifyCommand.payload).toEqual({
+      ledgerVersionId: "ledger_01JTEST",
+      planVersionId: "plan_version_02JTEST",
+      planArtifactId: "artifact_plan_02JTEST",
+      remediationArtifactId: "artifact_remediation_01JTEST",
+      claimIds: ["claim_architecture_01JTEST"],
+      providerStorage: "minimize",
+    });
+    expect(result.auditFacts.map(({ type }) => type)).toEqual([
+      "remediation_proposed",
+      "command_planned",
+    ]);
+    const proposedFact = result.auditFacts[0];
+    if (proposedFact?.type !== "remediation_proposed") {
+      throw new Error("Expected a remediation_proposed fact");
+    }
+    expect(proposedFact.payload).toEqual({
+      planVersionId: "plan_version_02JTEST",
+      previousPlanVersionId: "plan_version_01JTEST",
+      planArtifactId: "artifact_plan_02JTEST",
+      planContentHash: revisedPlanContentHash,
+      remediationArtifactId: "artifact_remediation_01JTEST",
+      remediationContentHash,
+      claims: [
+        {
+          claimId: "claim_architecture_01JTEST",
+          findingId: "finding_architecture_01JTEST",
+          changedSectionIds: ["section_architecture_01JTEST"],
+        },
+      ],
+      originatingCommandId: "command_after_baseline_01JTEST",
+    });
+  });
+
+  it("rejects RemediationGenerated outside the remediation state", () => {
+    expect(() =>
+      transition(
+        baselineReviewState(),
+        { ...remediationGeneratedInput(), expectedStateVersion: 8 },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
+  });
+
+  it.each([
+    ["a stale state version", { expectedStateVersion: 8 }],
+    [
+      "a mismatched remediation purpose",
+      { remediationPurposeId: "purpose_other_01JTEST" },
+    ],
+    [
+      "a mismatched originating command",
+      { originatingCommandId: "command_other_01JTEST" },
+    ],
+    [
+      "an attempt bound to a different response",
+      {
+        acceptedAttempt: {
+          ...remediationGeneratedInput().acceptedAttempt,
+          responseContentHash: "0".repeat(64),
+        },
+      },
+    ],
+    ["invalid structured output", { outputValid: false }],
+    ["a reused plan version", { planVersionId: "plan_version_01JTEST" }],
+    [
+      "an unverified revised plan",
+      {
+        planArtifact: {
+          artifactId: "artifact_plan_02JTEST",
+          contentHash: revisedPlanContentHash,
+          verified: false,
+        },
+      },
+    ],
+    [
+      "incomplete section classifications",
+      {
+        sectionTransitionValidation: {
+          ...remediationGeneratedInput().sectionTransitionValidation,
+          classificationsComplete: false,
+        },
+      },
+    ],
+    ["claims missing a blocking finding", { claims: [] }],
+    [
+      "a claim for an unknown finding",
+      {
+        claims: [
+          {
+            claimId: "claim_unknown_01JTEST",
+            findingId: "finding_unknown_01JTEST",
+            changedSectionIds: ["section_architecture_01JTEST"],
+          },
+        ],
+      },
+    ],
+    [
+      "duplicate claim identifiers",
+      {
+        claims: [
+          ...remediationGeneratedInput().claims,
+          ...remediationGeneratedInput().claims,
+        ],
+      },
+    ],
+    [
+      "claims validated against a different artifact",
+      {
+        claimsValidation: {
+          ...remediationGeneratedInput().claimsValidation,
+          validatedRemediationContentHash: "0".repeat(64),
+        },
+      },
+    ],
+    [
+      "claims that do not match the artifact",
+      {
+        claimsValidation: {
+          ...remediationGeneratedInput().claimsValidation,
+          claimsMatchArtifact: false,
+        },
+      },
+    ],
+    [
+      "a verification budget different from pinned policy",
+      {
+        verifyBudgetMaximum: {
+          calls: 1,
+          inputTokens: 69_999,
+          outputTokens: 28_000,
+          costUsdMicros: 40_000_000,
+        },
+      },
+    ],
+    [
+      "insufficient available budget",
+      {
+        availableBudget: {
+          calls: 0,
+          inputTokens: 100_000,
+          outputTokens: 40_000,
+          costUsdMicros: 50_000_000,
+        },
+      },
+    ],
+    [
+      "the wrong Planner actor",
+      {
+        actor: {
+          kind: "planner" as const,
+          provider: "openai" as const,
+          modelId: "gpt-other-model",
+        },
+      },
+    ],
+    ["a broken audit chain", { auditChainVerified: false }],
+    ["a conflicting mutation lease", { mutationLeaseAvailable: false }],
+    ["an empty verification command", { verifyCommandId: "" }],
+    [
+      "a verification command reusing the remediation command",
+      { verifyCommandId: "command_after_baseline_01JTEST" },
+    ],
+  ])("rejects RemediationGenerated with %s", (_name, override) => {
+    expect(() =>
+      transition(
+        remediationState(),
+        { ...remediationGeneratedInput(), ...override },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
 
   it("exports a non-final provisional baseline result", () => {
