@@ -197,6 +197,32 @@ describe("workspace and content-addressed artifact store", () => {
         remediation: { timeoutMs: 30_000, reasoning: null },
         schemaRepair: { timeoutMs: 30_000, reasoning: null },
       },
+      providerRequestBudgets: {
+        planner: {
+          calls: 1 as const,
+          inputTokens: 20_000,
+          outputTokens: 5_000,
+          costUsdMicros: 5_000_000,
+        },
+        reviewer: {
+          calls: 1 as const,
+          inputTokens: 20_000,
+          outputTokens: 5_000,
+          costUsdMicros: 5_000_000,
+        },
+        remediation: {
+          calls: 1 as const,
+          inputTokens: 20_000,
+          outputTokens: 5_000,
+          costUsdMicros: 5_000_000,
+        },
+        schemaRepair: {
+          calls: 1 as const,
+          inputTokens: 20_000,
+          outputTokens: 5_000,
+          costUsdMicros: 5_000_000,
+        },
+      },
       recordingMode: "record" as const,
       humanActorDisplayName: "Test User",
       providerStorage: "minimize" as const,
@@ -238,6 +264,41 @@ describe("workspace and content-addressed artifact store", () => {
         { ...configuration, apiKey: "secret-value" } as typeof configuration,
         {
           artifactId: "artifact_configuration_bad_01JTEST",
+          createdBy: "human:tig",
+        },
+      ),
+    ).rejects.toThrow("secret-free");
+    await expect(
+      stageResolvedConfiguration(
+        store,
+        {
+          ...configuration,
+          providerRequestBudgets: {
+            ...configuration.providerRequestBudgets,
+            remediation: {
+              ...configuration.providerRequestBudgets.remediation,
+              inputTokens: configuration.hardCeilings.inputTokens + 1,
+            },
+          },
+        },
+        {
+          artifactId: "artifact_configuration_impossible_remediation_01JTEST",
+          createdBy: "human:tig",
+        },
+      ),
+    ).rejects.toThrow("secret-free");
+    await expect(
+      stageResolvedConfiguration(
+        store,
+        {
+          ...configuration,
+          hardCeilings: {
+            ...configuration.hardCeilings,
+            inputTokens: 39_999,
+          },
+        },
+        {
+          artifactId: "artifact_configuration_underfunded_review_01JTEST",
           createdBy: "human:tig",
         },
       ),

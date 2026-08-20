@@ -45,6 +45,25 @@
         "max_closure_cycles": { "type": "integer", "minimum": 1 },
         "max_input_tokens": { "type": "integer", "minimum": 1 },
         "max_output_tokens": { "type": "integer", "minimum": 1 },
+        "max_cost_usd": { "type": "number", "exclusiveMinimum": 0 },
+        "provider_request_maxima": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "planner": { "$ref": "#/$defs/requestBudget" },
+            "reviewer": { "$ref": "#/$defs/requestBudget" },
+            "remediation": { "$ref": "#/$defs/requestBudget" },
+            "schema_repair": { "$ref": "#/$defs/requestBudget" }
+          }
+        }
+      }
+    },
+    "requestBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_input_tokens": { "type": "integer", "minimum": 1 },
+        "max_output_tokens": { "type": "integer", "minimum": 1 },
         "max_cost_usd": { "type": "number", "exclusiveMinimum": 0 }
       }
     },

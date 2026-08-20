@@ -92,7 +92,9 @@ export function decideAttemptPolicy(
     reservation:
       request.attemptKind === "strict_replay"
         ? zeroReservation()
-        : snapshot.commandReservation,
+        : request.attemptKind === "schema_repair"
+          ? policy.configuration.providerRequestBudgets.schemaRepair
+          : snapshot.commandReservation,
     duplicateCallPossible: retryingUnknown,
     ...(last === undefined ? {} : { priorAttemptId: last.attemptId }),
   };

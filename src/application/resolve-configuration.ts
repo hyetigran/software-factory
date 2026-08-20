@@ -76,6 +76,14 @@ type Budgets = {
   max_input_tokens: number;
   max_output_tokens: number;
   max_cost_usd: number;
+  provider_request_maxima: Record<
+    "planner" | "reviewer" | "remediation" | "schema_repair",
+    {
+      max_input_tokens: number;
+      max_output_tokens: number;
+      max_cost_usd: number;
+    }
+  >;
 };
 
 const digest = (bytes: Uint8Array) =>
@@ -88,10 +96,30 @@ function merge(
   base: PartialConfiguration,
   update: PartialConfiguration,
 ): PartialConfiguration {
+  const requestMaxima = {
+    ...base.budgets?.provider_request_maxima,
+    ...Object.fromEntries(
+      Object.entries(update.budgets?.provider_request_maxima ?? {}).map(
+        ([key, value]) => [
+          key,
+          {
+            ...base.budgets?.provider_request_maxima?.[
+              key as keyof Budgets["provider_request_maxima"]
+            ],
+            ...value,
+          },
+        ],
+      ),
+    ),
+  } as Budgets["provider_request_maxima"];
   return {
     ...base,
     ...update,
-    budgets: { ...base.budgets, ...update.budgets },
+    budgets: {
+      ...base.budgets,
+      ...update.budgets,
+      provider_request_maxima: requestMaxima,
+    },
     request_settings: {
       ...base.request_settings,
       ...Object.fromEntries(
@@ -224,6 +252,26 @@ export async function resolveAndRegisterConfiguration(input: {
       "Cost ceiling must have at most six decimal places and fit safely",
     );
   }
+  const requestBudget = (role: keyof Budgets["provider_request_maxima"]) => {
+    const value = budgets.provider_request_maxima?.[role];
+    const roleCostUsdMicros = (value?.max_cost_usd ?? 0) * 1_000_000;
+    if (
+      value === undefined ||
+      !Number.isSafeInteger(value.max_input_tokens) ||
+      value.max_input_tokens < 1 ||
+      !Number.isSafeInteger(value.max_output_tokens) ||
+      value.max_output_tokens < 1 ||
+      !Number.isSafeInteger(roleCostUsdMicros) ||
+      roleCostUsdMicros < 1
+    )
+      throw new TypeError(`Provider request budget is invalid: ${role}`);
+    return {
+      calls: 1 as const,
+      inputTokens: value.max_input_tokens,
+      outputTokens: value.max_output_tokens,
+      costUsdMicros: roleCostUsdMicros,
+    };
+  };
 
   const staged: StagedArtifactRegistration[] = [];
   const controlsByHash = new Map<string, StagedArtifactRegistration>();
@@ -290,6 +338,12 @@ export async function resolveAndRegisterConfiguration(input: {
         timeoutMs: repairSettings.timeout_ms,
         reasoning: repairSettings.reasoning,
       },
+    },
+    providerRequestBudgets: {
+      planner: requestBudget("planner"),
+      reviewer: requestBudget("reviewer"),
+      remediation: requestBudget("remediation"),
+      schemaRepair: requestBudget("schema_repair"),
     },
     recordingMode: resolved.recording_mode ?? "record",
     humanActorDisplayName:

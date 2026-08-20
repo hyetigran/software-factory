@@ -134,7 +134,21 @@ export async function requestPlanning(input: {
       input.configuration.hardCeilings,
     );
     const availableBudget = capacity.availableBudget;
-    const reservation = { ...availableBudget, calls: 1 };
+    const reservation = input.configuration.providerRequestBudgets.planner;
+    const mandatoryReview = input.configuration.providerRequestBudgets.reviewer;
+    if (
+      availableBudget.calls < reservation.calls + mandatoryReview.calls ||
+      availableBudget.inputTokens <
+        reservation.inputTokens + mandatoryReview.inputTokens ||
+      availableBudget.outputTokens <
+        reservation.outputTokens + mandatoryReview.outputTokens ||
+      availableBudget.costUsdMicros <
+        reservation.costUsdMicros + mandatoryReview.costUsdMicros
+    )
+      throw new WorkspaceOperationError(
+        "CONFLICT",
+        "Available budget cannot fund both planning and mandatory baseline review",
+      );
     const result = transition(
       state,
       {
@@ -174,6 +188,7 @@ export async function requestPlanning(input: {
         policyHash: input.configuration.policyHash,
         plannerAssignment: input.configuration.plannerAssignment,
         reviewerAssignment: input.configuration.reviewerAssignment,
+        providerRequestBudgets: input.configuration.providerRequestBudgets,
       },
     );
     transaction.persist(

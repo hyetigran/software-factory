@@ -99,6 +99,32 @@ const executionConfiguration: ResolvedConfigurationSnapshot = {
     remediation: { timeoutMs: 30_000, reasoning: null },
     schemaRepair: { timeoutMs: 30_000, reasoning: null },
   },
+  providerRequestBudgets: {
+    planner: {
+      calls: 1,
+      inputTokens: 4_000,
+      outputTokens: 1_000,
+      costUsdMicros: 400_000,
+    },
+    reviewer: {
+      calls: 1,
+      inputTokens: 4_000,
+      outputTokens: 1_000,
+      costUsdMicros: 400_000,
+    },
+    remediation: {
+      calls: 1,
+      inputTokens: 4_000,
+      outputTokens: 1_000,
+      costUsdMicros: 400_000,
+    },
+    schemaRepair: {
+      calls: 1,
+      inputTokens: 4_000,
+      outputTokens: 1_000,
+      costUsdMicros: 400_000,
+    },
+  },
   recordingMode: "record",
   humanActorDisplayName: "Test User",
   providerStorage: "minimize",
@@ -475,6 +501,9 @@ describe("SQLite authority", () => {
     if (repairAttempt.status !== "started") {
       throw new Error("repair attempt must start");
     }
+    expect(repairAttempt.reservation).toEqual(
+      executionConfiguration.providerRequestBudgets.schemaRepair,
+    );
     const repairRequest = {
       ...providerRequest,
       role: "schema_repair" as const,
@@ -492,6 +521,8 @@ describe("SQLite authority", () => {
       ],
       timeoutMs:
         executionConfiguration.providerRequestSettings.schemaRepair.timeoutMs,
+      maxOutputTokens:
+        executionConfiguration.providerRequestBudgets.schemaRepair.outputTokens,
     };
     const providerPreflight: ProviderPreflight = {
       resolve: () => ({

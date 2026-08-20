@@ -40,6 +40,32 @@ const configuration: ResolvedConfigurationSnapshot = {
     remediation: { timeoutMs: 30_000, reasoning: null },
     schemaRepair: { timeoutMs: 30_000, reasoning: null },
   },
+  providerRequestBudgets: {
+    planner: {
+      calls: 1,
+      inputTokens: 2_000,
+      outputTokens: 1_000,
+      costUsdMicros: 100_000,
+    },
+    reviewer: {
+      calls: 1,
+      inputTokens: 2_000,
+      outputTokens: 1_000,
+      costUsdMicros: 100_000,
+    },
+    remediation: {
+      calls: 1,
+      inputTokens: 2_000,
+      outputTokens: 1_000,
+      costUsdMicros: 100_000,
+    },
+    schemaRepair: {
+      calls: 1,
+      inputTokens: 2_000,
+      outputTokens: 1_000,
+      costUsdMicros: 100_000,
+    },
+  },
   recordingMode: "record",
   humanActorDisplayName: "Test User",
   providerStorage: "minimize",
@@ -200,7 +226,7 @@ describe("attempt recovery policy", () => {
         },
         policy,
       ).reservation,
-    ).toEqual(reservation);
+    ).toEqual(configuration.providerRequestBudgets.schemaRepair);
     expect(() =>
       decideAttemptPolicy(
         { ...baseRequest, attemptKind: "schema_repair" },

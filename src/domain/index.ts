@@ -275,6 +275,12 @@ export type PinnedRunPolicy = {
   policyHash: string;
   plannerAssignment: ProviderModelAssignment;
   reviewerAssignment: ProviderModelAssignment;
+  providerRequestBudgets?: {
+    planner: BudgetReservation;
+    reviewer: BudgetReservation;
+    remediation: BudgetReservation;
+    schemaRepair: BudgetReservation;
+  };
 };
 
 export type LedgerSubmitted = {
@@ -1345,6 +1351,19 @@ function providerBudgetIsEligible(
     available.inputTokens >= maximum.inputTokens &&
     available.outputTokens >= maximum.outputTokens &&
     available.costUsdMicros >= maximum.costUsdMicros
+  );
+}
+
+function providerBudgetsEqual(
+  left: BudgetReservation,
+  right: BudgetReservation | undefined,
+): boolean {
+  return (
+    right !== undefined &&
+    left.calls === right.calls &&
+    left.inputTokens === right.inputTokens &&
+    left.outputTokens === right.outputTokens &&
+    left.costUsdMicros === right.costUsdMicros
   );
 }
 
@@ -2595,7 +2614,11 @@ function requestPlanning(
     !input.schemaCompatible ||
     !input.mutationLeaseAvailable ||
     !actorAuthorized ||
-    !budgetEligible
+    !budgetEligible ||
+    !providerBudgetsEqual(
+      input.budgetReservation,
+      policy.providerRequestBudgets?.planner,
+    )
   ) {
     throw new DomainTransitionError(
       "PRECONDITION_FAILED",
@@ -2919,6 +2942,10 @@ function acceptPlanForBaseline(
     !input.mutationLeaseAvailable ||
     !actorAuthorized ||
     !budgetEligible ||
+    !providerBudgetsEqual(
+      input.reviewBudgetMaximum,
+      policy.providerRequestBudgets?.reviewer,
+    ) ||
     input.renderCommandId.length === 0 ||
     input.reviewCommandId.length === 0 ||
     input.renderCommandId === input.reviewCommandId
@@ -3689,6 +3716,12 @@ function acceptBaselineReview(
     !providerBudgetIsEligible(
       input.nextCommandBudgetMaximum,
       input.availableBudget,
+    ) ||
+    !providerBudgetsEqual(
+      input.nextCommandBudgetMaximum,
+      reconciled !== null && reconciled.blockingIds.size > 0
+        ? policy.providerRequestBudgets?.remediation
+        : policy.providerRequestBudgets?.reviewer,
     ) ||
     !providerRequestSettingsAreValid(
       input.nextCommandTimeoutMs,

@@ -206,6 +206,8 @@ export class SqlitePreparedRequestRegistration {
                 configuration.providerRequestSettings.schemaRepair.timeoutMs,
               reasoning:
                 configuration.providerRequestSettings.schemaRepair.reasoning,
+              maxOutputTokens:
+                configuration.providerRequestBudgets.schemaRepair.outputTokens,
               providerStorage: configuration.providerStorage,
             }
           : requestPolicy;

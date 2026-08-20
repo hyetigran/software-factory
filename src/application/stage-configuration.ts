@@ -47,6 +47,20 @@ export type ResolvedProviderRequestSettings = {
   schemaRepair: ProviderRequestSettings;
 };
 
+export type ProviderRequestBudget = {
+  calls: 1;
+  inputTokens: number;
+  outputTokens: number;
+  costUsdMicros: number;
+};
+
+export type ResolvedProviderRequestBudgets = {
+  planner: ProviderRequestBudget;
+  reviewer: ProviderRequestBudget;
+  remediation: ProviderRequestBudget;
+  schemaRepair: ProviderRequestBudget;
+};
+
 export type HardCeilings = {
   calls: number;
   physicalAttempts: number;
@@ -66,6 +80,7 @@ export type ResolvedConfigurationSnapshot = {
   reviewerAssignment: ProviderModelAssignment;
   artifactHashes: ResolvedArtifactPins;
   providerRequestSettings: ResolvedProviderRequestSettings;
+  providerRequestBudgets: ResolvedProviderRequestBudgets;
   recordingMode: "record" | "strict_replay";
   humanActorDisplayName: string;
   providerStorage: "minimize";
@@ -89,6 +104,7 @@ const allowedKeys = new Set([
   "reviewerAssignment",
   "artifactHashes",
   "providerRequestSettings",
+  "providerRequestBudgets",
   "recordingMode",
   "humanActorDisplayName",
   "providerStorage",
@@ -195,6 +211,25 @@ export function resolvedConfigurationIsValid(
           (typeof settings.reasoning === "string" &&
             settings.reasoning.trim().length > 0)),
     ) &&
+    hasExactKeys(value.providerRequestBudgets, [
+      "planner",
+      "reviewer",
+      "remediation",
+      "schemaRepair",
+    ]) &&
+    Object.values(value.providerRequestBudgets).every(
+      (budget) =>
+        hasExactKeys(budget, [
+          "calls",
+          "inputTokens",
+          "outputTokens",
+          "costUsdMicros",
+        ]) &&
+        budget.calls === 1 &&
+        [budget.inputTokens, budget.outputTokens, budget.costUsdMicros].every(
+          (value) => Number.isSafeInteger(value) && value > 0,
+        ),
+    ) &&
     (value.recordingMode === "record" ||
       value.recordingMode === "strict_replay") &&
     value.humanActorDisplayName.trim().length > 0 &&
@@ -221,6 +256,25 @@ export function resolvedConfigurationIsValid(
     value.hardCeilings.repairs >= 0 &&
     value.hardCeilings.remediationCycles >= 0 &&
     value.hardCeilings.closureCycles >= 1 &&
+    value.providerRequestBudgets.planner.calls +
+      value.providerRequestBudgets.reviewer.calls <=
+      value.hardCeilings.calls &&
+    value.providerRequestBudgets.planner.inputTokens +
+      value.providerRequestBudgets.reviewer.inputTokens <=
+      value.hardCeilings.inputTokens &&
+    value.providerRequestBudgets.planner.outputTokens +
+      value.providerRequestBudgets.reviewer.outputTokens <=
+      value.hardCeilings.outputTokens &&
+    value.providerRequestBudgets.planner.costUsdMicros +
+      value.providerRequestBudgets.reviewer.costUsdMicros <=
+      value.hardCeilings.costUsdMicros &&
+    Object.values(value.providerRequestBudgets).every(
+      (budget) =>
+        budget.calls <= value.hardCeilings.calls &&
+        budget.inputTokens <= value.hardCeilings.inputTokens &&
+        budget.outputTokens <= value.hardCeilings.outputTokens &&
+        budget.costUsdMicros <= value.hardCeilings.costUsdMicros,
+    ) &&
     hasExactKeys(value.credentialReferences, [
       ...new Set([
         value.plannerAssignment.provider,

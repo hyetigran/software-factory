@@ -477,6 +477,23 @@ describe("factory executable", () => {
           )
           .get(planning.data.commandId),
       ).toEqual({ command_type: "generate_plan", status: "planned" });
+      const planned = planningDatabase
+        .prepare(
+          "SELECT specification_json FROM logical_commands WHERE command_id = ?",
+        )
+        .get(planning.data.commandId) as { specification_json: string };
+      expect(
+        (
+          JSON.parse(planned.specification_json) as {
+            budgetReservation: unknown;
+          }
+        ).budgetReservation,
+      ).toEqual({
+        calls: 1,
+        inputTokens: 400_000,
+        outputTokens: 30_000,
+        costUsdMicros: 5_000_000,
+      });
     } finally {
       planningDatabase.close();
     }
@@ -508,7 +525,13 @@ describe("factory executable", () => {
       join(projectRoot, "project.json"),
       JSON.stringify({
         schema_version: 1,
-        budgets: { max_cost_usd: 10 },
+        budgets: {
+          max_cost_usd: 10,
+          provider_request_maxima: {
+            planner: { max_cost_usd: 3 },
+            reviewer: { max_cost_usd: 3 },
+          },
+        },
         request_settings: { planner: { timeout_ms: 90000 } },
       }),
     );
@@ -516,7 +539,12 @@ describe("factory executable", () => {
       join(projectRoot, "override.json"),
       JSON.stringify({
         schema_version: 1,
-        budgets: { max_cost_usd: 7 },
+        budgets: {
+          max_cost_usd: 7,
+          provider_request_maxima: {
+            planner: { max_output_tokens: 25000 },
+          },
+        },
         recording_mode: "strict_replay",
       }),
     );
@@ -546,6 +574,10 @@ describe("factory executable", () => {
         planner: { timeoutMs: number };
         reviewer: { timeoutMs: number };
       };
+      providerRequestBudgets: {
+        planner: { outputTokens: number; costUsdMicros: number };
+        reviewer: { costUsdMicros: number };
+      };
     };
     expect(resolved).toMatchObject({
       recordingMode: "strict_replay",
@@ -554,6 +586,10 @@ describe("factory executable", () => {
       providerRequestSettings: {
         planner: { timeoutMs: 90000 },
         reviewer: { timeoutMs: 120000 },
+      },
+      providerRequestBudgets: {
+        planner: { outputTokens: 25000, costUsdMicros: 3_000_000 },
+        reviewer: { costUsdMicros: 3_000_000 },
       },
     });
   });

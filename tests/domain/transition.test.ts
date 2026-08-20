@@ -59,6 +59,32 @@ const pinnedPolicy = {
   policyHash,
   plannerAssignment: configuredPlannerAssignment,
   reviewerAssignment: configuredReviewerAssignment,
+  providerRequestBudgets: {
+    planner: {
+      calls: 1,
+      inputTokens: 24_000,
+      outputTokens: 12_000,
+      costUsdMicros: 8_000_000,
+    },
+    reviewer: {
+      calls: 1,
+      inputTokens: 70_000,
+      outputTokens: 28_000,
+      costUsdMicros: 40_000_000,
+    },
+    remediation: {
+      calls: 1,
+      inputTokens: 70_000,
+      outputTokens: 28_000,
+      costUsdMicros: 40_000_000,
+    },
+    schemaRepair: {
+      calls: 1,
+      inputTokens: 20_000,
+      outputTokens: 8_000,
+      costUsdMicros: 5_000_000,
+    },
+  },
 };
 function reviewContextFixture() {
   return {
@@ -390,9 +416,9 @@ function planGeneratedInput(): PlanGenerated {
     reviewRequestPolicyResolved: true,
     reviewBudgetMaximum: {
       calls: 1,
-      inputTokens: 30_000,
-      outputTokens: 12_000,
-      costUsdMicros: 10_000_000,
+      inputTokens: 70_000,
+      outputTokens: 28_000,
+      costUsdMicros: 40_000_000,
     },
     availableBudget: {
       calls: 2,
@@ -2360,6 +2386,17 @@ describe("transition", () => {
       },
     ],
     [
+      "a Planner budget different from pinned policy",
+      {
+        budgetReservation: {
+          calls: 1,
+          inputTokens: 23_999,
+          outputTokens: 12_000,
+          costUsdMicros: 8_000_000,
+        },
+      },
+    ],
+    [
       "insufficient calls",
       {
         availableBudget: {
@@ -2765,6 +2802,17 @@ describe("transition", () => {
     ["failed database integrity", { databaseIntegrityVerified: false }],
     ["an incompatible schema", { schemaCompatible: false }],
     ["a conflicting mutation lease", { mutationLeaseAvailable: false }],
+    [
+      "a Reviewer budget different from pinned policy",
+      {
+        reviewBudgetMaximum: {
+          calls: 1,
+          inputTokens: 69_999,
+          outputTokens: 28_000,
+          costUsdMicros: 40_000_000,
+        },
+      },
+    ],
     [
       "the wrong Planner actor",
       {
@@ -3218,6 +3266,17 @@ describe("transition", () => {
         reconciliation: {
           ...reviewAcceptedInput([]).reconciliation,
           priorFindingsAccountedFor: false,
+        },
+      },
+    ],
+    [
+      "a next-command budget different from pinned policy",
+      {
+        nextCommandBudgetMaximum: {
+          calls: 1,
+          inputTokens: 69_999,
+          outputTokens: 28_000,
+          costUsdMicros: 40_000_000,
         },
       },
     ],

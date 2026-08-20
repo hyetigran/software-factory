@@ -11,6 +11,28 @@
   "max_input_tokens": 1000000,
   "max_output_tokens": 150000,
   "max_cost_usd": 25,
+  "provider_request_maxima": {
+    "planner": {
+      "max_input_tokens": 400000,
+      "max_output_tokens": 30000,
+      "max_cost_usd": 5
+    },
+    "reviewer": {
+      "max_input_tokens": 500000,
+      "max_output_tokens": 30000,
+      "max_cost_usd": 5
+    },
+    "remediation": {
+      "max_input_tokens": 500000,
+      "max_output_tokens": 30000,
+      "max_cost_usd": 5
+    },
+    "schema_repair": {
+      "max_input_tokens": 500000,
+      "max_output_tokens": 15000,
+      "max_cost_usd": 2
+    }
+  },
   "unknown_outcome_accounting": "retain reservation until reconciled; otherwise charge configured maximum",
   "notes": "These are safety ceilings, not expected usage. Pricing is provider-controlled and must be refreshed before release. A ceiling increase always requires a child run."
 }
