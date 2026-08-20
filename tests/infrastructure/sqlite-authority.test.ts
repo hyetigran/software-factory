@@ -65,6 +65,17 @@ const planSchema = JSON.parse(
 const reviewSchema = JSON.parse(
   readFileSync(resolve("schemas/review.v1.schema.json"), "utf8"),
 ) as unknown;
+const projectionSchema = (purpose: "plan" | "review", value: unknown) => {
+  const bytes = Buffer.from(canonicalJson(value));
+  return {
+    artifactId: `artifact_${purpose}_schema`,
+    contentHash: createHash("sha256").update(bytes).digest("hex"),
+    bytes,
+    configurationArtifactId: "artifact_configuration",
+    configurationContentHash: "c".repeat(64),
+    policyHash: "a".repeat(64),
+  };
+};
 
 const executionConfiguration: ResolvedConfigurationSnapshot = {
   schemaVersion: 1,
@@ -1400,7 +1411,7 @@ describe("SQLite authority", () => {
         stateVersion: 3,
         planVersionId: "plan_v1",
         allowedRequirementIds: ["req_1"],
-        schema: planSchema,
+        schema: projectionSchema("plan", planSchema),
       }),
     ).toThrow("coverage is incomplete");
     expect(() =>
@@ -1410,7 +1421,7 @@ describe("SQLite authority", () => {
         stateVersion: 3,
         planVersionId: "plan_v1",
         allowedRequirementIds: ["req_1"],
-        schema: planSchema,
+        schema: projectionSchema("plan", planSchema),
       }),
     ).not.toThrow();
     expect(() =>
@@ -1420,10 +1431,10 @@ describe("SQLite authority", () => {
         stateVersion: 3,
         planVersionId: "plan_v1",
         allowedRequirementIds: ["req_1"],
-        schema: {
+        schema: projectionSchema("plan", {
           type: "object",
           required: ["pinned_only_field"],
-        },
+        }),
       }),
     ).toThrow("normative JSON schema");
 
@@ -1468,7 +1479,7 @@ describe("SQLite authority", () => {
       suppliedEvidenceArtifactIds: ["artifact_plan"],
       expectedPriorFindingIds: [],
       findings: [{ findingId: "finding_1", observationId: "observation_1" }],
-      schema: reviewSchema,
+      schema: projectionSchema("review", reviewSchema),
     };
     expect(() =>
       ValidatedProjection.fromBaselineReviewArtifact({
@@ -1491,10 +1502,10 @@ describe("SQLite authority", () => {
     expect(() =>
       ValidatedProjection.fromBaselineReviewArtifact({
         ...reviewInput,
-        schema: {
+        schema: projectionSchema("review", {
           type: "object",
           required: ["pinned_only_field"],
-        },
+        }),
       }),
     ).toThrow("normative JSON schema");
   });

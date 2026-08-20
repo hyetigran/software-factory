@@ -71,6 +71,14 @@ export type ValidatedProjectionData = {
   controlledIdsValid: boolean;
   referencesComplete: boolean;
   identitiesUnique: boolean;
+  schemaBinding?: {
+    purpose: "plan" | "review";
+    artifactId: string;
+    contentHash: string;
+    configurationArtifactId: string;
+    configurationContentHash: string;
+    policyHash: string;
+  };
   requirements?: Array<{
     requirementId: string;
     displayId: string;
@@ -108,6 +116,50 @@ export type ValidatedProjectionData = {
 };
 
 const validatedProjectionBrand = Symbol("ValidatedProjection");
+
+export type ProjectionSchemaInput = {
+  artifactId: string;
+  contentHash: string;
+  bytes: Uint8Array;
+  configurationArtifactId: string;
+  configurationContentHash: string;
+  policyHash: string;
+};
+
+function boundSchema(
+  input: ProjectionSchemaInput,
+  purpose: "plan" | "review",
+): {
+  schema: unknown;
+  binding: NonNullable<ValidatedProjectionData["schemaBinding"]>;
+} {
+  if (
+    [input.artifactId, input.configurationArtifactId, input.policyHash].some(
+      (value) => value.trim().length === 0,
+    ) ||
+    ![
+      input.contentHash,
+      input.configurationContentHash,
+      input.policyHash,
+    ].every((value) => /^[a-f0-9]{64}$/u.test(value)) ||
+    createHash("sha256").update(input.bytes).digest("hex") !== input.contentHash
+  )
+    throw new TypeError("Projection schema binding is invalid");
+  const schema: unknown = JSON.parse(Buffer.from(input.bytes).toString("utf8"));
+  if (schema === null || typeof schema !== "object" || Array.isArray(schema))
+    throw new TypeError("Projection schema must be an object");
+  return {
+    schema,
+    binding: {
+      purpose,
+      artifactId: input.artifactId,
+      contentHash: input.contentHash,
+      configurationArtifactId: input.configurationArtifactId,
+      configurationContentHash: input.configurationContentHash,
+      policyHash: input.policyHash,
+    },
+  };
+}
 
 function immutableCopy<T>(value: T): T {
   const copy = structuredClone(value);
@@ -222,7 +274,7 @@ export class ValidatedProjection {
     stateVersion: number;
     planVersionId: string;
     allowedRequirementIds: string[];
-    schema: unknown;
+    schema: ProjectionSchemaInput;
   }): ValidatedProjection {
     if (
       createHash("sha256").update(input.bytes).digest("hex") !==
@@ -233,7 +285,8 @@ export class ValidatedProjection {
     const parsed: unknown = JSON.parse(
       Buffer.from(input.bytes).toString("utf8"),
     );
-    assertJsonSchema(parsed, input.schema);
+    const schema = boundSchema(input.schema, "plan");
+    assertJsonSchema(parsed, schema.schema);
     const plan = parsed as Record<string, unknown>;
     if (plan.plan_id !== input.planVersionId) {
       throw new TypeError("Plan artifact identity does not match projection");
@@ -320,6 +373,7 @@ export class ValidatedProjection {
         identitiesUnique:
           new Set(planSections.map(({ sectionId }) => sectionId)).size ===
           planSections.length,
+        schemaBinding: schema.binding,
         planSections,
         sectionTransitions,
         coveredRequirementIds,
@@ -339,7 +393,7 @@ export class ValidatedProjection {
     suppliedEvidenceArtifactIds: string[];
     expectedPriorFindingIds: string[];
     findings: Array<{ findingId: string; observationId: string }>;
-    schema: unknown;
+    schema: ProjectionSchemaInput;
   }): ValidatedProjection {
     if (
       createHash("sha256").update(input.bytes).digest("hex") !==
@@ -352,7 +406,8 @@ export class ValidatedProjection {
     const parsed: unknown = JSON.parse(
       Buffer.from(input.bytes).toString("utf8"),
     );
-    assertJsonSchema(parsed, input.schema);
+    const schema = boundSchema(input.schema, "review");
+    assertJsonSchema(parsed, schema.schema);
     const review = parsed as Record<string, unknown>;
     const concerns = review.new_concerns as Array<Record<string, unknown>>;
     const reviewedPriorFindingIds = (
@@ -445,6 +500,7 @@ export class ValidatedProjection {
         identitiesUnique:
           new Set(findingIds).size === findingIds.length &&
           new Set(observationIds).size === observationIds.length,
+        schemaBinding: schema.binding,
         findingFingerprints,
         observationAssociations,
       }),

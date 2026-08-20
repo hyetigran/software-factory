@@ -40,6 +40,11 @@ import { commandIsValid } from "../../application/command-validation.js";
 import { artifactRegistrationIsValid } from "../../application/artifact-port.js";
 import { terminalFailureClassification } from "../../application/provider-failure-policy.js";
 import { terminalFailureEvidenceDocuments } from "../../application/terminal-failure-evidence.js";
+import {
+  resolvedConfigurationIsValid,
+  resolvedConfigurationPolicyHash,
+  type ResolvedConfigurationSnapshot,
+} from "../../application/stage-configuration.js";
 import { decideAttemptPolicy } from "../../application/attempt-policy.js";
 import type { ContentAddressedArtifactStore } from "../artifacts/object-store.js";
 import {
@@ -1479,6 +1484,8 @@ export class SqliteAuthority
     }
     const factTypes = new Set(result.auditFacts.map(({ type }) => type));
     const projection = request.validatedProjection?.toPersistenceData();
+    if (projection?.schemaBinding !== undefined)
+      this.assertProjectionSchemaBinding(projection.schemaBinding, nextState);
     if (
       (factTypes.has("ledger_submitted") &&
         (projection?.ledgerVersionId === undefined ||
@@ -1487,6 +1494,7 @@ export class SqliteAuthority
           projection.requirements.length === 0)) ||
       (factTypes.has("plan_version_accepted") &&
         (projection?.planVersionId === undefined ||
+          projection.schemaBinding?.purpose !== "plan" ||
           projection.planContentHash === undefined ||
           projection.planSections === undefined ||
           projection.planSections.length === 0 ||
@@ -1494,6 +1502,7 @@ export class SqliteAuthority
           projection.sectionTransitions.length === 0)) ||
       (factTypes.has("review_accepted") &&
         (projection?.reviewContentHash === undefined ||
+          projection.schemaBinding?.purpose !== "review" ||
           projection.findingFingerprints === undefined ||
           projection.observationAssociations === undefined ||
           !reviewProjectionIsComplete(nextState, projection)))
@@ -1667,6 +1676,79 @@ export class SqliteAuthority
     } finally {
       if (handle !== undefined) closeSync(handle);
     }
+  }
+
+  private assertProjectionSchemaBinding(
+    binding: NonNullable<ValidatedProjectionData["schemaBinding"]>,
+    state: JsonObject,
+  ): void {
+    if (
+      binding.configurationArtifactId !== state.configurationArtifactId ||
+      binding.configurationContentHash !== state.configurationContentHash ||
+      binding.policyHash !== state.policyHash
+    )
+      throw new AuthorityIntegrityError(
+        "Projection schema is not bound to the run configuration",
+      );
+    const registered = this.database
+      .prepare("SELECT content_hash FROM artifacts WHERE artifact_id = ?")
+      .get(binding.artifactId) as { content_hash: string } | undefined;
+    if (registered?.content_hash !== binding.contentHash)
+      throw new AuthorityIntegrityError(
+        "Projection schema artifact registration is invalid",
+      );
+    const registeredConfiguration = this.database
+      .prepare(
+        "SELECT content_hash, metadata_json FROM artifacts WHERE artifact_id = ?",
+      )
+      .get(binding.configurationArtifactId) as
+      { content_hash: string; metadata_json: string } | undefined;
+    let configurationSources: unknown;
+    try {
+      configurationSources = (
+        JSON.parse(registeredConfiguration?.metadata_json ?? "null") as {
+          provenance?: { sourceArtifactIds?: unknown };
+        } | null
+      )?.provenance?.sourceArtifactIds;
+    } catch {
+      configurationSources = undefined;
+    }
+    if (
+      registeredConfiguration?.content_hash !==
+        binding.configurationContentHash ||
+      !Array.isArray(configurationSources) ||
+      !configurationSources.includes(binding.artifactId)
+    )
+      throw new AuthorityIntegrityError(
+        "Projection schema is not sourced by the run configuration",
+      );
+    this.readVerifiedObject(binding.contentHash);
+    const configurationBytes = this.readVerifiedObject(
+      binding.configurationContentHash,
+    );
+    let configuration: ResolvedConfigurationSnapshot;
+    try {
+      configuration = JSON.parse(
+        configurationBytes.toString("utf8"),
+      ) as ResolvedConfigurationSnapshot;
+    } catch (error) {
+      throw new AuthorityIntegrityError(
+        "Projection configuration is invalid JSON",
+        { cause: error },
+      );
+    }
+    const expectedHash =
+      binding.purpose === "plan"
+        ? configuration.artifactHashes?.planSchema
+        : configuration.artifactHashes?.reviewSchema;
+    if (
+      !resolvedConfigurationIsValid(configuration) ||
+      resolvedConfigurationPolicyHash(configuration) !== binding.policyHash ||
+      expectedHash !== binding.contentHash
+    )
+      throw new AuthorityIntegrityError(
+        "Projection schema does not match resolved configuration",
+      );
   }
 
   private readVerifiedObject(contentHash: string): Buffer {
