@@ -30,6 +30,11 @@ export type StartedCommandAttempt = {
     heartbeatAt: string;
   };
   startedAt: string;
+  attemptKind: BeginAttemptRequest["attemptKind"];
+  strictReplay?: {
+    recordingManifestArtifactId: string;
+    recordingManifestContentHash: string;
+  };
   resolvedPrerequisiteArtifacts: Array<{
     commandId: string;
     attemptId: string;

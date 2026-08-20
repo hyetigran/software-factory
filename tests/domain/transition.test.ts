@@ -2475,19 +2475,6 @@ describe("transition", () => {
             originatingCommandId: "command_generate_plan_01JTEST",
           },
         },
-        activeReview: {
-          cycle: 1,
-          commandId: "command_baseline_review_01JTEST",
-          renderCommandId: "command_render_plan_01JTEST",
-          reviewerAssignment: planGeneratedInput().reviewerAssignment,
-          reviewPurposeId:
-            "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
-          independence: { reduced: false },
-          pendingReviewCommand: expect.objectContaining({
-            commandId: "command_baseline_review_01JTEST",
-            triggeringStateVersion: 9,
-          }),
-        },
       }),
     );
     if (result.nextState.state !== "baseline_review") {
@@ -2497,6 +2484,24 @@ describe("transition", () => {
       artifactId: "artifact_review_taxonomy_01JTEST",
       contentHash: taxonomyContentHash,
     });
+    expect(result.nextState.activeReview).toEqual(
+      expect.objectContaining({
+        cycle: 1,
+        commandId: "command_baseline_review_01JTEST",
+        renderCommandId: "command_render_plan_01JTEST",
+        reviewerAssignment: planGeneratedInput().reviewerAssignment,
+        reviewPurposeId:
+          "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:baseline:1",
+        independence: { reduced: false },
+      }),
+    );
+    expect(result.nextState.activeReview.pendingReviewCommand?.commandId).toBe(
+      "command_baseline_review_01JTEST",
+    );
+    expect(
+      result.nextState.activeReview.pendingReviewCommand
+        ?.triggeringStateVersion,
+    ).toBe(9);
     expect(result.commands).toEqual([
       expect.objectContaining({
         commandId: "command_render_plan_01JTEST",
@@ -2587,15 +2592,16 @@ describe("transition", () => {
         triggeringStateVersion: rendered.nextState.stateVersion,
       }),
     ]);
-    expect(rendered.auditFacts).toEqual([
-      expect.objectContaining({ type: "plan_rendered" }),
-      expect.objectContaining({
-        type: "command_planned",
-        payload: expect.objectContaining({
-          commandId: "command_baseline_review_01JTEST",
-        }),
-      }),
+    expect(rendered.auditFacts.map(({ type }) => type)).toEqual([
+      "plan_rendered",
+      "command_planned",
     ]);
+    const commandPlanned = rendered.auditFacts[1];
+    if (commandPlanned?.type !== "command_planned")
+      throw new Error("Expected command_planned audit fact");
+    expect(commandPlanned.payload.commandId).toBe(
+      "command_baseline_review_01JTEST",
+    );
   });
 
   it.each([

@@ -103,6 +103,7 @@ describe("buildProviderRequest", () => {
         heartbeatAt: "2026-08-19T00:00:00.000Z",
       },
       startedAt: "2026-08-19T00:00:00.000Z",
+      attemptKind: "initial",
       resolvedPrerequisiteArtifacts: [
         {
           commandId: "command_render",
@@ -204,6 +205,7 @@ describe("buildProviderRequest", () => {
       reservation: base.budgetReservation,
       lease: { ownerProcess: "test", acquiredAt: "now", heartbeatAt: "now" },
       startedAt: "now",
+      attemptKind: "initial",
       resolvedPrerequisiteArtifacts: [],
     } satisfies StartedCommandAttempt;
     expect(() =>

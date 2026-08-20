@@ -1396,6 +1396,17 @@ export class SqliteAuthority
           heartbeatAt: startedAt,
         },
         startedAt,
+        attemptKind: request.attemptKind,
+        ...(request.strictReplay === undefined
+          ? {}
+          : {
+              strictReplay: {
+                recordingManifestArtifactId:
+                  request.strictReplay.recordingManifestArtifactId,
+                recordingManifestContentHash:
+                  request.strictReplay.recordingManifestContentHash,
+              },
+            }),
         resolvedPrerequisiteArtifacts,
       };
     } catch (error) {

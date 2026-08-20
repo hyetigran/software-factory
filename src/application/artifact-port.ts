@@ -35,6 +35,7 @@ export type ArtifactProvenance =
         | "provider_request"
         | "structured_provider_output"
         | "provider_failure_evidence"
+        | "replayed_provider_evidence"
         | "ledger_validation"
         | "ledger_render"
         | "plan_render"
@@ -166,6 +167,7 @@ export function artifactRegistrationIsValid(
             "provider_request",
             "structured_provider_output",
             "provider_failure_evidence",
+            "replayed_provider_evidence",
             "ledger_validation",
             "ledger_render",
             "plan_render",

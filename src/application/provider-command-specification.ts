@@ -211,8 +211,7 @@ export function providerCommandPayloadIsValid(
       [...specification.exactFields].sort().join(",") &&
     specification.stringFields.every(
       (field) =>
-        typeof payload[field] === "string" &&
-        (payload[field] as string).length > 0,
+        typeof payload[field] === "string" && payload[field].length > 0,
     ) &&
     (specification.stringSetFields ?? []).every((field) =>
       stringSet(

@@ -13,6 +13,7 @@ import type { ProviderEvidence } from "../../application/provider-port.js";
 import { canonicalJson } from "../../domain/canonical-json.js";
 import type { StagedArtifactRegistration } from "../../application/artifact-port.js";
 import { structuredTextFromProviderResponse } from "../providers/recording-codec.js";
+import { normalizedProviderUsage } from "../providers/usage-codec.js";
 import { AuthorityIntegrityError } from "./errors.js";
 import { ProviderAttemptAccounting } from "./provider-attempt-accounting.js";
 import {
@@ -350,7 +351,7 @@ export class SqliteProviderCompletion {
     if (
       !commandIsValid(command) ||
       command.provider === undefined ||
-      !["openai", "anthropic"].includes(command.provider)
+      (command.provider !== "openai" && command.provider !== "anthropic")
     ) {
       throw new AuthorityIntegrityError(
         "Provider command envelope is invalid during completion",
@@ -365,18 +366,24 @@ export class SqliteProviderCompletion {
     ) {
       throw new TypeError("Provider completion evidence is invalid");
     }
+    const replayManifestArtifactId = this.replayManifestArtifactId(
+      request.runId,
+      request.attemptId,
+    );
     this.assertStructuredOutput(request.outputArtifact, request, command);
     this.assertProviderArtifact(
       request.rawResponseArtifact,
       request,
       "provider_response",
       row.request_artifact_id,
+      replayManifestArtifactId,
     );
     this.assertProviderArtifact(
       request.nativeUsageArtifact,
       request,
       "native_usage",
       row.request_artifact_id,
+      replayManifestArtifactId,
     );
     const outputBytes = this.dependencies.readStagedArtifactBytes(
       request.outputArtifact,
@@ -398,12 +405,18 @@ export class SqliteProviderCompletion {
       !Object.values(request.actualUsage).every(
         (value) => Number.isInteger(value) && value >= 0,
       ) ||
-      request.actualUsage.calls !== 1 ||
+      request.actualUsage.calls !==
+        (replayManifestArtifactId === null ? 1 : 0) ||
       request.actualUsage.calls > reservation.calls ||
       request.actualUsage.inputTokens > reservation.inputTokens ||
       request.actualUsage.outputTokens > reservation.outputTokens ||
       request.actualUsage.costUsdMicros !== reservation.costUsdMicros ||
-      !this.usageMatchesNative(request, nativeUsageBytes) ||
+      (replayManifestArtifactId === null &&
+        !this.usageMatchesNative(
+          request,
+          nativeUsageBytes,
+          command.provider,
+        )) ||
       !this.responseMatchesEvidence(request, rawResponseBytes) ||
       !this.outputMatchesRawResponse(outputBytes, rawResponseBytes, command) ||
       !this.evidenceMatchesRecording(request, recordedRequestBytes)
@@ -514,18 +527,13 @@ export class SqliteProviderCompletion {
   private usageMatchesNative(
     request: CompleteProviderAttemptEvidence,
     bytes: Uint8Array,
+    provider: "openai" | "anthropic",
   ): boolean {
     try {
-      const usage = JSON.parse(Buffer.from(bytes).toString("utf8")) as Record<
-        string,
-        unknown
-      >;
+      const usage = normalizedProviderUsage(provider, bytes);
       return (
-        usage !== null &&
-        typeof usage === "object" &&
-        !Array.isArray(usage) &&
-        usage.input_tokens === request.actualUsage.inputTokens &&
-        usage.output_tokens === request.actualUsage.outputTokens
+        usage.inputTokens === request.actualUsage.inputTokens &&
+        usage.outputTokens === request.actualUsage.outputTokens
       );
     } catch {
       return false;
@@ -559,18 +567,47 @@ export class SqliteProviderCompletion {
     request: CompleteProviderAttemptEvidence,
     kind: "provider_response" | "native_usage",
     requestArtifactId: string,
+    replayManifestArtifactId: string | null,
   ): void {
+    const provenance = artifact.provenance;
+    const originValid =
+      replayManifestArtifactId === null
+        ? provenance.method === "provider_generated" &&
+          provenance.commandId === request.commandId &&
+          provenance.attemptId === request.attemptId &&
+          provenance.sourceArtifactIds.length === 1 &&
+          provenance.sourceArtifactIds[0] === requestArtifactId
+        : provenance.method === "application_generated" &&
+          provenance.purpose === "replayed_provider_evidence" &&
+          provenance.commandId === request.commandId &&
+          provenance.attemptId === request.attemptId &&
+          provenance.sourceArtifactIds.length === 2 &&
+          provenance.sourceArtifactIds[0] === requestArtifactId &&
+          provenance.sourceArtifactIds[1] === replayManifestArtifactId;
     if (
       artifact.kind !== kind ||
       artifact.createdBy !== request.ownerProcess ||
-      artifact.provenance.method !== "provider_generated" ||
-      artifact.provenance.commandId !== request.commandId ||
-      artifact.provenance.attemptId !== request.attemptId ||
-      artifact.provenance.sourceArtifactIds.length !== 1 ||
-      artifact.provenance.sourceArtifactIds[0] !== requestArtifactId
+      !originValid
     ) {
       throw new TypeError("Provider completion artifact provenance is invalid");
     }
+  }
+
+  private replayManifestArtifactId(
+    runId: string,
+    attemptId: string,
+  ): string | null {
+    const row = this.dependencies.database
+      .prepare(
+        `SELECT json_extract(payload_json, '$.recordingManifestArtifactId') AS artifact_id
+           FROM audit_entries
+          WHERE run_id = ? AND fact_type = 'command_attempt_started'
+            AND json_extract(payload_json, '$.attemptId') = ?
+            AND json_extract(payload_json, '$.attemptKind') = 'strict_replay'
+          ORDER BY sequence DESC LIMIT 1`,
+      )
+      .get(runId, attemptId) as { artifact_id: string | null } | undefined;
+    return row?.artifact_id ?? null;
   }
 
   private assertStructuredOutput(

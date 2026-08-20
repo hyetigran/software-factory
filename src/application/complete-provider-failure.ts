@@ -12,6 +12,7 @@ import type {
   ProviderFailureDisposition,
 } from "./execution-port.js";
 import { canonicalJson } from "../domain/canonical-json.js";
+import { providerFailureEvidenceBytes } from "./provider-execution-codec.js";
 import {
   transition,
   type NonterminalRunState,
@@ -129,12 +130,7 @@ function validateFailureRequest(request: CompleteProviderFailureRequest) {
   const completion = request.completion;
   const rawBytes = completion.execution.recording.rawResponseBytes;
   const nativeBytes = completion.execution.recording.nativeUsageBytes;
-  const diagnosticBytes = Buffer.from(
-    canonicalJson({
-      kind: completion.execution.kind,
-      evidence: completion.execution.evidence,
-    }),
-  );
+  const diagnosticBytes = providerFailureEvidenceBytes(completion.execution);
   if (
     [
       completion.runId,
