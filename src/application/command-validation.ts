@@ -256,25 +256,6 @@ function payloadIsValid(commandType: string, value: object): boolean {
         Number.isInteger(payload.repairAttempt) &&
         Number(payload.repairAttempt) >= 1
       );
-    case "verify_remediation":
-      return (
-        hasExactKeys(value, [
-          "ledgerVersionId",
-          "planVersionId",
-          "planArtifactId",
-          "remediationArtifactId",
-          "claimIds",
-          "providerStorage",
-        ]) &&
-        stringFields([
-          "ledgerVersionId",
-          "planVersionId",
-          "planArtifactId",
-          "remediationArtifactId",
-        ]) &&
-        stringSet(payload.claimIds) &&
-        payload.providerStorage === "minimize"
-      );
     default:
       return false;
   }

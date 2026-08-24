@@ -105,6 +105,53 @@ export function deriveRemediationClaims(input: {
   };
 }
 
+export function deriveRemediationDiff(input: {
+  priorPlanBytes: Uint8Array;
+  revisedPlanBytes: Uint8Array;
+  claims: RemediationClaimInput[];
+}): Uint8Array {
+  const priorSections = planSectionsByCanonicalContent(input.priorPlanBytes);
+  const revisedSections = planSectionsByCanonicalContent(
+    input.revisedPlanBytes,
+  );
+  const complete = priorSections !== null && revisedSections !== null;
+  const section = (canonical: string | undefined): unknown =>
+    canonical === undefined ? null : JSON.parse(canonical);
+  const changedSections = !complete
+    ? []
+    : [...new Set([...priorSections.keys(), ...revisedSections.keys()])]
+        .filter(
+          (sectionId) =>
+            priorSections.get(sectionId) !== revisedSections.get(sectionId),
+        )
+        .sort()
+        .map((sectionId) => ({
+          section_id: sectionId,
+          change: !priorSections.has(sectionId)
+            ? "added"
+            : !revisedSections.has(sectionId)
+              ? "removed"
+              : "modified",
+          prior_section: section(priorSections.get(sectionId)),
+          revised_section: section(revisedSections.get(sectionId)),
+        }));
+  return Buffer.from(
+    canonicalJson({
+      schema_version: 1,
+      kind: "remediation_diff",
+      complete,
+      prior_plan_content_hash: createHash("sha256")
+        .update(input.priorPlanBytes)
+        .digest("hex"),
+      revised_plan_content_hash: createHash("sha256")
+        .update(input.revisedPlanBytes)
+        .digest("hex"),
+      claims: input.claims,
+      changed_sections: changedSections,
+    }),
+  );
+}
+
 export type RemediationCompletionEvidence = {
   commandId: string;
   attemptId: string;
@@ -122,6 +169,7 @@ export function buildRemediationGenerated(input: {
   priorPlanBytes: Uint8Array;
   revisedPlanBytes: Uint8Array;
   planArtifactId: string;
+  diffArtifactId: string;
   sectionTransitionMapArtifactId: string;
   sectionTransitionMapBytes: Uint8Array;
   provenanceArtifact: VerifiedArtifactInput;
@@ -132,7 +180,7 @@ export function buildRemediationGenerated(input: {
   databaseIntegrityVerified: boolean;
   schemaCompatible: boolean;
   mutationLeaseAvailable: boolean;
-}): RemediationGenerated {
+}): { input: RemediationGenerated; diffArtifactBytes: Uint8Array } {
   if (
     createHash("sha256").update(input.priorPlanBytes).digest("hex") !==
     input.state.currentPlan.contentHash
@@ -159,6 +207,11 @@ export function buildRemediationGenerated(input: {
     },
     blockingFindingIds: input.state.blockingFindingIds,
   });
+  const diffBytes = deriveRemediationDiff({
+    priorPlanBytes: input.priorPlanBytes,
+    revisedPlanBytes: input.revisedPlanBytes,
+    claims: derived.claims,
+  });
   const planVersionId = (() => {
     try {
       const parsed: unknown = JSON.parse(
@@ -174,7 +227,7 @@ export function buildRemediationGenerated(input: {
     }
   })();
 
-  return {
+  const generated: RemediationGenerated = {
     type: "RemediationGenerated",
     runId: input.state.runId,
     expectedStateVersion: input.state.stateVersion,
@@ -194,6 +247,11 @@ export function buildRemediationGenerated(input: {
       nativeUsageContentHash: input.completion.nativeUsageArtifact.contentHash,
     },
     remediationArtifact,
+    diffArtifact: {
+      artifactId: input.diffArtifactId,
+      contentHash: createHash("sha256").update(diffBytes).digest("hex"),
+      verified: true,
+    },
     remediationRequestArtifact: {
       artifactId: input.completion.requestArtifactId,
       contentHash: input.completion.requestContentHash,
@@ -244,4 +302,5 @@ export function buildRemediationGenerated(input: {
       modelId: input.state.activePlanning.plannerAssignment.modelId,
     },
   };
+  return { input: generated, diffArtifactBytes: diffBytes };
 }

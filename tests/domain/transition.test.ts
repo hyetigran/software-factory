@@ -672,6 +672,11 @@ function remediationGeneratedInput(): RemediationGenerated {
       contentHash: "7".repeat(64),
       verified: true,
     },
+    diffArtifact: {
+      artifactId: "artifact_remediation_diff_01JTEST",
+      contentHash: "12".repeat(32),
+      verified: true,
+    },
     outputValid: true,
     claims: [
       {
@@ -3277,8 +3282,11 @@ describe("transition", () => {
       ledgerVersionId: "ledger_01JTEST",
       planVersionId: "plan_version_02JTEST",
       planArtifactId: "artifact_plan_02JTEST",
+      priorPlanArtifactId: "artifact_plan_01JTEST",
       remediationArtifactId: "artifact_remediation_01JTEST",
+      diffArtifactId: "artifact_remediation_diff_01JTEST",
       claimIds: ["claim_architecture_01JTEST"],
+      independence: { reduced: false },
       providerStorage: "minimize",
     });
     expect(result.auditFacts.map(({ type }) => type)).toEqual([
@@ -3375,6 +3383,16 @@ describe("transition", () => {
             findingId: "finding_unknown_01JTEST",
           },
         ],
+      },
+    ],
+    [
+      "an unverified diff artifact",
+      {
+        diffArtifact: {
+          artifactId: "artifact_remediation_diff_01JTEST",
+          contentHash: "12".repeat(32),
+          verified: false,
+        },
       },
     ],
     [

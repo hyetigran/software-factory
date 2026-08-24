@@ -81,6 +81,40 @@ describe("command validation", () => {
   ])("rejects invalid reduced independence for %s", (commandType, payload) => {
     expect(providerCommandPayloadIsValid(commandType, payload)).toBe(false);
   });
+  it("validates verify_remediation payloads through the provider specification", () => {
+    const payload = {
+      ledgerVersionId: "ledger-v1",
+      planVersionId: "plan-v2",
+      planArtifactId: "plan-revised",
+      priorPlanArtifactId: "plan-prior",
+      remediationArtifactId: "remediation",
+      diffArtifactId: "diff",
+      claimIds: ["claim_1"],
+      independence: { reduced: false },
+      providerStorage: "minimize",
+    };
+    expect(providerCommandPayloadIsValid("verify_remediation", payload)).toBe(
+      true,
+    );
+    for (const broken of [
+      { ...payload, claimIds: [] },
+      { ...payload, claimIds: ["claim_1", "claim_1"] },
+      { ...payload, diffArtifactId: "" },
+      { ...payload, independence: { reduced: "no" } },
+      { ...payload, providerStorage: "retain" },
+      (() => {
+        const { priorPlanArtifactId: _prior, ...rest } = payload;
+        void _prior;
+        return rest;
+      })(),
+      { ...payload, extraField: "surprise" },
+    ]) {
+      expect(providerCommandPayloadIsValid("verify_remediation", broken)).toBe(
+        false,
+      );
+    }
+  });
+
   it("accepts exact operational command payloads", () => {
     expect(
       commandIsValid(command("verify_integrity", { scope: "workspace" })),

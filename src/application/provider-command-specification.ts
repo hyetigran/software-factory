@@ -2,6 +2,7 @@ type ProviderCommandType =
   | "generate_plan"
   | "baseline_review"
   | "generate_remediation"
+  | "verify_remediation"
   | "closure_review";
 
 type Specification = {
@@ -110,6 +111,35 @@ const specifications: Record<ProviderCommandType, Specification> = {
       "evidenceArtifactIds",
     ],
     stringSetFields: ["evidenceArtifactIds", "blockingFindingIds"],
+  },
+  verify_remediation: {
+    exactFields: [
+      "ledgerVersionId",
+      "planVersionId",
+      "planArtifactId",
+      "priorPlanArtifactId",
+      "remediationArtifactId",
+      "diffArtifactId",
+      "claimIds",
+      "independence",
+      "providerStorage",
+    ],
+    stringFields: [
+      "ledgerVersionId",
+      "planVersionId",
+      "planArtifactId",
+      "priorPlanArtifactId",
+      "remediationArtifactId",
+      "diffArtifactId",
+    ],
+    inputArtifactFields: [
+      "planArtifactId",
+      "priorPlanArtifactId",
+      "remediationArtifactId",
+      "diffArtifactId",
+    ],
+    stringSetFields: ["claimIds"],
+    requiresIndependence: true,
   },
   closure_review: {
     exactFields: [

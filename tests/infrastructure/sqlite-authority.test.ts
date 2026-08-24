@@ -37,6 +37,7 @@ import {
   type RunStarted,
 } from "../../src/domain/index.js";
 import { buildRemediationGenerated } from "../../src/application/remediation-claims.js";
+import { buildProviderRequest } from "../../src/application/build-provider-request.js";
 import { ContentAddressedArtifactStore } from "../../src/infrastructure/artifacts/object-store.js";
 import {
   AuthorityIntegrityError,
@@ -91,12 +92,12 @@ const executionConfiguration: ResolvedConfigurationSnapshot = {
     requirementsSchema: "1".repeat(64),
     artifactSchema: "2".repeat(64),
     planSchema: createHash("sha256").update("{}").digest("hex"),
-    reviewSchema: "4".repeat(64),
+    reviewSchema: createHash("sha256").update("{}").digest("hex"),
     terminalManifestSchema: "0".repeat(64),
     taxonomy: "5".repeat(64),
     componentRegistry: "6".repeat(64),
     plannerPrompt: createHash("sha256").update("plan").digest("hex"),
-    reviewerPrompt: "8".repeat(64),
+    reviewerPrompt: createHash("sha256").update("review").digest("hex"),
     remediationPrompt: "a".repeat(64),
     remediationSchema: "b".repeat(64),
     schemaRepairPrompt: createHash("sha256").update("repair").digest("hex"),
@@ -1162,7 +1163,12 @@ describe("SQLite authority", () => {
     const register = async (
       artifactId: string,
       kind:
-        "requirements_ledger" | "structured_plan" | "rendered_plan" | "review",
+        | "requirements_ledger"
+        | "structured_plan"
+        | "rendered_plan"
+        | "review"
+        | "provider_response"
+        | "other",
       bytes: Buffer,
     ) => {
       const descriptor = await store.stageArtifact(bytes, {
@@ -1192,14 +1198,26 @@ describe("SQLite authority", () => {
     );
     await register("artifact_plan_v1", "structured_plan", priorPlanBytes);
     await register("artifact_plan_v2", "structured_plan", revisedPlanBytes);
+    await register("artifact_reviewer_prompt", "other", Buffer.from("review"));
+    await register(
+      "artifact_remediation_v2",
+      "provider_response",
+      revisedPlanBytes,
+    );
     const remediationPurposeId = `${runId}:plan:plan_v1:remediation:1`;
     const evidenceReference = (artifactId: string, contentHash: string) => ({
       artifactId,
       contentHash,
     });
     const reviewContext = {
-      prompt: evidenceReference("artifact_reviewer_prompt", "8".repeat(64)),
-      schema: evidenceReference("artifact_review_schema", "4".repeat(64)),
+      prompt: evidenceReference(
+        "artifact_reviewer_prompt",
+        createHash("sha256").update("review").digest("hex"),
+      ),
+      schema: evidenceReference(
+        "artifact_schema",
+        createHash("sha256").update("{}").digest("hex"),
+      ),
       taxonomy: evidenceReference("artifact_taxonomy", "5".repeat(64)),
       componentRegistry: evidenceReference(
         "artifact_component_registry",
@@ -1348,7 +1366,7 @@ describe("SQLite authority", () => {
       }),
     });
 
-    const input = buildRemediationGenerated({
+    const { input, diffArtifactBytes } = buildRemediationGenerated({
       state: remediationRunState,
       completion: {
         commandId: "command_generate_remediation_1",
@@ -1372,6 +1390,7 @@ describe("SQLite authority", () => {
       priorPlanBytes,
       revisedPlanBytes,
       planArtifactId: "artifact_plan_v2",
+      diffArtifactId: "artifact_diff_v2",
       sectionTransitionMapArtifactId: "artifact_section_map_v2",
       sectionTransitionMapBytes: Buffer.from(canonicalJson([])),
       provenanceArtifact: {
@@ -1406,6 +1425,9 @@ describe("SQLite authority", () => {
         onlyDeclaredNewSectionsAssignedIds: true,
       }),
     );
+    const diffBytes = Buffer.from(diffArtifactBytes);
+    const diffHash = await register("artifact_diff_v2", "other", diffBytes);
+    expect(diffHash).toBe(input.diffArtifact.contentHash);
 
     await commitTransition<NonterminalRunState>(authority, {
       runId,
@@ -1433,13 +1455,134 @@ describe("SQLite authority", () => {
       ledgerVersionId: "ledger_v1",
       planVersionId: "plan_v2",
       planArtifactId: "artifact_plan_v2",
+      priorPlanArtifactId: "artifact_plan_v1",
       remediationArtifactId: "artifact_remediation_v2",
+      diffArtifactId: "artifact_diff_v2",
       claimIds: ["claim_finding_blocker_1"],
+      independence: { reduced: false },
       providerStorage: "minimize",
     });
     expect(
       authority.listAuditEntries().map(({ factType }) => factType),
     ).toEqual(["test_seeded_state", "remediation_proposed", "command_planned"]);
+
+    const executionPolicy = ExecutionPolicy.fromConfiguration({
+      runId,
+      configurationArtifactId: "artifact_configuration",
+      configuration: executionConfiguration,
+      expectedContentHash: executionConfigurationHash,
+    });
+    const attempt = await authority.beginAttempt({
+      runId,
+      commandId: "command_verify_remediation_1",
+      attemptId: "attempt_verify_remediation_1",
+      correlationId: "correlation_verify_1",
+      ownerProcess: "pid:reviewer",
+      configurationArtifactId: "artifact_configuration",
+      policy: executionPolicy,
+      attemptKind: "initial",
+    });
+    expect(attempt.status).toBe("started");
+    if (attempt.status !== "started") throw new Error("attempt must start");
+    const reviewerPromptHash = createHash("sha256")
+      .update("review")
+      .digest("hex");
+    const reviewSchemaHash = createHash("sha256").update("{}").digest("hex");
+    const providerRequest = buildProviderRequest({
+      command: verifyCommands[0]!,
+      attempt,
+      artifacts: [
+        {
+          artifactId: "artifact_reviewer_prompt",
+          contentHash: reviewerPromptHash,
+          kind: "other",
+          bytes: Buffer.from("review"),
+        },
+        {
+          artifactId: "artifact_schema",
+          contentHash: reviewSchemaHash,
+          kind: "other",
+          bytes: Buffer.from("{}"),
+        },
+        {
+          artifactId: "artifact_plan_v1",
+          contentHash: priorPlanHash,
+          kind: "structured_plan",
+          bytes: priorPlanBytes,
+        },
+        {
+          artifactId: "artifact_plan_v2",
+          contentHash: revisedPlanHash,
+          kind: "structured_plan",
+          bytes: revisedPlanBytes,
+        },
+        {
+          artifactId: "artifact_remediation_v2",
+          contentHash: revisedPlanHash,
+          kind: "provider_response",
+          bytes: revisedPlanBytes,
+        },
+        {
+          artifactId: "artifact_diff_v2",
+          contentHash: diffHash,
+          kind: "other",
+          bytes: diffBytes,
+        },
+      ],
+    });
+    expect(providerRequest.role).toBe("reviewer");
+    expect(providerRequest.maxOutputTokens).toBe(
+      executionConfiguration.providerRequestBudgets.reviewer.outputTokens,
+    );
+    expect(providerRequest.timeoutMs).toBe(
+      executionConfiguration.providerRequestSettings.reviewer.timeoutMs,
+    );
+    expect(
+      providerRequest.inputArtifacts.map(({ artifactId }) => artifactId).sort(),
+    ).toEqual([
+      "artifact_diff_v2",
+      "artifact_plan_v1",
+      "artifact_plan_v2",
+      "artifact_remediation_v2",
+    ]);
+    const requestBytes = Buffer.from(canonicalJson({ request: "verify" }));
+    const requestArtifact = await store.stageArtifact(requestBytes, {
+      artifactId: "artifact_verify_request_1",
+      kind: "provider_request",
+      mediaType: "application/json",
+      schemaId: "provider-request-recording.v1",
+      createdBy: "pid:reviewer",
+      provenance: {
+        method: "application_generated",
+        purpose: "provider_request",
+        sourceArtifactIds: [
+          "artifact_reviewer_prompt",
+          "artifact_schema",
+          "artifact_plan_v1",
+          "artifact_plan_v2",
+          "artifact_remediation_v2",
+          "artifact_diff_v2",
+        ],
+        commandId: "command_verify_remediation_1",
+        attemptId: "attempt_verify_remediation_1",
+      },
+    });
+    await expect(
+      authority.registerPreparedProviderRequest({
+        attempt,
+        providerRequest,
+        normalizedRequestHash: requestArtifact.contentHash,
+        artifact: requestArtifact,
+      }),
+    ).resolves.toBe("claimed");
+    await expect(
+      authority.registerPreparedProviderRequest({
+        attempt,
+        providerRequest: { ...providerRequest, timeoutMs: 999 },
+        normalizedRequestHash: requestArtifact.contentHash,
+        artifact: requestArtifact,
+      }),
+    ).rejects.toThrow("not bound to the active command attempt");
     await expect(authority.verifyIntegrity()).resolves.toBeUndefined();
     authority.close();
   });

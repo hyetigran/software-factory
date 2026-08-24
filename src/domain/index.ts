@@ -670,6 +670,7 @@ export type RemediationGenerated = {
   remediationArtifact: VerifiedArtifactInput;
   remediationRequestArtifact: VerifiedArtifactInput;
   providerUsageArtifact: VerifiedArtifactInput;
+  diffArtifact: VerifiedArtifactInput;
   outputValid: boolean;
   claims: RemediationClaimInput[];
   claimsValidation: RemediationClaimsValidation;
@@ -988,8 +989,11 @@ export type VerifyRemediation = {
     ledgerVersionId: string;
     planVersionId: string;
     planArtifactId: string;
+    priorPlanArtifactId: string;
     remediationArtifactId: string;
+    diffArtifactId: string;
     claimIds: string[];
+    independence: ActiveReview["independence"];
     providerStorage: "minimize";
   };
 };
@@ -3930,6 +3934,7 @@ function proposeRemediation(
     input.remediationArtifact,
     input.remediationRequestArtifact,
     input.providerUsageArtifact,
+    input.diffArtifact,
     input.planArtifact,
     input.sectionTransitionMapArtifact,
     input.provenanceArtifact,
@@ -4035,25 +4040,18 @@ function proposeRemediation(
     input.planArtifact.artifactId,
     input.planArtifact.contentHash,
   );
+  const diffEvidence = artifactEvidence(
+    input.diffArtifact.artifactId,
+    input.diffArtifact.contentHash,
+  );
   const verifyInputEvidence = uniqueArtifactEvidence([
-    artifactEvidence(
-      previousState.currentLedger.artifactId,
-      previousState.currentLedger.contentHash,
-    ),
     artifactEvidence(
       previousState.currentPlan.artifactId,
       previousState.currentPlan.contentHash,
     ),
     revisedPlanEvidence,
     remediationEvidence,
-    artifactEvidence(
-      input.sectionTransitionMapArtifact.artifactId,
-      input.sectionTransitionMapArtifact.contentHash,
-    ),
-    artifactEvidence(
-      input.provenanceArtifact.artifactId,
-      input.provenanceArtifact.contentHash,
-    ),
+    diffEvidence,
     artifactEvidence(
       previousState.reviewContext.prompt.artifactId,
       previousState.reviewContext.prompt.contentHash,
@@ -4061,14 +4059,6 @@ function proposeRemediation(
     artifactEvidence(
       previousState.reviewContext.schema.artifactId,
       previousState.reviewContext.schema.contentHash,
-    ),
-    artifactEvidence(
-      previousState.reviewContext.taxonomy.artifactId,
-      previousState.reviewContext.taxonomy.contentHash,
-    ),
-    artifactEvidence(
-      previousState.reviewContext.policy.artifactId,
-      previousState.reviewContext.policy.contentHash,
     ),
   ]);
   const verifyCommand = planCommand<VerifyRemediation>(input.verifyCommandId, {
@@ -4101,8 +4091,11 @@ function proposeRemediation(
       ledgerVersionId: previousState.currentLedger.versionId,
       planVersionId: input.planVersionId,
       planArtifactId: input.planArtifact.artifactId,
+      priorPlanArtifactId: previousState.currentPlan.artifactId,
       remediationArtifactId: input.remediationArtifact.artifactId,
+      diffArtifactId: input.diffArtifact.artifactId,
       claimIds,
+      independence: previousState.activeReview.independence,
       providerStorage: "minimize",
     },
   });
@@ -4144,6 +4137,7 @@ function proposeRemediation(
         evidence: [
           remediationEvidence,
           revisedPlanEvidence,
+          diffEvidence,
           artifactEvidence(
             input.remediationRequestArtifact.artifactId,
             input.remediationRequestArtifact.contentHash,

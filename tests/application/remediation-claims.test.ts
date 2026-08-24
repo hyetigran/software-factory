@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildRemediationGenerated,
   deriveRemediationClaims,
+  deriveRemediationDiff,
 } from "../../src/application/remediation-claims.js";
 import { canonicalJson } from "../../src/domain/canonical-json.js";
 
@@ -205,6 +206,7 @@ describe("deriveRemediationClaims", () => {
       priorPlanBytes: priorBytes,
       revisedPlanBytes: revisedBytes,
       planArtifactId: "artifact_plan_02JTEST",
+      diffArtifactId: "artifact_remediation_diff_02JTEST",
       sectionTransitionMapArtifactId: "artifact_section_map_02JTEST",
       sectionTransitionMapBytes: Buffer.from(canonicalJson([])),
       provenanceArtifact: {
@@ -226,11 +228,36 @@ describe("deriveRemediationClaims", () => {
       mutationLeaseAvailable: true,
     };
 
-    const built = buildRemediationGenerated(request);
+    const built = buildRemediationGenerated(request).input;
+    const { diffArtifactBytes } = buildRemediationGenerated(request);
     expect(built.planVersionId).toBe("plan_version_01JTEST");
     expect(built.claims).toHaveLength(1);
     expect(built.claimsValidation.claimsMatchArtifact).toBe(true);
     expect(built.remediationArtifact.verified).toBe(true);
+    expect(
+      Buffer.from(diffArtifactBytes).equals(
+        Buffer.from(
+          deriveRemediationDiff({
+            priorPlanBytes: priorBytes,
+            revisedPlanBytes: revisedBytes,
+            claims: built.claims,
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(built.diffArtifact).toEqual({
+      artifactId: "artifact_remediation_diff_02JTEST",
+      contentHash: createHash("sha256")
+        .update(
+          deriveRemediationDiff({
+            priorPlanBytes: priorBytes,
+            revisedPlanBytes: revisedBytes,
+            claims: built.claims,
+          }),
+        )
+        .digest("hex"),
+      verified: true,
+    });
     expect(built.verifyBudgetMaximum).toEqual(
       configuration.providerRequestBudgets.reviewer,
     );
@@ -250,12 +277,71 @@ describe("deriveRemediationClaims", () => {
             contentHash: "0".repeat(64),
           },
         },
-      }).remediationArtifact.verified,
+      }).input.remediationArtifact.verified,
     ).toBe(false);
 
     expect(() =>
       buildRemediationGenerated({ ...request, priorPlanBytes: revisedBytes }),
     ).toThrow("do not match the current plan");
+  });
+
+  it("derives a deterministic diff document carrying claims and changed sections", () => {
+    const claims = deriveRemediationClaims({
+      priorPlanBytes: priorBytes,
+      revisedPlanBytes: revisedBytes,
+      remediationArtifact,
+      blockingFindingIds: ["finding_architecture_01JTEST"],
+    }).claims;
+    const run = () =>
+      deriveRemediationDiff({
+        priorPlanBytes: priorBytes,
+        revisedPlanBytes: revisedBytes,
+        claims,
+      });
+
+    expect(Buffer.from(run()).equals(Buffer.from(run()))).toBe(true);
+    const document = JSON.parse(Buffer.from(run()).toString("utf8")) as {
+      complete: boolean;
+      prior_plan_content_hash: string;
+      revised_plan_content_hash: string;
+      claims: unknown[];
+      changed_sections: Array<{
+        section_id: string;
+        change: string;
+        prior_section: unknown;
+        revised_section: unknown;
+      }>;
+    };
+    expect(document.complete).toBe(true);
+    expect(document.prior_plan_content_hash).toBe(
+      createHash("sha256").update(priorBytes).digest("hex"),
+    );
+    expect(document.revised_plan_content_hash).toBe(revisedHash);
+    expect(document.claims).toEqual(claims);
+    expect(
+      document.changed_sections.map(({ section_id, change }) => [
+        section_id,
+        change,
+      ]),
+    ).toEqual([
+      ["section_alpha", "modified"],
+      ["section_delta", "added"],
+      ["section_gamma", "removed"],
+    ]);
+    expect(document.changed_sections[1]!.prior_section).toBeNull();
+    expect(document.changed_sections[2]!.revised_section).toBeNull();
+
+    const broken = JSON.parse(
+      Buffer.from(
+        deriveRemediationDiff({
+          priorPlanBytes: Buffer.from("not json"),
+          revisedPlanBytes: revisedBytes,
+          claims,
+        }),
+      ).toString("utf8"),
+    ) as { complete: boolean; changed_sections: unknown[] };
+    expect(broken.complete).toBe(false);
+    expect(broken.changed_sections).toEqual([]);
   });
 
   it("fails closed when either plan document is not a valid plan shape", () => {
