@@ -305,6 +305,10 @@ export type PinnedRunPolicy = {
     remediation: BudgetReservation;
     schemaRepair: BudgetReservation;
   };
+  cycleCeilings?: {
+    remediationCycles: number;
+    closureCycles: number;
+  };
 };
 
 export type LedgerSubmitted = {
@@ -713,6 +717,60 @@ export type RemediationGenerated = {
   schemaCompatible: boolean;
   mutationLeaseAvailable: boolean;
   actor: ModelActor & { kind: "planner" };
+};
+
+export type RemediationClaimVerdict = {
+  claimId: string;
+  findingId: string;
+  disposition: "resolved" | "unresolved";
+};
+
+export type RemediationVerdictValidation = {
+  validator: "deterministic-remediation-verdict-v1";
+  validatedReviewContentHash: string;
+  schemaValid: boolean;
+  claimsAccountedFor: boolean;
+  controlledIdsValid: boolean;
+};
+
+export type RemediationReviewAccepted = {
+  type: "RemediationReviewAccepted";
+  runId: string;
+  expectedStateVersion: number;
+  reviewId: string;
+  reviewPurposeId: string;
+  originatingCommandId: string;
+  reviewArtifact: VerifiedArtifactInput;
+  reviewRequestArtifact: VerifiedArtifactInput;
+  providerUsageArtifact: VerifiedArtifactInput;
+  acceptedAttempt: AcceptedAttemptResolution;
+  outputValid: boolean;
+  verdicts: RemediationClaimVerdict[];
+  verdictValidation: RemediationVerdictValidation;
+  reviewedPlanVersionId: string;
+  reviewedPlanContentHash: string;
+  reviewedPolicyHash: string;
+  remediationCycleCeiling: number;
+  remediationCyclesUsed: number;
+  nextCommandId: string;
+  nextCommandBudgetMaximum: BudgetReservation;
+  nextCommandTimeoutMs: number;
+  nextCommandReasoning: string | null;
+  nextCommandRequestPolicyResolved: boolean;
+  remediationPromptArtifact: VerifiedArtifactInput;
+  remediationSchemaArtifact: VerifiedArtifactInput;
+  availableBudget: BudgetReservation;
+  exhaustionReport: {
+    terminalReportCommandId: string;
+    budgetReportArtifact: VerifiedArtifactInput;
+    attemptIds: string[];
+    reason: string;
+  } | null;
+  auditChainVerified: boolean;
+  databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
+  actor: ModelActor & { kind: "reviewer" };
 };
 
 export type WaiverGranted = {
@@ -1383,6 +1441,19 @@ export type RunHaltedFact = {
   };
 };
 
+export type FindingTransitionedFact = {
+  type: "finding_transitioned";
+  actor: SystemActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    findingId: string;
+    priorStatus: "open";
+    nextStatus: "resolved";
+    controllingCommandId: string;
+  };
+};
+
 export type WaiverGrantedFact = {
   type: "waiver_granted";
   actor: HumanActor;
@@ -1492,6 +1563,7 @@ export type TransitionResult = {
     | ReviewAcceptedFact
     | RemediationProposedFact
     | FindingCreatedFact
+    | FindingTransitionedFact
     | WaiverGrantedFact
     | WaiverReaffirmedFact
     | WaiverInvalidatedFact
@@ -1505,7 +1577,7 @@ export type TransitionResult = {
 export type TerminalTransitionResult = {
   nextState: HaltedRunState;
   commands: [ExportTerminal];
-  auditFacts: [RunHaltedFact, CommandPlannedFact];
+  auditFacts: [...FindingTransitionedFact[], RunHaltedFact, CommandPlannedFact];
 };
 
 type LocalCommand =
@@ -1902,13 +1974,21 @@ export function transition(
 ): TerminalTransitionResult;
 export function transition(
   previousState: NonterminalRunState | null,
+  input: RemediationReviewAccepted,
+  policy: PinnedRunPolicy,
+): TransitionResult | TerminalTransitionResult;
+export function transition(
+  previousState: NonterminalRunState | null,
   input: NonterminalDomainInput,
   policy: PinnedRunPolicy,
 ): TransitionResult;
 export function transition(
   previousState: NonterminalRunState | null,
   input:
-    NonterminalDomainInput | ProviderOutcomeFailed | PinnedModelUnavailable,
+    | NonterminalDomainInput
+    | RemediationReviewAccepted
+    | ProviderOutcomeFailed
+    | PinnedModelUnavailable,
   policy: PinnedRunPolicy,
 ): TransitionResult | TerminalTransitionResult {
   if (
@@ -1949,6 +2029,8 @@ export function transition(
       return acceptBaselineReview(previousState, input, policy);
     case "RemediationGenerated":
       return proposeRemediation(previousState, input, policy);
+    case "RemediationReviewAccepted":
+      return acceptRemediationReview(previousState, input, policy);
     case "WaiverGranted":
       return grantWaiver(previousState, input);
     case "WaiverReaffirmed":
@@ -3882,23 +3964,13 @@ function acceptBaselineReview(
       input.renderedPlanArtifact.contentHash &&
     renderedPlanResolution.canonicalPlanContentHash ===
       previousState.currentPlan.contentHash;
-  const acceptedAttempt = input.acceptedAttempt;
-  const acceptedAttemptValid =
-    acceptedAttempt.validator === "accepted-provider-attempt-v1" &&
-    acceptedAttempt.commandId === previousState.activeReview.commandId &&
-    acceptedAttempt.attemptId.length > 0 &&
-    acceptedAttempt.requestArtifactId ===
-      input.reviewRequestArtifact.artifactId &&
-    acceptedAttempt.requestContentHash ===
-      input.reviewRequestArtifact.contentHash &&
-    acceptedAttempt.responseArtifactId === input.reviewArtifact.artifactId &&
-    acceptedAttempt.responseContentHash === input.reviewArtifact.contentHash &&
-    acceptedAttempt.rawResponseArtifactId.length > 0 &&
-    /^[a-f0-9]{64}$/u.test(acceptedAttempt.rawResponseContentHash) &&
-    acceptedAttempt.nativeUsageArtifactId ===
-      input.providerUsageArtifact.artifactId &&
-    acceptedAttempt.nativeUsageContentHash ===
-      input.providerUsageArtifact.contentHash;
+  const acceptedAttemptValid = acceptedAttemptBindsResponse(
+    input.acceptedAttempt,
+    previousState.activeReview.commandId,
+    input.reviewRequestArtifact,
+    input.reviewArtifact,
+    input.providerUsageArtifact,
+  );
   const reviewerAuthorized =
     input.actor.provider ===
       previousState.activeReview.reviewerAssignment.provider &&
@@ -4283,6 +4355,564 @@ function proposeRemediation(
   };
 }
 
+type RemediationRunState = Extract<AdvancedRunState, { state: "remediation" }>;
+
+function acceptedAttemptBindsResponse(
+  acceptedAttempt: AcceptedAttemptResolution,
+  commandId: string,
+  requestArtifact: VerifiedArtifactInput,
+  responseArtifact: VerifiedArtifactInput,
+  usageArtifact: VerifiedArtifactInput,
+): boolean {
+  return (
+    acceptedAttempt.validator === "accepted-provider-attempt-v1" &&
+    acceptedAttempt.commandId === commandId &&
+    acceptedAttempt.attemptId.length > 0 &&
+    acceptedAttempt.requestArtifactId === requestArtifact.artifactId &&
+    acceptedAttempt.requestContentHash === requestArtifact.contentHash &&
+    acceptedAttempt.responseArtifactId === responseArtifact.artifactId &&
+    acceptedAttempt.responseContentHash === responseArtifact.contentHash &&
+    acceptedAttempt.rawResponseArtifactId.length > 0 &&
+    /^[a-f0-9]{64}$/u.test(acceptedAttempt.rawResponseContentHash) &&
+    acceptedAttempt.nativeUsageArtifactId === usageArtifact.artifactId &&
+    acceptedAttempt.nativeUsageContentHash === usageArtifact.contentHash
+  );
+}
+
+function verdictsCoverBlockingFindings(
+  state: RemediationRunState,
+  input: RemediationReviewAccepted,
+): boolean {
+  const claimIds = input.verdicts.map(({ claimId }) => claimId);
+  const findingIds = input.verdicts.map(({ findingId }) => findingId);
+  const blocking = new Set(state.blockingFindingIds);
+  return (
+    input.verdicts.every(
+      ({ claimId, disposition }) =>
+        claimId.length > 0 &&
+        (disposition === "resolved" || disposition === "unresolved"),
+    ) &&
+    new Set(claimIds).size === claimIds.length &&
+    new Set(findingIds).size === findingIds.length &&
+    findingIds.length === blocking.size &&
+    findingIds.every((findingId) => blocking.has(findingId))
+  );
+}
+
+function acceptRemediationReview(
+  previousState: NonterminalRunState | null,
+  input: RemediationReviewAccepted,
+  policy: PinnedRunPolicy,
+): TransitionResult | TerminalTransitionResult {
+  if (
+    previousState === null ||
+    previousState.state !== "remediation" ||
+    previousState.runId !== input.runId
+  ) {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      "RemediationReviewAccepted requires the matching remediation run",
+    );
+  }
+
+  const acceptedAttemptValid = acceptedAttemptBindsResponse(
+    input.acceptedAttempt,
+    previousState.activeReview.commandId,
+    input.reviewRequestArtifact,
+    input.reviewArtifact,
+    input.providerUsageArtifact,
+  );
+  const verdictValidation = input.verdictValidation;
+  const verdictValidationValid =
+    verdictValidation.validator === "deterministic-remediation-verdict-v1" &&
+    verdictValidation.validatedReviewContentHash ===
+      input.reviewArtifact.contentHash &&
+    verdictValidation.schemaValid &&
+    verdictValidation.claimsAccountedFor &&
+    verdictValidation.controlledIdsValid;
+  const reviewerAuthorized =
+    input.actor.provider ===
+      previousState.activeReview.reviewerAssignment.provider &&
+    input.actor.modelId ===
+      previousState.activeReview.reviewerAssignment.modelId;
+  const cyclesValid =
+    Number.isSafeInteger(input.remediationCycleCeiling) &&
+    input.remediationCycleCeiling >= 0 &&
+    input.remediationCycleCeiling === policy.cycleCeilings?.remediationCycles &&
+    input.remediationCyclesUsed === previousState.activeReview.cycle;
+
+  const resolvedIds = new Set(
+    input.verdicts
+      .filter(({ disposition }) => disposition === "resolved")
+      .map(({ findingId }) => findingId),
+  );
+  const unresolvedBlocking = previousState.blockingFindingIds.filter(
+    (findingId) => !resolvedIds.has(findingId),
+  );
+  const waived = waivedFindingIds(previousState.waivers);
+  const unwaivedBlocking = unresolvedBlocking.filter(
+    (findingId) => !waived.has(findingId),
+  );
+  const route: "closure" | "remediation" | "halt" =
+    unwaivedBlocking.length === 0
+      ? "closure"
+      : input.remediationCyclesUsed < input.remediationCycleCeiling
+        ? "remediation"
+        : "halt";
+
+  const routeRequirementsHold =
+    route === "halt"
+      ? input.exhaustionReport !== null &&
+        input.exhaustionReport.terminalReportCommandId.length > 0 &&
+        verifiedArtifactInputIsValid(
+          input.exhaustionReport.budgetReportArtifact,
+        ) &&
+        input.exhaustionReport.attemptIds.length > 0 &&
+        new Set(input.exhaustionReport.attemptIds).size ===
+          input.exhaustionReport.attemptIds.length &&
+        input.exhaustionReport.reason.trim().length > 0
+      : providerBudgetIsEligible(
+          input.nextCommandBudgetMaximum,
+          input.availableBudget,
+        ) &&
+        providerBudgetsEqual(
+          input.nextCommandBudgetMaximum,
+          route === "remediation"
+            ? policy.providerRequestBudgets?.remediation
+            : policy.providerRequestBudgets?.reviewer,
+        ) &&
+        providerRequestSettingsAreValid(
+          input.nextCommandTimeoutMs,
+          input.nextCommandReasoning,
+          input.nextCommandRequestPolicyResolved,
+        ) &&
+        input.nextCommandId.length > 0 &&
+        input.nextCommandId !== input.originatingCommandId &&
+        (route !== "remediation" ||
+          (verifiedArtifactInputIsValid(input.remediationPromptArtifact) &&
+            verifiedArtifactInputIsValid(input.remediationSchemaArtifact)));
+
+  if (
+    input.expectedStateVersion !== previousState.stateVersion ||
+    policy.policyHash !== previousState.policyHash ||
+    input.reviewId.length === 0 ||
+    input.reviewPurposeId !== previousState.activeReview.reviewPurposeId ||
+    input.originatingCommandId !== previousState.activeReview.commandId ||
+    !verifiedArtifactInputIsValid(input.reviewArtifact) ||
+    !verifiedArtifactInputIsValid(input.reviewRequestArtifact) ||
+    !verifiedArtifactInputIsValid(input.providerUsageArtifact) ||
+    !acceptedAttemptValid ||
+    !input.outputValid ||
+    !verdictValidationValid ||
+    !verdictsCoverBlockingFindings(previousState, input) ||
+    input.reviewedPlanVersionId !== previousState.currentPlan.versionId ||
+    input.reviewedPlanContentHash !== previousState.currentPlan.contentHash ||
+    input.reviewedPolicyHash !== previousState.policyHash ||
+    !reviewerAuthorized ||
+    !cyclesValid ||
+    !routeRequirementsHold ||
+    !input.auditChainVerified ||
+    !input.databaseIntegrityVerified ||
+    !input.schemaCompatible ||
+    !input.mutationLeaseAvailable
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "RemediationReviewAccepted requires verified Reviewer evidence covering every blocking finding within the pinned cycle budget",
+    );
+  }
+
+  const nextStateVersion = previousState.stateVersion + 1;
+  const reviewEvidence = artifactEvidence(
+    input.reviewArtifact.artifactId,
+    input.reviewArtifact.contentHash,
+  );
+  const planEvidence = artifactEvidence(
+    previousState.currentPlan.artifactId,
+    previousState.currentPlan.contentHash,
+  );
+  const remainingFindings = previousState.activeFindings.filter(
+    ({ findingId }) => !resolvedIds.has(findingId),
+  );
+  const reviewFact: ReviewAcceptedFact = {
+    type: "review_accepted",
+    actor: input.actor,
+    reason: "Accept the verified Reviewer verdict on remediation claims",
+    evidence: [
+      reviewEvidence,
+      artifactEvidence(
+        input.reviewRequestArtifact.artifactId,
+        input.reviewRequestArtifact.contentHash,
+      ),
+      artifactEvidence(
+        input.providerUsageArtifact.artifactId,
+        input.providerUsageArtifact.contentHash,
+      ),
+      planEvidence,
+    ],
+    payload: {
+      reviewId: input.reviewId,
+      reviewArtifactId: input.reviewArtifact.artifactId,
+      reviewContentHash: input.reviewArtifact.contentHash,
+      ledgerVersionId: previousState.currentLedger.versionId,
+      ledgerContentHash: previousState.currentLedger.contentHash,
+      planVersionId: previousState.currentPlan.versionId,
+      planContentHash: previousState.currentPlan.contentHash,
+      cycle: input.remediationCyclesUsed,
+      policyHash: policy.policyHash,
+      reviewerAssignment: previousState.activeReview.reviewerAssignment,
+      promptArtifactId: previousState.reviewContext.prompt.artifactId,
+      promptContentHash: previousState.reviewContext.prompt.contentHash,
+      schemaArtifactId: previousState.reviewContext.schema.artifactId,
+      schemaContentHash: previousState.reviewContext.schema.contentHash,
+      originatingCommandId: input.originatingCommandId,
+      observationIds: [],
+    },
+  };
+  const findingFacts: FindingTransitionedFact[] = previousState.activeFindings
+    .filter(({ findingId }) => resolvedIds.has(findingId))
+    .map(({ findingId }) => ({
+      type: "finding_transitioned",
+      actor: {
+        kind: "system",
+        component: "finding-reconciliation",
+        version: "0.0.0",
+      },
+      reason:
+        "Accepted Reviewer verification resolved the remediation claim for this finding",
+      evidence: [reviewEvidence],
+      payload: {
+        findingId,
+        priorStatus: "open",
+        nextStatus: "resolved",
+        controllingCommandId: input.originatingCommandId,
+      },
+    }));
+
+  if (route === "halt") {
+    const report = input.exhaustionReport;
+    if (report === null) {
+      throw new DomainTransitionError(
+        "PRECONDITION_FAILED",
+        "Remediation exhaustion requires a terminal report",
+      );
+    }
+    const failureEvidence = [
+      artifactEvidence(
+        previousState.sourceArtifactId,
+        previousState.sourceContentHash,
+      ),
+      artifactEvidence(
+        previousState.configurationArtifactId,
+        previousState.configurationContentHash,
+      ),
+      artifactEvidence(
+        previousState.currentLedger.artifactId,
+        previousState.currentLedger.contentHash,
+      ),
+      planEvidence,
+      reviewEvidence,
+      artifactEvidence(
+        report.budgetReportArtifact.artifactId,
+        report.budgetReportArtifact.contentHash,
+      ),
+      ...previousState.downstreamQualification.artifacts,
+    ];
+    const unresolvedFindingIds = remainingFindings.map(
+      ({ findingId }) => findingId,
+    );
+    const bounds = {
+      retryLimit: 0,
+      repairLimit: 0,
+      retriesUsed: 0,
+      repairsUsed: 0,
+    };
+    const command = planCommand<ExportTerminal>(
+      report.terminalReportCommandId,
+      {
+        commandType: "export_terminal",
+        schemaVersion: 1,
+        runId: input.runId,
+        triggeringStateVersion: nextStateVersion,
+        purposeId: `${input.runId}:terminal-report:${nextStateVersion}`,
+        inputArtifactHashes: failureEvidence.map(
+          ({ contentHash }) => contentHash,
+        ),
+        policyHash: policy.policyHash,
+        provider: "local",
+        budgetReservation: zeroBudgetReservation(),
+        payload: {
+          haltedFrom: previousState.state,
+          reason: report.reason,
+          failedCommandId: input.originatingCommandId,
+          failureClassification: "budget",
+          attemptIds: report.attemptIds,
+          evidenceArtifactIds: failureEvidence.map(
+            ({ artifactId }) => artifactId,
+          ),
+          unresolvedFindingIds,
+          sourceArtifactId: previousState.sourceArtifactId,
+          configurationArtifactId: previousState.configurationArtifactId,
+          ledgerArtifactId: previousState.currentLedger.artifactId,
+          planArtifactId: previousState.currentPlan.artifactId,
+          policyHash: policy.policyHash,
+          plannerAssignment: policy.plannerAssignment,
+          reviewerAssignment: policy.reviewerAssignment,
+          budgetReportArtifactId: report.budgetReportArtifact.artifactId,
+          recoveryBounds: bounds,
+          independence: previousState.activeReview.independence,
+          lineageArtifactIds:
+            previousState.downstreamQualification.artifacts.map(
+              ({ artifactId }) => artifactId,
+            ),
+          waiverIds: (previousState.waivers ?? []).map(
+            ({ waiverId }) => waiverId,
+          ),
+          outcome: "halted",
+        },
+      },
+    );
+    return {
+      nextState: {
+        ...previousState,
+        state: "halted",
+        stateVersion: nextStateVersion,
+        haltedFrom: previousState.state,
+        haltReason: report.reason,
+        failureEvidence,
+        attemptIds: report.attemptIds,
+        unresolvedFindingIds,
+      },
+      commands: [command],
+      auditFacts: [
+        ...findingFacts,
+        {
+          type: "run_halted",
+          actor: {
+            kind: "system",
+            component: "budget-policy",
+            version: "0.0.0",
+          },
+          reason: report.reason,
+          evidence: failureEvidence,
+          payload: {
+            haltedFrom: previousState.state,
+            failedCommandId: input.originatingCommandId,
+            failedPurposeId: input.reviewPurposeId,
+            failureClassification: "budget",
+            attemptIds: report.attemptIds,
+            unresolvedFindingIds,
+            bounds,
+            manifest: { producedByCommandId: command.commandId },
+          },
+        },
+        commandPlannedFact(
+          command,
+          "Export the evidence-rich terminal report",
+          failureEvidence,
+        ),
+      ],
+    };
+  }
+
+  const commonInputEvidence = uniqueArtifactEvidence([
+    artifactEvidence(
+      previousState.currentLedger.artifactId,
+      previousState.currentLedger.contentHash,
+    ),
+    planEvidence,
+    reviewEvidence,
+    artifactEvidence(
+      previousState.renderedPlan.artifactId,
+      previousState.renderedPlan.contentHash,
+    ),
+    artifactEvidence(
+      previousState.reviewContext.taxonomy.artifactId,
+      previousState.reviewContext.taxonomy.contentHash,
+    ),
+    artifactEvidence(
+      previousState.reviewContext.componentRegistry.artifactId,
+      previousState.reviewContext.componentRegistry.contentHash,
+    ),
+    artifactEvidence(
+      previousState.reviewContext.policy.artifactId,
+      previousState.reviewContext.policy.contentHash,
+    ),
+    ...previousState.reviewContext.evidence,
+  ]);
+  const commonCommand = {
+    schemaVersion: 1 as const,
+    runId: input.runId,
+    triggeringStateVersion: nextStateVersion,
+    policyHash: policy.policyHash,
+    budgetReservation: input.nextCommandBudgetMaximum,
+  };
+  const configurationReference = {
+    artifactId: previousState.configurationArtifactId,
+    contentHash: previousState.configurationContentHash,
+  };
+
+  if (route === "remediation") {
+    const nextCycle = previousState.activeReview.cycle + 1;
+    const purposeId = `${input.runId}:plan:${previousState.currentPlan.versionId}:remediation:${nextCycle}`;
+    const command = planCommand<GenerateRemediation>(input.nextCommandId, {
+      ...commonCommand,
+      commandType: "generate_remediation",
+      inputArtifactHashes: uniqueArtifactEvidence([
+        ...commonInputEvidence,
+        artifactEvidence(
+          input.remediationPromptArtifact.artifactId,
+          input.remediationPromptArtifact.contentHash,
+        ),
+        artifactEvidence(
+          input.remediationSchemaArtifact.artifactId,
+          input.remediationSchemaArtifact.contentHash,
+        ),
+      ]).map(({ contentHash }) => contentHash),
+      purposeId,
+      provider: policy.plannerAssignment.provider,
+      modelId: policy.plannerAssignment.modelId,
+      providerRequestPolicy: providerRequestPolicy(
+        "planner",
+        input.remediationPromptArtifact,
+        input.remediationSchemaArtifact,
+        input.nextCommandBudgetMaximum,
+        input.nextCommandTimeoutMs,
+        input.nextCommandReasoning,
+        configurationReference,
+        policy.policyHash,
+      ),
+      payload: {
+        ledgerVersionId: previousState.currentLedger.versionId,
+        ledgerArtifactId: previousState.currentLedger.artifactId,
+        planVersionId: previousState.currentPlan.versionId,
+        planArtifactId: previousState.currentPlan.artifactId,
+        reviewArtifactId: input.reviewArtifact.artifactId,
+        renderedPlanArtifactId: previousState.renderedPlan.artifactId,
+        taxonomyArtifactId: previousState.reviewContext.taxonomy.artifactId,
+        componentRegistryArtifactId:
+          previousState.reviewContext.componentRegistry.artifactId,
+        reviewPolicyArtifactId: previousState.reviewContext.policy.artifactId,
+        evidenceArtifactIds: previousState.reviewContext.evidence.map(
+          ({ artifactId }) => artifactId,
+        ),
+        promptArtifactId: input.remediationPromptArtifact.artifactId,
+        outputSchemaArtifactId: input.remediationSchemaArtifact.artifactId,
+        blockingFindingIds: unwaivedBlocking,
+        providerStorage: "minimize",
+      },
+    });
+    return {
+      nextState: {
+        ...previousState,
+        stateVersion: nextStateVersion,
+        activeFindings: remainingFindings,
+        blockingFindingIds: unwaivedBlocking,
+        activeReview: {
+          ...previousState.activeReview,
+          cycle: nextCycle,
+          commandId: input.nextCommandId,
+          reviewPurposeId: purposeId,
+        },
+        activePlanning: {
+          purposeId,
+          commandId: input.nextCommandId,
+          plannerAssignment: policy.plannerAssignment,
+        },
+      },
+      commands: [command],
+      auditFacts: [
+        reviewFact,
+        ...findingFacts,
+        commandPlannedFact(command, "Plan the next remediation cycle", [
+          reviewEvidence,
+          planEvidence,
+        ]),
+      ],
+    };
+  }
+
+  const closurePurposeId = `${input.runId}:plan:${previousState.currentPlan.versionId}:closure:1`;
+  const closureCommand = planCommand<ClosureReview>(input.nextCommandId, {
+    ...commonCommand,
+    commandType: "closure_review",
+    inputArtifactHashes: uniqueArtifactEvidence([
+      ...commonInputEvidence,
+      artifactEvidence(
+        previousState.reviewContext.prompt.artifactId,
+        previousState.reviewContext.prompt.contentHash,
+      ),
+      artifactEvidence(
+        previousState.reviewContext.schema.artifactId,
+        previousState.reviewContext.schema.contentHash,
+      ),
+    ]).map(({ contentHash }) => contentHash),
+    purposeId: closurePurposeId,
+    provider: previousState.activeReview.reviewerAssignment.provider,
+    modelId: previousState.activeReview.reviewerAssignment.modelId,
+    providerRequestPolicy: providerRequestPolicy(
+      "reviewer",
+      previousState.reviewContext.prompt,
+      previousState.reviewContext.schema,
+      input.nextCommandBudgetMaximum,
+      input.nextCommandTimeoutMs,
+      input.nextCommandReasoning,
+      configurationReference,
+      policy.policyHash,
+    ),
+    payload: {
+      ledgerVersionId: previousState.currentLedger.versionId,
+      ledgerArtifactId: previousState.currentLedger.artifactId,
+      planVersionId: previousState.currentPlan.versionId,
+      planArtifactId: previousState.currentPlan.artifactId,
+      baselineReviewArtifactId: previousState.baselineReview.artifactId,
+      renderedPlanArtifactId: previousState.renderedPlan.artifactId,
+      reviewerPromptArtifactId: previousState.reviewContext.prompt.artifactId,
+      reviewSchemaArtifactId: previousState.reviewContext.schema.artifactId,
+      taxonomyArtifactId: previousState.reviewContext.taxonomy.artifactId,
+      componentRegistryArtifactId:
+        previousState.reviewContext.componentRegistry.artifactId,
+      reviewPolicyArtifactId: previousState.reviewContext.policy.artifactId,
+      evidenceArtifactIds: previousState.reviewContext.evidence.map(
+        ({ artifactId }) => artifactId,
+      ),
+      findingIds: remainingFindings.map(({ findingId }) => findingId),
+      independence: previousState.activeReview.independence,
+      providerStorage: "minimize",
+    },
+  });
+  const {
+    activePlanning: _completedPlanning,
+    blockingFindingIds: _clearedBlocking,
+    ...closureBase
+  } = previousState;
+  void _completedPlanning;
+  void _clearedBlocking;
+  return {
+    nextState: {
+      ...closureBase,
+      state: "closure",
+      stateVersion: nextStateVersion,
+      activeFindings: remainingFindings,
+      activeReview: {
+        ...previousState.activeReview,
+        cycle: previousState.activeReview.cycle + 1,
+        commandId: input.nextCommandId,
+        reviewPurposeId: closurePurposeId,
+      },
+    },
+    commands: [closureCommand],
+    auditFacts: [
+      reviewFact,
+      ...findingFacts,
+      commandPlannedFact(closureCommand, "Run full-document closure review", [
+        reviewEvidence,
+        planEvidence,
+      ]),
+    ],
+  };
+}
+
 function humanActorIsValid(actor: HumanActor): boolean {
   return (
     actor.kind === "human" &&
@@ -4534,9 +5164,28 @@ function invalidateWaivers(
     );
   }
   const affectedIds = new Set(affected.map(({ waiverId }) => waiverId));
+  const staleFindingIds = affected.map(({ findingId }) => findingId);
+  const restoredBlocking =
+    previousState.state === "remediation"
+      ? {
+          blockingFindingIds: [
+            ...new Set([
+              ...previousState.blockingFindingIds,
+              ...staleFindingIds.filter((findingId) =>
+                previousState.activeFindings.some(
+                  (finding) =>
+                    finding.findingId === findingId &&
+                    finding.status === "open",
+                ),
+              ),
+            ]),
+          ],
+        }
+      : {};
   return {
     nextState: {
       ...previousState,
+      ...restoredBlocking,
       stateVersion: previousState.stateVersion + 1,
       waivers: waivers.map((waiver) =>
         affectedIds.has(waiver.waiverId)

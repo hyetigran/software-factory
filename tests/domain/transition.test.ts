@@ -26,6 +26,7 @@ import {
   type ProviderOutcomeFailed,
   type RelevantEvidenceChanged,
   type RemediationGenerated,
+  type RemediationReviewAccepted,
   type ReviewAccepted,
   waivedFindingIds,
   type WaiverGranted,
@@ -88,6 +89,10 @@ const pinnedPolicy = {
       outputTokens: 8_000,
       costUsdMicros: 5_000_000,
     },
+  },
+  cycleCeilings: {
+    remediationCycles: 3,
+    closureCycles: 2,
   },
 };
 function reviewContextFixture() {
@@ -749,6 +754,118 @@ function remediationGeneratedInput(): RemediationGenerated {
       kind: "planner",
       provider: "openai",
       modelId: "gpt-5.6-2026-08-01",
+    },
+  };
+}
+
+const verifyReviewContentHash = "34".repeat(32);
+
+function verifyPendingState(): AdvancedRunState & { state: "remediation" } {
+  const result = transition(
+    remediationState(),
+    remediationGeneratedInput(),
+    pinnedPolicy,
+  ).nextState;
+  if (result.state !== "remediation") {
+    throw new Error("Expected verify-pending remediation state fixture");
+  }
+  return result;
+}
+
+function remediationReviewAcceptedInput(
+  disposition: "resolved" | "unresolved",
+): RemediationReviewAccepted {
+  return {
+    type: "RemediationReviewAccepted",
+    runId: "run_01JTEST0000000000000000000",
+    expectedStateVersion: 10,
+    reviewId: "review_verify_01JTEST",
+    reviewPurposeId:
+      "run_01JTEST0000000000000000000:plan:plan_version_02JTEST:verify:1",
+    originatingCommandId: "command_verify_remediation_01JTEST",
+    reviewArtifact: {
+      artifactId: "artifact_verify_review_01JTEST",
+      contentHash: verifyReviewContentHash,
+      verified: true,
+    },
+    reviewRequestArtifact: {
+      artifactId: "artifact_verify_request_01JTEST",
+      contentHash: "56".repeat(32),
+      verified: true,
+    },
+    providerUsageArtifact: {
+      artifactId: "artifact_verify_usage_01JTEST",
+      contentHash: "78".repeat(32),
+      verified: true,
+    },
+    acceptedAttempt: {
+      validator: "accepted-provider-attempt-v1",
+      commandId: "command_verify_remediation_01JTEST",
+      attemptId: "attempt_verify_remediation_01JTEST_1",
+      requestArtifactId: "artifact_verify_request_01JTEST",
+      requestContentHash: "56".repeat(32),
+      responseArtifactId: "artifact_verify_review_01JTEST",
+      responseContentHash: verifyReviewContentHash,
+      rawResponseArtifactId: "artifact_verify_raw_01JTEST",
+      rawResponseContentHash: "9a".repeat(32),
+      nativeUsageArtifactId: "artifact_verify_usage_01JTEST",
+      nativeUsageContentHash: "78".repeat(32),
+    },
+    outputValid: true,
+    verdicts: [
+      {
+        claimId: "claim_architecture_01JTEST",
+        findingId: "finding_architecture_01JTEST",
+        disposition,
+      },
+    ],
+    verdictValidation: {
+      validator: "deterministic-remediation-verdict-v1",
+      validatedReviewContentHash: verifyReviewContentHash,
+      schemaValid: true,
+      claimsAccountedFor: true,
+      controlledIdsValid: true,
+    },
+    reviewedPlanVersionId: "plan_version_02JTEST",
+    reviewedPlanContentHash: revisedPlanContentHash,
+    reviewedPolicyHash: policyHash,
+    remediationCycleCeiling: 3,
+    remediationCyclesUsed: 1,
+    nextCommandId: "command_after_verify_01JTEST",
+    nextCommandBudgetMaximum: {
+      calls: 1,
+      inputTokens: 70_000,
+      outputTokens: 28_000,
+      costUsdMicros: 40_000_000,
+    },
+    nextCommandTimeoutMs: 120_000,
+    nextCommandReasoning: "high",
+    nextCommandRequestPolicyResolved: true,
+    remediationPromptArtifact: {
+      artifactId: "artifact_remediation_prompt_01JTEST",
+      contentHash: "a".repeat(64),
+      verified: true,
+    },
+    remediationSchemaArtifact: {
+      artifactId: "artifact_remediation_schema_01JTEST",
+      contentHash: "b".repeat(64),
+      verified: true,
+    },
+    availableBudget: {
+      calls: 2,
+      inputTokens: 100_000,
+      outputTokens: 40_000,
+      costUsdMicros: 50_000_000,
+    },
+    exhaustionReport: null,
+    auditChainVerified: true,
+    databaseIntegrityVerified: true,
+    schemaCompatible: true,
+    mutationLeaseAvailable: true,
+    actor: {
+      kind: "reviewer",
+      provider: "anthropic",
+      modelId: "claude-frontier-pinned-20260801",
     },
   };
 }
@@ -3550,6 +3667,500 @@ describe("transition", () => {
       transition(
         remediationState(),
         { ...remediationGeneratedInput(), ...override },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("plans the next remediation cycle when unwaived blockers remain in budget", () => {
+    const result = transition(
+      verifyPendingState(),
+      remediationReviewAcceptedInput("unresolved"),
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.state).toBe("remediation");
+    expect(result.nextState.stateVersion).toBe(11);
+    if (result.nextState.state !== "remediation") {
+      throw new Error("Expected remediation state");
+    }
+    expect(result.nextState.blockingFindingIds).toEqual([
+      "finding_architecture_01JTEST",
+    ]);
+    expect(
+      result.nextState.activeFindings.map(({ findingId }) => findingId),
+    ).toEqual(["finding_architecture_01JTEST"]);
+    expect(result.nextState.activeReview.cycle).toBe(2);
+    expect(result.nextState.activeReview.commandId).toBe(
+      "command_after_verify_01JTEST",
+    );
+    expect(result.nextState.activePlanning).toEqual({
+      purposeId:
+        "run_01JTEST0000000000000000000:plan:plan_version_02JTEST:remediation:2",
+      commandId: "command_after_verify_01JTEST",
+      plannerAssignment: configuredPlannerAssignment,
+    });
+    const command = result.commands[0];
+    if (command?.commandType !== "generate_remediation") {
+      throw new Error("Expected a next generate_remediation command");
+    }
+    expect(result.commands).toHaveLength(1);
+    expect(command.purposeId).toBe(
+      "run_01JTEST0000000000000000000:plan:plan_version_02JTEST:remediation:2",
+    );
+    expect(command.payload.blockingFindingIds).toEqual([
+      "finding_architecture_01JTEST",
+    ]);
+    expect(command.payload.planArtifactId).toBe("artifact_plan_02JTEST");
+    expect(result.auditFacts.map(({ type }) => type)).toEqual([
+      "review_accepted",
+      "command_planned",
+    ]);
+  });
+
+  it("routes to closure when the reviewer resolves every blocker", () => {
+    const result = transition(
+      verifyPendingState(),
+      remediationReviewAcceptedInput("resolved"),
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.state).toBe("closure");
+    expect(result.nextState.stateVersion).toBe(11);
+    if (result.nextState.state !== "closure") {
+      throw new Error("Expected closure state");
+    }
+    expect(result.nextState.activeFindings).toEqual([]);
+    expect("activePlanning" in result.nextState).toBe(false);
+    expect("blockingFindingIds" in result.nextState).toBe(false);
+    const command = result.commands[0];
+    if (command?.commandType !== "closure_review") {
+      throw new Error("Expected a closure_review command");
+    }
+    expect(result.commands).toHaveLength(1);
+    expect(command.purposeId).toBe(
+      "run_01JTEST0000000000000000000:plan:plan_version_02JTEST:closure:1",
+    );
+    expect(command.payload.findingIds).toEqual([]);
+    expect(command.payload.planVersionId).toBe("plan_version_02JTEST");
+    expect(result.nextState.activeReview.commandId).toBe(
+      "command_after_verify_01JTEST",
+    );
+    expect(result.auditFacts.map(({ type }) => type)).toEqual([
+      "review_accepted",
+      "finding_transitioned",
+      "command_planned",
+    ]);
+    const transitioned = result.auditFacts[1];
+    if (transitioned?.type !== "finding_transitioned") {
+      throw new Error("Expected a finding_transitioned fact");
+    }
+    expect(transitioned.payload).toEqual({
+      findingId: "finding_architecture_01JTEST",
+      priorStatus: "open",
+      nextStatus: "resolved",
+      controllingCommandId: "command_verify_remediation_01JTEST",
+    });
+    expect(transitioned.evidence).toEqual([
+      {
+        kind: "artifact",
+        artifactId: "artifact_verify_review_01JTEST",
+        contentHash: verifyReviewContentHash,
+      },
+    ]);
+  });
+
+  it("treats actively waived blockers as cleared for closure", () => {
+    const waived = {
+      ...verifyPendingState(),
+      waivers: [
+        {
+          waiverId: "waiver_architecture_01JTEST",
+          findingId: "finding_architecture_01JTEST",
+          status: "active" as const,
+          reason: "Accepted risk",
+          actor: {
+            kind: "human" as const,
+            displayName: "Tigran",
+            osAccount: "tig",
+          },
+          evidence: [
+            {
+              kind: "artifact" as const,
+              artifactId: "artifact_plan_01JTEST",
+              contentHash: planContentHash,
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = transition(
+      waived,
+      remediationReviewAcceptedInput("unresolved"),
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.state).toBe("closure");
+    if (result.nextState.state !== "closure") {
+      throw new Error("Expected closure state");
+    }
+    expect(
+      result.nextState.activeFindings.map(({ findingId }) => findingId),
+    ).toEqual(["finding_architecture_01JTEST"]);
+    const command = result.commands[0];
+    if (command?.commandType !== "closure_review") {
+      throw new Error("Expected a closure_review command");
+    }
+    expect(command.payload.findingIds).toEqual([
+      "finding_architecture_01JTEST",
+    ]);
+    expect(result.auditFacts.map(({ type }) => type)).toEqual([
+      "review_accepted",
+      "command_planned",
+    ]);
+  });
+
+  it("treats a stale waiver as an unwaived blocker", () => {
+    const stale = {
+      ...verifyPendingState(),
+      waivers: [
+        {
+          waiverId: "waiver_architecture_01JTEST",
+          findingId: "finding_architecture_01JTEST",
+          status: "stale" as const,
+          reason: "Accepted risk",
+          actor: {
+            kind: "human" as const,
+            displayName: "Tigran",
+            osAccount: "tig",
+          },
+          evidence: [
+            {
+              kind: "artifact" as const,
+              artifactId: "artifact_plan_01JTEST",
+              contentHash: planContentHash,
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = transition(
+      stale,
+      remediationReviewAcceptedInput("unresolved"),
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.state).toBe("remediation");
+    expect(result.commands[0]?.commandType).toBe("generate_remediation");
+  });
+
+  it("halts before exceeding the remediation cycle ceiling", () => {
+    const exhaustedPolicy = {
+      ...pinnedPolicy,
+      cycleCeilings: { remediationCycles: 1, closureCycles: 2 },
+    };
+    const result = transition(
+      verifyPendingState(),
+      {
+        ...remediationReviewAcceptedInput("unresolved"),
+        remediationCycleCeiling: 1,
+        exhaustionReport: {
+          terminalReportCommandId: "command_terminal_report_01JTEST",
+          budgetReportArtifact: {
+            artifactId: "artifact_budget_report_01JTEST",
+            contentHash: "3".repeat(64),
+            verified: true,
+          },
+          attemptIds: ["attempt_verify_remediation_01JTEST_1"],
+          reason: "Remediation cycle ceiling of 1 is exhausted",
+        },
+      },
+      exhaustedPolicy,
+    );
+
+    expect(result.nextState.state).toBe("halted");
+    if (result.nextState.state !== "halted") {
+      throw new Error("Expected halted state");
+    }
+    expect(result.nextState.haltedFrom).toBe("remediation");
+    expect(result.nextState.unresolvedFindingIds).toEqual([
+      "finding_architecture_01JTEST",
+    ]);
+    const command = result.commands[0];
+    if (command?.commandType !== "export_terminal") {
+      throw new Error("Expected an export_terminal command");
+    }
+    expect(command.payload.failureClassification).toBe("budget");
+    expect(command.payload.haltedFrom).toBe("remediation");
+    expect(command.payload.unresolvedFindingIds).toEqual([
+      "finding_architecture_01JTEST",
+    ]);
+    expect(command.payload.outcome).toBe("halted");
+    expect(result.auditFacts.map(({ type }) => type)).toEqual([
+      "run_halted",
+      "command_planned",
+    ]);
+  });
+
+  it("rejects exhaustion without a terminal report", () => {
+    expect(() =>
+      transition(
+        verifyPendingState(),
+        {
+          ...remediationReviewAcceptedInput("unresolved"),
+          remediationCycleCeiling: 1,
+        },
+        {
+          ...pinnedPolicy,
+          cycleCeilings: { remediationCycles: 1, closureCycles: 2 },
+        },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("records resolved findings even when exhaustion halts the run", () => {
+    const base = verifyPendingState();
+    const second = {
+      ...base.activeFindings[0]!,
+      findingId: "finding_security_01JTEST",
+      latestObservationId: "observation_security_01JTEST",
+    };
+    const twoBlockers = {
+      ...base,
+      activeFindings: [...base.activeFindings, second],
+      blockingFindingIds: [
+        ...base.blockingFindingIds,
+        "finding_security_01JTEST",
+      ],
+    };
+
+    const result = transition(
+      twoBlockers,
+      {
+        ...remediationReviewAcceptedInput("resolved"),
+        verdicts: [
+          ...remediationReviewAcceptedInput("resolved").verdicts,
+          {
+            claimId: "claim_security_01JTEST",
+            findingId: "finding_security_01JTEST",
+            disposition: "unresolved" as const,
+          },
+        ],
+        remediationCycleCeiling: 1,
+        exhaustionReport: {
+          terminalReportCommandId: "command_terminal_report_01JTEST",
+          budgetReportArtifact: {
+            artifactId: "artifact_budget_report_01JTEST",
+            contentHash: "3".repeat(64),
+            verified: true,
+          },
+          attemptIds: ["attempt_verify_remediation_01JTEST_1"],
+          reason: "Remediation cycle ceiling of 1 is exhausted",
+        },
+      },
+      {
+        ...pinnedPolicy,
+        cycleCeilings: { remediationCycles: 1, closureCycles: 2 },
+      },
+    );
+
+    expect(result.nextState.state).toBe("halted");
+    if (result.nextState.state !== "halted") {
+      throw new Error("Expected halted state");
+    }
+    expect(result.nextState.unresolvedFindingIds).toEqual([
+      "finding_security_01JTEST",
+    ]);
+    expect(result.auditFacts.map(({ type }) => type)).toEqual([
+      "finding_transitioned",
+      "run_halted",
+      "command_planned",
+    ]);
+  });
+
+  it("restores a staled waiver's blocker to the remediation working set", () => {
+    const base = verifyPendingState();
+    const second = {
+      ...base.activeFindings[0]!,
+      findingId: "finding_security_01JTEST",
+      latestObservationId: "observation_security_01JTEST",
+    };
+    const twoBlockers = {
+      ...base,
+      activeFindings: [...base.activeFindings, second],
+      blockingFindingIds: [
+        ...base.blockingFindingIds,
+        "finding_security_01JTEST",
+      ],
+      waivers: [
+        {
+          waiverId: "waiver_architecture_01JTEST",
+          findingId: "finding_architecture_01JTEST",
+          status: "active" as const,
+          reason: "Accepted risk",
+          actor: {
+            kind: "human" as const,
+            displayName: "Tigran",
+            osAccount: "tig",
+          },
+          evidence: [
+            {
+              kind: "artifact" as const,
+              artifactId: "artifact_plan_01JTEST",
+              contentHash: planContentHash,
+            },
+          ],
+        },
+      ],
+    };
+
+    const reviewed = transition(
+      twoBlockers,
+      {
+        ...remediationReviewAcceptedInput("unresolved"),
+        verdicts: [
+          ...remediationReviewAcceptedInput("unresolved").verdicts,
+          {
+            claimId: "claim_security_01JTEST",
+            findingId: "finding_security_01JTEST",
+            disposition: "unresolved" as const,
+          },
+        ],
+      },
+      pinnedPolicy,
+    ).nextState;
+    if (reviewed.state !== "remediation") {
+      throw new Error("Expected remediation state");
+    }
+    expect(reviewed.blockingFindingIds).toEqual(["finding_security_01JTEST"]);
+
+    const restored = transition(
+      reviewed,
+      { ...relevantEvidenceChangedInput(), expectedStateVersion: 11 },
+      pinnedPolicy,
+    ).nextState;
+    if (restored.state !== "remediation") {
+      throw new Error("Expected remediation state");
+    }
+    expect(restored.blockingFindingIds).toEqual([
+      "finding_security_01JTEST",
+      "finding_architecture_01JTEST",
+    ]);
+  });
+
+  it("rejects RemediationReviewAccepted outside the remediation state", () => {
+    expect(() =>
+      transition(
+        baselineReviewState(),
+        {
+          ...remediationReviewAcceptedInput("resolved"),
+          expectedStateVersion: 8,
+        },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
+  });
+
+  it.each([
+    ["a stale state version", { expectedStateVersion: 9 }],
+    [
+      "a mismatched verification purpose",
+      { reviewPurposeId: "purpose_other_01JTEST" },
+    ],
+    [
+      "a mismatched originating command",
+      { originatingCommandId: "command_other_01JTEST" },
+    ],
+    [
+      "an attempt bound to a different response",
+      {
+        acceptedAttempt: {
+          ...remediationReviewAcceptedInput("resolved").acceptedAttempt,
+          responseContentHash: "0".repeat(64),
+        },
+      },
+    ],
+    ["invalid structured output", { outputValid: false }],
+    [
+      "verdicts validated against a different artifact",
+      {
+        verdictValidation: {
+          ...remediationReviewAcceptedInput("resolved").verdictValidation,
+          validatedReviewContentHash: "0".repeat(64),
+        },
+      },
+    ],
+    [
+      "unaccounted claims",
+      {
+        verdictValidation: {
+          ...remediationReviewAcceptedInput("resolved").verdictValidation,
+          claimsAccountedFor: false,
+        },
+      },
+    ],
+    ["verdicts missing a blocking finding", { verdicts: [] }],
+    [
+      "a verdict for an unknown finding",
+      {
+        verdicts: [
+          {
+            claimId: "claim_unknown_01JTEST",
+            findingId: "finding_unknown_01JTEST",
+            disposition: "resolved" as const,
+          },
+        ],
+      },
+    ],
+    [
+      "duplicate verdicts",
+      {
+        verdicts: [
+          ...remediationReviewAcceptedInput("resolved").verdicts,
+          ...remediationReviewAcceptedInput("resolved").verdicts,
+        ],
+      },
+    ],
+    [
+      "a reviewed plan different from the current plan",
+      { reviewedPlanVersionId: "plan_version_01JTEST" },
+    ],
+    [
+      "a reviewed plan content hash mismatch",
+      { reviewedPlanContentHash: "0".repeat(64) },
+    ],
+    [
+      "the wrong Reviewer actor",
+      {
+        actor: {
+          kind: "reviewer" as const,
+          provider: "anthropic" as const,
+          modelId: "claude-other-model",
+        },
+      },
+    ],
+    [
+      "a next-command budget different from pinned policy",
+      {
+        nextCommandBudgetMaximum: {
+          calls: 1,
+          inputTokens: 69_999,
+          outputTokens: 28_000,
+          costUsdMicros: 40_000_000,
+        },
+      },
+    ],
+    ["a cycle count out of step with the run", { remediationCyclesUsed: 2 }],
+    ["exhaustion without a terminal report", { remediationCycleCeiling: 1 }],
+    ["a broken audit chain", { auditChainVerified: false }],
+    ["a conflicting mutation lease", { mutationLeaseAvailable: false }],
+  ])("rejects RemediationReviewAccepted with %s", (_name, override) => {
+    expect(() =>
+      transition(
+        verifyPendingState(),
+        { ...remediationReviewAcceptedInput("resolved"), ...override },
         pinnedPolicy,
       ),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
