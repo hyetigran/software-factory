@@ -650,6 +650,7 @@ export type RemediationClaimInput = {
   claimId: string;
   findingId: string;
   changedSectionIds: string[];
+  evidence: ArtifactEvidenceReference[];
 };
 
 export type RemediationClaimsValidation = {
@@ -3962,10 +3963,20 @@ function proposeRemediation(
       claimedFindingIds.includes(findingId),
     ) &&
     input.claims.every(
-      ({ claimId, changedSectionIds }) =>
+      ({ claimId, changedSectionIds, evidence }) =>
         claimId.length > 0 &&
         changedSectionIds.every((sectionId) => sectionId.length > 0) &&
-        new Set(changedSectionIds).size === changedSectionIds.length,
+        new Set(changedSectionIds).size === changedSectionIds.length &&
+        evidence.length > 0 &&
+        evidence.every(
+          ({ kind, artifactId, contentHash }) =>
+            kind === "artifact" &&
+            [input.remediationArtifact, input.planArtifact].some(
+              (supplied) =>
+                supplied.artifactId === artifactId &&
+                supplied.contentHash === contentHash,
+            ),
+        ),
     );
   const plannerAuthorized =
     input.actor.provider === policy.plannerAssignment.provider &&

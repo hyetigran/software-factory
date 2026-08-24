@@ -36,6 +36,7 @@ import {
   type NonterminalRunState,
   type RunStarted,
 } from "../../src/domain/index.js";
+import { buildRemediationGenerated } from "../../src/application/remediation-claims.js";
 import { ContentAddressedArtifactStore } from "../../src/infrastructure/artifacts/object-store.js";
 import {
   AuthorityIntegrityError,
@@ -1100,6 +1101,347 @@ describe("SQLite authority", () => {
       raw.prepare("SELECT count(*) AS count FROM requirements").get(),
     ).toEqual({ count: 1 });
     raw.close();
+  });
+
+  it("settles an accepted remediation proposal into a planned verification", async () => {
+    const path = await databasePath();
+    const authority = await openAuthority(path);
+    const runId = "run_remediation";
+    const policy = {
+      policyHash: "a".repeat(64),
+      plannerAssignment: executionConfiguration.plannerAssignment,
+      reviewerAssignment: executionConfiguration.reviewerAssignment,
+      providerRequestBudgets: executionConfiguration.providerRequestBudgets,
+    };
+    const planDocument = (planId: string, alphaBody: string) =>
+      Buffer.from(
+        canonicalJson({
+          schema_version: 1,
+          plan_id: planId,
+          version: 1,
+          title: "Plan",
+          summary: "Summary",
+          components: [
+            {
+              component_id: "component_core",
+              name: "Core",
+              responsibility: "Everything",
+            },
+          ],
+          sections: [
+            {
+              section_id: "section_alpha",
+              kind: "approach",
+              title: "Alpha",
+              body: alphaBody,
+              component_ids: ["component_core"],
+              requirement_ids: ["req_1"],
+            },
+          ],
+          requirement_coverage: [
+            {
+              requirement_id: "req_1",
+              section_ids: ["section_alpha"],
+              justification: "Covered",
+            },
+          ],
+          section_transitions: [],
+        }),
+      );
+    const priorPlanBytes = planDocument("plan_v1", "original alpha");
+    const revisedPlanBytes = planDocument("plan_v2", "revised alpha");
+    const priorPlanHash = createHash("sha256")
+      .update(priorPlanBytes)
+      .digest("hex");
+    const revisedPlanHash = createHash("sha256")
+      .update(revisedPlanBytes)
+      .digest("hex");
+    const store = await ContentAddressedArtifactStore.open(
+      resolve(path, "../.."),
+    );
+    const register = async (
+      artifactId: string,
+      kind:
+        "requirements_ledger" | "structured_plan" | "rendered_plan" | "review",
+      bytes: Buffer,
+    ) => {
+      const descriptor = await store.stageArtifact(bytes, {
+        artifactId,
+        kind,
+        mediaType: "application/octet-stream",
+        createdBy: "system:test",
+        provenance: { method: "human_submitted" },
+      });
+      await authority.registerArtifact(descriptor);
+      return descriptor.contentHash;
+    };
+    const ledgerHash = await register(
+      "artifact_ledger",
+      "requirements_ledger",
+      Buffer.from(canonicalJson({ ledger: true })),
+    );
+    const renderedPlanHash = await register(
+      "artifact_rendered_plan_v1",
+      "rendered_plan",
+      Buffer.from("# Plan v1"),
+    );
+    const baselineReviewHash = await register(
+      "artifact_review_baseline_1",
+      "review",
+      Buffer.from(canonicalJson({ review: true })),
+    );
+    await register("artifact_plan_v1", "structured_plan", priorPlanBytes);
+    await register("artifact_plan_v2", "structured_plan", revisedPlanBytes);
+    const remediationPurposeId = `${runId}:plan:plan_v1:remediation:1`;
+    const evidenceReference = (artifactId: string, contentHash: string) => ({
+      artifactId,
+      contentHash,
+    });
+    const reviewContext = {
+      prompt: evidenceReference("artifact_reviewer_prompt", "8".repeat(64)),
+      schema: evidenceReference("artifact_review_schema", "4".repeat(64)),
+      taxonomy: evidenceReference("artifact_taxonomy", "5".repeat(64)),
+      componentRegistry: evidenceReference(
+        "artifact_component_registry",
+        "6".repeat(64),
+      ),
+      policy: evidenceReference("artifact_review_policy", "a".repeat(64)),
+      evidence: [],
+    };
+    const remediationRunState = {
+      runId,
+      stateVersion: 1,
+      state: "remediation" as const,
+      policyLocked: true as const,
+      blockedReason: null,
+      sourceArtifactId: "artifact_source",
+      sourceContentHash: createHash("sha256").update("source").digest("hex"),
+      configurationArtifactId: "artifact_configuration",
+      configurationContentHash: executionConfigurationHash,
+      policyHash: policy.policyHash,
+      currentLedger: {
+        versionId: "ledger_v1",
+        artifactId: "artifact_ledger",
+        contentHash: ledgerHash,
+        validationStatus: "approved" as const,
+      },
+      downstreamQualification: { artifacts: [], gateIds: [] },
+      currentPlan: {
+        versionId: "plan_v1",
+        artifactId: "artifact_plan_v1",
+        contentHash: priorPlanHash,
+        sectionTransitionMap: evidenceReference(
+          "artifact_section_map_v1",
+          "1".repeat(64),
+        ),
+        provenance: evidenceReference(
+          "artifact_plan_provenance_v1",
+          "2".repeat(64),
+        ),
+        origin: {
+          kind: "planner" as const,
+          assignment: policy.plannerAssignment,
+          originatingCommandId: "command_generate_plan_1",
+        },
+      },
+      activeFindings: [
+        {
+          findingId: "finding_blocker_1",
+          status: "open" as const,
+          latestObservationId: "observation_blocker_1",
+          severity: "high" as const,
+          ruleId: "rule_blocker",
+          title: "Blocking finding",
+          evidence: [
+            {
+              kind: "artifact" as const,
+              artifactId: "artifact_plan_v1",
+              contentHash: priorPlanHash,
+            },
+          ],
+          latestObservationContext: {
+            reviewId: "review_baseline_1",
+            ledgerVersionId: "ledger_v1",
+            ledgerContentHash: ledgerHash,
+            planVersionId: "plan_v1",
+            planContentHash: priorPlanHash,
+            policyHash: policy.policyHash,
+            reviewerAssignment: policy.reviewerAssignment,
+            prompt: reviewContext.prompt,
+            schema: reviewContext.schema,
+            cycle: 1,
+            originatingCommandId: "command_baseline_review_1",
+          },
+        },
+      ],
+      blockingFindingIds: ["finding_blocker_1"],
+      activeReview: {
+        cycle: 1,
+        commandId: "command_generate_remediation_1",
+        renderCommandId: "command_render_plan_1",
+        reviewerAssignment: policy.reviewerAssignment,
+        reviewPurposeId: remediationPurposeId,
+        independence: { reduced: false as const },
+      },
+      reviewContext,
+      renderedPlan: evidenceReference(
+        "artifact_rendered_plan_v1",
+        renderedPlanHash,
+      ),
+      baselineReview: {
+        reviewId: "review_baseline_1",
+        artifactId: "artifact_review_baseline_1",
+        contentHash: baselineReviewHash,
+        cycle: 1,
+        source: evidenceReference(
+          "artifact_source",
+          createHash("sha256").update("source").digest("hex"),
+        ),
+        configuration: evidenceReference(
+          "artifact_configuration",
+          executionConfigurationHash,
+        ),
+        ledgerVersionId: "ledger_v1",
+        ledger: evidenceReference("artifact_ledger", ledgerHash),
+        planVersionId: "plan_v1",
+        plan: evidenceReference("artifact_plan_v1", priorPlanHash),
+        renderedPlan: evidenceReference(
+          "artifact_rendered_plan_v1",
+          renderedPlanHash,
+        ),
+        policyHash: policy.policyHash,
+        planOrigin: {
+          kind: "planner" as const,
+          assignment: policy.plannerAssignment,
+          originatingCommandId: "command_generate_plan_1",
+        },
+        plannerAssignment: policy.plannerAssignment,
+        reviewerAssignment: policy.reviewerAssignment,
+        independence: { reduced: false as const },
+        reviewContext,
+        request: evidenceReference("artifact_review_request_1", "0".repeat(64)),
+        usage: evidenceReference("artifact_review_usage_1", "3".repeat(64)),
+        findings: [],
+        acceptedAttemptId: "attempt_baseline_review_1",
+      },
+      activePlanning: {
+        purposeId: remediationPurposeId,
+        commandId: "command_generate_remediation_1",
+        plannerAssignment: policy.plannerAssignment,
+      },
+    };
+    await commitTransition<NonterminalRunState>(authority, {
+      runId,
+      expectedStateVersion: 0,
+      transition: () => ({
+        nextState: remediationRunState,
+        commands: [],
+        auditFacts: [
+          {
+            type: "test_seeded_state",
+            actor: { kind: "system", component: "test", version: "1" },
+            reason: "seed a remediation run for settlement",
+            evidence: [],
+            payload: { runId },
+          },
+        ],
+      }),
+    });
+
+    const input = buildRemediationGenerated({
+      state: remediationRunState,
+      completion: {
+        commandId: "command_generate_remediation_1",
+        attemptId: "attempt_generate_remediation_1",
+        requestArtifactId: "artifact_remediation_request_1",
+        requestContentHash: "5".repeat(64),
+        outputArtifact: {
+          artifactId: "artifact_remediation_v2",
+          contentHash: revisedPlanHash,
+        },
+        rawResponseArtifact: {
+          artifactId: "artifact_remediation_raw_1",
+          contentHash: "6".repeat(64),
+        },
+        nativeUsageArtifact: {
+          artifactId: "artifact_remediation_usage_1",
+          contentHash: "7".repeat(64),
+        },
+      },
+      configuration: executionConfiguration,
+      priorPlanBytes,
+      revisedPlanBytes,
+      planArtifactId: "artifact_plan_v2",
+      sectionTransitionMapArtifactId: "artifact_section_map_v2",
+      sectionTransitionMapBytes: Buffer.from(canonicalJson([])),
+      provenanceArtifact: {
+        artifactId: "artifact_plan_provenance_v2",
+        contentHash: "e".repeat(64),
+        verified: true,
+      },
+      outputValid: true,
+      verifyCommandId: "command_verify_remediation_1",
+      availableBudget: {
+        calls: 2,
+        inputTokens: 100_000,
+        outputTokens: 40_000,
+        costUsdMicros: 50_000_000,
+      },
+      auditChainVerified: true,
+      databaseIntegrityVerified: true,
+      schemaCompatible: true,
+      mutationLeaseAvailable: true,
+    });
+    expect(input.planVersionId).toBe("plan_v2");
+    expect(input.claimsValidation).toEqual({
+      validator: "deterministic-remediation-claims-v1",
+      validatedRemediationContentHash: revisedPlanHash,
+      claimsMatchArtifact: true,
+      changedSectionsDeclared: true,
+    });
+    expect(input.sectionTransitionValidation).toEqual(
+      expect.objectContaining({
+        classificationsComplete: true,
+        existingSectionIdsPreserved: true,
+        onlyDeclaredNewSectionsAssignedIds: true,
+      }),
+    );
+
+    await commitTransition<NonterminalRunState>(authority, {
+      runId,
+      expectedStateVersion: 1,
+      transition: (previousState) => transition(previousState, input, policy),
+    });
+
+    const settled = authority.loadRun<NonterminalRunState>(runId);
+    expect(settled).toEqual(
+      expect.objectContaining({ state: "remediation", stateVersion: 2 }),
+    );
+    if (settled?.state !== "remediation") {
+      throw new Error("Expected a remediation state");
+    }
+    expect(settled.currentPlan.versionId).toBe("plan_v2");
+    expect(settled.currentPlan.contentHash).toBe(revisedPlanHash);
+    const verifyCommands = authority
+      .listCommands(runId)
+      .filter(({ commandType }) => commandType === "verify_remediation");
+    expect(verifyCommands).toHaveLength(1);
+    expect(verifyCommands[0]).toEqual(
+      expect.objectContaining({ commandId: "command_verify_remediation_1" }),
+    );
+    expect(verifyCommands[0]?.payload).toEqual({
+      ledgerVersionId: "ledger_v1",
+      planVersionId: "plan_v2",
+      planArtifactId: "artifact_plan_v2",
+      remediationArtifactId: "artifact_remediation_v2",
+      claimIds: ["claim_finding_blocker_1"],
+      providerStorage: "minimize",
+    });
+    expect(
+      authority.listAuditEntries().map(({ factType }) => factType),
+    ).toEqual(["test_seeded_state", "remediation_proposed", "command_planned"]);
+    await expect(authority.verifyIntegrity()).resolves.toBeUndefined();
+    authority.close();
   });
 
   it("atomically persists state, commands, and a verifiable audit chain", async () => {

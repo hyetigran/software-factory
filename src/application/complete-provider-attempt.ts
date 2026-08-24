@@ -12,12 +12,14 @@ import {
   type NonterminalRunState,
   type PlanGenerated,
   type PinnedRunPolicy,
+  type RemediationGenerated,
   type ReviewAccepted,
 } from "../domain/index.js";
 import { canonicalJson } from "../domain/canonical-json.js";
 import { createHash } from "node:crypto";
 
-type ProviderOutcomeInput = PlanGenerated | ReviewAccepted;
+type ProviderOutcomeInput =
+  PlanGenerated | ReviewAccepted | RemediationGenerated;
 
 export type CompleteProviderAttemptRequest = PersistTransitionRequest & {
   completion: CompleteProviderAttemptEvidence;
@@ -103,6 +105,32 @@ export class AcceptedProviderCompletion {
   }
 }
 
+function attemptMatchesCompletion(
+  input: ProviderOutcomeInput,
+  completion: CompleteProviderAttemptEvidence,
+): boolean {
+  return (
+    input.originatingCommandId === completion.commandId &&
+    input.acceptedAttempt.commandId === completion.commandId &&
+    input.acceptedAttempt.attemptId === completion.attemptId &&
+    input.acceptedAttempt.requestArtifactId === completion.requestArtifactId &&
+    input.acceptedAttempt.requestContentHash ===
+      completion.requestContentHash &&
+    input.acceptedAttempt.responseArtifactId ===
+      completion.outputArtifact.artifactId &&
+    input.acceptedAttempt.responseContentHash ===
+      completion.outputArtifact.contentHash &&
+    input.acceptedAttempt.rawResponseArtifactId ===
+      completion.rawResponseArtifact.artifactId &&
+    input.acceptedAttempt.rawResponseContentHash ===
+      completion.rawResponseArtifact.contentHash &&
+    input.acceptedAttempt.nativeUsageArtifactId ===
+      completion.nativeUsageArtifact.artifactId &&
+    input.acceptedAttempt.nativeUsageContentHash ===
+      completion.nativeUsageArtifact.contentHash
+  );
+}
+
 function outcomeMatchesAttempt(
   input: ProviderOutcomeInput,
   completion: CompleteProviderAttemptEvidence,
@@ -110,51 +138,22 @@ function outcomeMatchesAttempt(
   if (input.runId !== completion.runId) return false;
   if (input.type === "PlanGenerated") {
     return (
-      input.originatingCommandId === completion.commandId &&
       input.planArtifact.artifactId === completion.outputArtifact.artifactId &&
       input.planArtifact.contentHash ===
         completion.outputArtifact.contentHash &&
-      input.acceptedAttempt.commandId === completion.commandId &&
-      input.acceptedAttempt.attemptId === completion.attemptId &&
-      input.acceptedAttempt.requestArtifactId ===
-        completion.requestArtifactId &&
-      input.acceptedAttempt.requestContentHash ===
-        completion.requestContentHash &&
-      input.acceptedAttempt.responseArtifactId ===
-        completion.outputArtifact.artifactId &&
-      input.acceptedAttempt.responseContentHash ===
-        completion.outputArtifact.contentHash &&
-      input.acceptedAttempt.rawResponseArtifactId ===
-        completion.rawResponseArtifact.artifactId &&
-      input.acceptedAttempt.rawResponseContentHash ===
-        completion.rawResponseArtifact.contentHash &&
-      input.acceptedAttempt.nativeUsageArtifactId ===
-        completion.nativeUsageArtifact.artifactId &&
-      input.acceptedAttempt.nativeUsageContentHash ===
-        completion.nativeUsageArtifact.contentHash
+      attemptMatchesCompletion(input, completion)
     );
   }
   if (input.type === "ReviewAccepted") {
+    return attemptMatchesCompletion(input, completion);
+  }
+  if (input.type === "RemediationGenerated") {
     return (
-      input.originatingCommandId === completion.commandId &&
-      input.acceptedAttempt.commandId === completion.commandId &&
-      input.acceptedAttempt.attemptId === completion.attemptId &&
-      input.acceptedAttempt.requestArtifactId ===
-        completion.requestArtifactId &&
-      input.acceptedAttempt.requestContentHash ===
-        completion.requestContentHash &&
-      input.acceptedAttempt.responseArtifactId ===
+      input.remediationArtifact.artifactId ===
         completion.outputArtifact.artifactId &&
-      input.acceptedAttempt.responseContentHash ===
+      input.remediationArtifact.contentHash ===
         completion.outputArtifact.contentHash &&
-      input.acceptedAttempt.rawResponseArtifactId ===
-        completion.rawResponseArtifact.artifactId &&
-      input.acceptedAttempt.rawResponseContentHash ===
-        completion.rawResponseArtifact.contentHash &&
-      input.acceptedAttempt.nativeUsageArtifactId ===
-        completion.nativeUsageArtifact.artifactId &&
-      input.acceptedAttempt.nativeUsageContentHash ===
-        completion.nativeUsageArtifact.contentHash
+      attemptMatchesCompletion(input, completion)
     );
   }
   return false;

@@ -678,6 +678,13 @@ function remediationGeneratedInput(): RemediationGenerated {
         claimId: "claim_architecture_01JTEST",
         findingId: "finding_architecture_01JTEST",
         changedSectionIds: ["section_architecture_01JTEST"],
+        evidence: [
+          {
+            kind: "artifact",
+            artifactId: "artifact_remediation_01JTEST",
+            contentHash: remediationContentHash,
+          },
+        ],
       },
     ],
     claimsValidation: {
@@ -3294,6 +3301,13 @@ describe("transition", () => {
           claimId: "claim_architecture_01JTEST",
           findingId: "finding_architecture_01JTEST",
           changedSectionIds: ["section_architecture_01JTEST"],
+          evidence: [
+            {
+              kind: "artifact",
+              artifactId: "artifact_remediation_01JTEST",
+              contentHash: remediationContentHash,
+            },
+          ],
         },
       ],
       originatingCommandId: "command_after_baseline_01JTEST",
@@ -3356,9 +3370,32 @@ describe("transition", () => {
       {
         claims: [
           {
+            ...remediationGeneratedInput().claims[0]!,
             claimId: "claim_unknown_01JTEST",
             findingId: "finding_unknown_01JTEST",
-            changedSectionIds: ["section_architecture_01JTEST"],
+          },
+        ],
+      },
+    ],
+    [
+      "a claim without evidence",
+      {
+        claims: [{ ...remediationGeneratedInput().claims[0]!, evidence: [] }],
+      },
+    ],
+    [
+      "claim evidence outside the supplied remediation artifacts",
+      {
+        claims: [
+          {
+            ...remediationGeneratedInput().claims[0]!,
+            evidence: [
+              {
+                kind: "artifact" as const,
+                artifactId: "artifact_unrelated_01JTEST",
+                contentHash: "9".repeat(64),
+              },
+            ],
           },
         ],
       },
@@ -4342,6 +4379,136 @@ describe("transition", () => {
     }
     expect(result.nextState.state).toBe("baseline_review");
     expect(persistedProviderCompletion).toBe(true);
+  });
+
+  it("couples accepted remediation evidence to its domain transition", async () => {
+    const input = remediationGeneratedInput();
+    const state = remediationState();
+    let persistedProviderCompletion = false;
+    const authority: AuthorityPort = {
+      transaction: (work) =>
+        Promise.resolve(
+          work({
+            loadRun: <TState extends object>() => state as unknown as TState,
+            loadAcceptedCommandResult: () => null,
+            loadExecutionCapacity: () => ({
+              availableBudget: input.availableBudget,
+              mutationLeaseAvailable: true,
+            }),
+            settleProviderCompletion: () => ({ status: "eligible" as const }),
+            settleProviderFailure: () => ({ status: "eligible" as const }),
+            persistProviderFailure: () => {
+              throw new Error("unexpected provider failure");
+            },
+            persist: vi.fn(),
+            persistProviderCompletion: <TState extends object>(
+              completion: AcceptedProviderCompletion,
+            ) => {
+              persistedProviderCompletion = true;
+              return completion.toPersistenceData()
+                .result as unknown as PersistableTransition<TState>;
+            },
+          }),
+        ),
+    };
+    const artifact = (
+      artifactId: string,
+      contentHash: string,
+      kind: "provider_response" | "native_usage",
+    ) => ({
+      schemaVersion: 1 as const,
+      artifactId,
+      kind,
+      contentHash,
+      byteLength: 10,
+      mediaType: "application/json",
+      createdBy: "pid:planner",
+      provenance: {
+        method: "provider_generated" as const,
+        sourceArtifactIds: [input.acceptedAttempt.requestArtifactId],
+        commandId: input.originatingCommandId,
+        attemptId: input.acceptedAttempt.attemptId,
+      },
+    });
+    const completion = {
+      runId: input.runId,
+      commandId: input.originatingCommandId,
+      attemptId: input.acceptedAttempt.attemptId,
+      ownerProcess: "pid:planner",
+      correlationId: "correlation_remediation_01JTEST",
+      requestArtifactId: input.acceptedAttempt.requestArtifactId,
+      requestContentHash: input.acceptedAttempt.requestContentHash,
+      outputArtifact: artifact(
+        input.remediationArtifact.artifactId,
+        input.remediationArtifact.contentHash,
+        "provider_response",
+      ),
+      rawResponseArtifact: artifact(
+        input.acceptedAttempt.rawResponseArtifactId,
+        input.acceptedAttempt.rawResponseContentHash,
+        "provider_response",
+      ),
+      nativeUsageArtifact: artifact(
+        input.acceptedAttempt.nativeUsageArtifactId,
+        input.acceptedAttempt.nativeUsageContentHash,
+        "native_usage",
+      ),
+      actualUsage: {
+        calls: 1,
+        inputTokens: 10,
+        outputTokens: 20,
+        costUsdMicros: 100,
+      },
+      providerEvidence: {
+        requestedModel: pinnedPolicy.plannerAssignment.modelId,
+        returnedModel: pinnedPolicy.plannerAssignment.modelId,
+        endpoint: "https://provider.invalid",
+        behaviorHeaders: {},
+        providerResponseId: "response_remediation_1",
+        correlationId: "correlation_remediation_01JTEST",
+        preflight: {
+          canonicalModelId: pinnedPolicy.plannerAssignment.modelId,
+          structuredOutput: true as const,
+          contextWindowTokens: 100_000,
+          maxOutputTokens: 10_000,
+          inputTokens: 1_000,
+        },
+      },
+    };
+
+    const result = await completeProviderAttempt(authority, {
+      runId: input.runId,
+      expectedStateVersion: input.expectedStateVersion,
+      input,
+      policy: pinnedPolicy,
+      completion,
+    });
+
+    if (!("nextState" in result)) {
+      throw new Error("Expected the provider result to advance the run");
+    }
+    expect(result.nextState.state).toBe("remediation");
+    expect(result.commands).toEqual([
+      expect.objectContaining({ commandType: "verify_remediation" }),
+    ]);
+    expect(persistedProviderCompletion).toBe(true);
+
+    await expect(
+      completeProviderAttempt(authority, {
+        runId: input.runId,
+        expectedStateVersion: input.expectedStateVersion,
+        input,
+        policy: pinnedPolicy,
+        completion: {
+          ...completion,
+          outputArtifact: artifact(
+            "artifact_other_response_01JTEST",
+            "9".repeat(64),
+            "provider_response",
+          ),
+        },
+      }),
+    ).rejects.toThrow("does not match its physical attempt");
   });
 
   it("does not run a domain transition for an evidence-only provider result", async () => {
