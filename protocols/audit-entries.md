@@ -74,6 +74,7 @@ Evidence references use stable artifact, requirement, section, finding, observat
 | `finding_transitioned`          | prior and next status, controlling evidence                  |
 | `reconciliation_ambiguous`      | candidate finding IDs and reason                             |
 | `remediation_proposed`          | finding claims, plan version, changed sections               |
+| `remediation_evaluated`         | review artifact, claim verdicts, cycle, plan version         |
 | `waiver_granted`                | finding, exact evidence versions, reason                     |
 | `waiver_invalidated`            | waiver and changed evidence                                  |
 | `waiver_reaffirmed`             | waiver, current evidence, human actor                        |

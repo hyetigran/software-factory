@@ -9,17 +9,22 @@ import type {
 } from "./execution-port.js";
 import {
   transition,
+  type HaltedRunState,
   type NonterminalRunState,
   type PlanGenerated,
   type PinnedRunPolicy,
   type RemediationGenerated,
+  type RemediationReviewAccepted,
   type ReviewAccepted,
 } from "../domain/index.js";
 import { canonicalJson } from "../domain/canonical-json.js";
 import { createHash } from "node:crypto";
 
 type ProviderOutcomeInput =
-  PlanGenerated | ReviewAccepted | RemediationGenerated;
+  | PlanGenerated
+  | ReviewAccepted
+  | RemediationGenerated
+  | RemediationReviewAccepted;
 
 export type CompleteProviderAttemptRequest = PersistTransitionRequest & {
   completion: CompleteProviderAttemptEvidence;
@@ -33,7 +38,7 @@ type AcceptedProviderCompletionData = {
   previousStateHash: string;
   completion: CompleteProviderAttemptEvidence;
   persistRequest: PersistTransitionRequest;
-  result: PersistableTransition<NonterminalRunState>;
+  result: PersistableTransition<NonterminalRunState | HaltedRunState>;
 };
 
 function immutableCopy<T>(value: T): T {
@@ -65,7 +70,12 @@ export class AcceptedProviderCompletion {
         "Provider outcome does not match its physical attempt",
       );
     }
-    const result = transition(previousState, request.input, request.policy);
+    // Both branches are the same call: the narrowed input types select
+    // different transition() overloads, and the full union matches none.
+    const result =
+      request.input.type === "RemediationReviewAccepted"
+        ? transition(previousState, request.input, request.policy)
+        : transition(previousState, request.input, request.policy);
     const { validatedProjection, ...plainPersistRequest } = request;
     const copied = immutableCopy({
       previousStateHash: createHash("sha256")
@@ -144,7 +154,10 @@ function outcomeMatchesAttempt(
       attemptMatchesCompletion(input, completion)
     );
   }
-  if (input.type === "ReviewAccepted") {
+  if (
+    input.type === "ReviewAccepted" ||
+    input.type === "RemediationReviewAccepted"
+  ) {
     return attemptMatchesCompletion(input, completion);
   }
   if (input.type === "RemediationGenerated") {
@@ -163,7 +176,8 @@ export async function completeProviderAttempt(
   authority: AuthorityPort,
   request: CompleteProviderAttemptRequest,
 ): Promise<
-  PersistableTransition<NonterminalRunState> | CompletedCommandAttempt
+  | PersistableTransition<NonterminalRunState | HaltedRunState>
+  | CompletedCommandAttempt
 > {
   return authority.transaction((transaction) => {
     const settlement = transaction.settleProviderCompletion(request.completion);
@@ -173,8 +187,8 @@ export async function completeProviderAttempt(
     const previousState = transaction.loadRun<NonterminalRunState>(
       request.runId,
     );
-    return transaction.persistProviderCompletion(
-      AcceptedProviderCompletion.fromDomain(previousState, request),
-    );
+    return transaction.persistProviderCompletion<
+      NonterminalRunState | HaltedRunState
+    >(AcceptedProviderCompletion.fromDomain(previousState, request));
   });
 }

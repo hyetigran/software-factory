@@ -283,6 +283,20 @@ export function projectAuthoritativeState(
       );
   }
 
+  for (const fact of facts) {
+    if (fact.type !== "finding_transitioned") continue;
+    const payload = fact.payload as State;
+    const findingId = string(payload.findingId);
+    const nextStatus = string(payload.nextStatus);
+    if (findingId === null || nextStatus !== "resolved") continue;
+    database
+      .prepare(
+        `UPDATE findings SET status = ?, updated_at = ?
+          WHERE finding_id = ? AND run_id = ?`,
+      )
+      .run(nextStatus, recordedAt, findingId, runId);
+  }
+
   const waivers = Array.isArray(state.waivers) ? state.waivers : [];
   for (const waiverValue of waivers) {
     const waiver = object(waiverValue);

@@ -1441,6 +1441,25 @@ export type RunHaltedFact = {
   };
 };
 
+export type RemediationEvaluatedFact = {
+  type: "remediation_evaluated";
+  actor: ModelActor & { kind: "reviewer" };
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    reviewId: string;
+    reviewArtifactId: string;
+    reviewContentHash: string;
+    planVersionId: string;
+    planContentHash: string;
+    cycle: number;
+    policyHash: string;
+    reviewerAssignment: ProviderModelAssignment;
+    originatingCommandId: string;
+    verdicts: RemediationClaimVerdict[];
+  };
+};
+
 export type FindingTransitionedFact = {
   type: "finding_transitioned";
   actor: SystemActor;
@@ -1562,6 +1581,7 @@ export type TransitionResult = {
     | PlanVersionAcceptedFact
     | ReviewAcceptedFact
     | RemediationProposedFact
+    | RemediationEvaluatedFact
     | FindingCreatedFact
     | FindingTransitionedFact
     | WaiverGrantedFact
@@ -4534,8 +4554,8 @@ function acceptRemediationReview(
   const remainingFindings = previousState.activeFindings.filter(
     ({ findingId }) => !resolvedIds.has(findingId),
   );
-  const reviewFact: ReviewAcceptedFact = {
-    type: "review_accepted",
+  const reviewFact: RemediationEvaluatedFact = {
+    type: "remediation_evaluated",
     actor: input.actor,
     reason: "Accept the verified Reviewer verdict on remediation claims",
     evidence: [
@@ -4554,19 +4574,13 @@ function acceptRemediationReview(
       reviewId: input.reviewId,
       reviewArtifactId: input.reviewArtifact.artifactId,
       reviewContentHash: input.reviewArtifact.contentHash,
-      ledgerVersionId: previousState.currentLedger.versionId,
-      ledgerContentHash: previousState.currentLedger.contentHash,
       planVersionId: previousState.currentPlan.versionId,
       planContentHash: previousState.currentPlan.contentHash,
       cycle: input.remediationCyclesUsed,
       policyHash: policy.policyHash,
       reviewerAssignment: previousState.activeReview.reviewerAssignment,
-      promptArtifactId: previousState.reviewContext.prompt.artifactId,
-      promptContentHash: previousState.reviewContext.prompt.contentHash,
-      schemaArtifactId: previousState.reviewContext.schema.artifactId,
-      schemaContentHash: previousState.reviewContext.schema.contentHash,
       originatingCommandId: input.originatingCommandId,
-      observationIds: [],
+      verdicts: input.verdicts,
     },
   };
   const findingFacts: FindingTransitionedFact[] = previousState.activeFindings

@@ -35,8 +35,10 @@ import {
   type LedgerSubmitted,
   type NonterminalRunState,
   type RunStarted,
+  type TransitionResult,
 } from "../../src/domain/index.js";
 import { buildRemediationGenerated } from "../../src/application/remediation-claims.js";
+import { buildRemediationReviewAccepted } from "../../src/application/remediation-verdict.js";
 import { buildProviderRequest } from "../../src/application/build-provider-request.js";
 import { ContentAddressedArtifactStore } from "../../src/infrastructure/artifacts/object-store.js";
 import {
@@ -150,7 +152,7 @@ const executionConfiguration: ResolvedConfigurationSnapshot = {
     costUsdMicros: 1_000_000,
     retries: 1,
     repairs: 2,
-    remediationCycles: 1,
+    remediationCycles: 2,
     closureCycles: 1,
   },
   credentialReferences: {
@@ -1113,6 +1115,11 @@ describe("SQLite authority", () => {
       plannerAssignment: executionConfiguration.plannerAssignment,
       reviewerAssignment: executionConfiguration.reviewerAssignment,
       providerRequestBudgets: executionConfiguration.providerRequestBudgets,
+      cycleCeilings: {
+        remediationCycles:
+          executionConfiguration.hardCeilings.remediationCycles,
+        closureCycles: executionConfiguration.hardCeilings.closureCycles,
+      },
     };
     const planDocument = (planId: string, alphaBody: string) =>
       Buffer.from(
@@ -1224,7 +1231,13 @@ describe("SQLite authority", () => {
         "6".repeat(64),
       ),
       policy: evidenceReference("artifact_review_policy", "a".repeat(64)),
-      evidence: [],
+      evidence: [
+        {
+          kind: "artifact" as const,
+          artifactId: "artifact_rendered_plan_v1",
+          contentHash: renderedPlanHash,
+        },
+      ],
     };
     const remediationRunState = {
       runId,
@@ -1583,6 +1596,246 @@ describe("SQLite authority", () => {
         artifact: requestArtifact,
       }),
     ).rejects.toThrow("not bound to the active command attempt");
+
+    const reviewDocument = (planArtifactId: string, disposition: string) =>
+      Buffer.from(
+        canonicalJson({
+          schema_version: 1,
+          review_id: "review_verify_1",
+          review_kind: "remediation",
+          plan_artifact_id: planArtifactId,
+          policy_hash: policy.policyHash,
+          prior_findings: [
+            {
+              finding_id: "finding_blocker_1",
+              disposition,
+              severity: "high",
+              evidence: [
+                {
+                  artifact_id: planArtifactId,
+                  section_ids: [],
+                  explanation: "Verified against the revised plan",
+                },
+              ],
+              reason: "Claim evaluated against the diff",
+            },
+          ],
+          new_concerns: [],
+          summary: "Remediation claim verification",
+        }),
+      );
+    const verifyBudget = {
+      calls: 2,
+      inputTokens: 100_000,
+      outputTokens: 40_000,
+      costUsdMicros: 50_000_000,
+    };
+    const reviewSchema = {
+      bytes: Buffer.from("{}"),
+      contentHash: createHash("sha256").update("{}").digest("hex"),
+    };
+    const unresolvedReviewBytes = reviewDocument(
+      "artifact_plan_v2",
+      "reproduced",
+    );
+    const firstVerdict = buildRemediationReviewAccepted({
+      state: settled,
+      completion: {
+        commandId: "command_verify_remediation_1",
+        attemptId: "attempt_verify_remediation_1",
+        requestArtifactId: "artifact_verify_request_1",
+        requestContentHash: requestArtifact.contentHash,
+        outputArtifact: {
+          artifactId: "artifact_verify_review_1",
+          contentHash: createHash("sha256")
+            .update(unresolvedReviewBytes)
+            .digest("hex"),
+        },
+        rawResponseArtifact: {
+          artifactId: "artifact_verify_raw_1",
+          contentHash: "8".repeat(64),
+        },
+        nativeUsageArtifact: {
+          artifactId: "artifact_verify_usage_1",
+          contentHash: "9".repeat(64),
+        },
+      },
+      configuration: executionConfiguration,
+      responseBytes: unresolvedReviewBytes,
+      reviewSchema,
+      diffArtifactBytes,
+      diffArtifactContentHash: input.diffArtifact.contentHash,
+      claimIds: ["claim_finding_blocker_1"],
+      nextCommandId: "command_generate_remediation_2",
+      remediationPromptArtifactId: "artifact_remediation_prompt",
+      remediationSchemaArtifactId: "artifact_remediation_schema",
+      availableBudget: verifyBudget,
+      exhaustion: null,
+      auditChainVerified: true,
+      databaseIntegrityVerified: true,
+      schemaCompatible: true,
+      mutationLeaseAvailable: true,
+    });
+    await commitTransition<NonterminalRunState>(authority, {
+      runId,
+      expectedStateVersion: 2,
+      transition: (previousState) =>
+        transition(previousState, firstVerdict, policy) as TransitionResult,
+    });
+    const secondCycle = authority.loadRun<NonterminalRunState>(runId);
+    if (secondCycle?.state !== "remediation") {
+      throw new Error("Expected a second remediation cycle");
+    }
+    expect(secondCycle.stateVersion).toBe(3);
+    expect(secondCycle.activeReview.cycle).toBe(2);
+    expect(secondCycle.activePlanning.commandId).toBe(
+      "command_generate_remediation_2",
+    );
+    expect(
+      authority
+        .listCommands(runId)
+        .filter(({ commandType }) => commandType === "generate_remediation")
+        .map(({ purposeId }) => purposeId),
+    ).toContain(`${runId}:plan:plan_v2:remediation:2`);
+
+    const plan3Bytes = planDocument("plan_v3", "alpha take three");
+    await register("artifact_plan_v3", "structured_plan", plan3Bytes);
+    await register("artifact_remediation_v3", "provider_response", plan3Bytes);
+    const secondProposal = buildRemediationGenerated({
+      state: secondCycle,
+      completion: {
+        commandId: "command_generate_remediation_2",
+        attemptId: "attempt_generate_remediation_2",
+        requestArtifactId: "artifact_remediation_request_2",
+        requestContentHash: "4".repeat(64),
+        outputArtifact: {
+          artifactId: "artifact_remediation_v3",
+          contentHash: createHash("sha256").update(plan3Bytes).digest("hex"),
+        },
+        rawResponseArtifact: {
+          artifactId: "artifact_remediation_raw_2",
+          contentHash: "6".repeat(64),
+        },
+        nativeUsageArtifact: {
+          artifactId: "artifact_remediation_usage_2",
+          contentHash: "7".repeat(64),
+        },
+      },
+      configuration: executionConfiguration,
+      priorPlanBytes: revisedPlanBytes,
+      revisedPlanBytes: plan3Bytes,
+      planArtifactId: "artifact_plan_v3",
+      diffArtifactId: "artifact_diff_v3",
+      sectionTransitionMapArtifactId: "artifact_section_map_v3",
+      sectionTransitionMapBytes: Buffer.from(canonicalJson([])),
+      provenanceArtifact: {
+        artifactId: "artifact_plan_provenance_v3",
+        contentHash: "e".repeat(64),
+        verified: true,
+      },
+      outputValid: true,
+      verifyCommandId: "command_verify_remediation_2",
+      availableBudget: verifyBudget,
+      auditChainVerified: true,
+      databaseIntegrityVerified: true,
+      schemaCompatible: true,
+      mutationLeaseAvailable: true,
+    });
+    await register(
+      "artifact_diff_v3",
+      "other",
+      Buffer.from(secondProposal.diffArtifactBytes),
+    );
+    await commitTransition<NonterminalRunState>(authority, {
+      runId,
+      expectedStateVersion: 3,
+      transition: (previousState) =>
+        transition(previousState, secondProposal.input, policy),
+    });
+    const verifyPending = authority.loadRun<NonterminalRunState>(runId);
+    if (verifyPending?.state !== "remediation") {
+      throw new Error("Expected a verify-pending remediation state");
+    }
+    expect(verifyPending.currentPlan.versionId).toBe("plan_v3");
+
+    const resolvedReviewBytes = reviewDocument("artifact_plan_v3", "resolved");
+    const finalVerdict = buildRemediationReviewAccepted({
+      state: verifyPending,
+      completion: {
+        commandId: "command_verify_remediation_2",
+        attemptId: "attempt_verify_remediation_2",
+        requestArtifactId: "artifact_verify_request_2",
+        requestContentHash: "2".repeat(64),
+        outputArtifact: {
+          artifactId: "artifact_verify_review_2",
+          contentHash: createHash("sha256")
+            .update(resolvedReviewBytes)
+            .digest("hex"),
+        },
+        rawResponseArtifact: {
+          artifactId: "artifact_verify_raw_2",
+          contentHash: "8".repeat(64),
+        },
+        nativeUsageArtifact: {
+          artifactId: "artifact_verify_usage_2",
+          contentHash: "9".repeat(64),
+        },
+      },
+      configuration: executionConfiguration,
+      responseBytes: resolvedReviewBytes,
+      reviewSchema,
+      diffArtifactBytes: Buffer.from(secondProposal.diffArtifactBytes),
+      diffArtifactContentHash: secondProposal.input.diffArtifact.contentHash,
+      claimIds: ["claim_finding_blocker_1"],
+      nextCommandId: "command_closure_review_1",
+      remediationPromptArtifactId: "artifact_remediation_prompt",
+      remediationSchemaArtifactId: "artifact_remediation_schema",
+      availableBudget: verifyBudget,
+      exhaustion: null,
+      auditChainVerified: true,
+      databaseIntegrityVerified: true,
+      schemaCompatible: true,
+      mutationLeaseAvailable: true,
+    });
+    await commitTransition<NonterminalRunState>(authority, {
+      runId,
+      expectedStateVersion: 4,
+      transition: (previousState) =>
+        transition(previousState, finalVerdict, policy) as TransitionResult,
+    });
+    const closure = authority.loadRun<NonterminalRunState>(runId);
+    if (closure?.state !== "closure") {
+      throw new Error("Expected a closure state");
+    }
+    expect(closure.stateVersion).toBe(5);
+    expect(closure.activeFindings).toEqual([]);
+    expect(
+      authority
+        .listCommands(runId)
+        .filter(({ commandType }) => commandType === "closure_review")
+        .map(({ purposeId }) => purposeId),
+    ).toEqual([`${runId}:plan:plan_v3:closure:1`]);
+    const findingRow = new DatabaseSync(path, { readOnly: true });
+    expect(
+      findingRow
+        .prepare("SELECT status FROM findings WHERE finding_id = ?")
+        .get("finding_blocker_1"),
+    ).toEqual({ status: "resolved" });
+    findingRow.close();
+    expect(
+      authority
+        .listAuditEntries()
+        .map(({ factType }) => factType)
+        .slice(-7),
+    ).toEqual([
+      "remediation_evaluated",
+      "command_planned",
+      "remediation_proposed",
+      "command_planned",
+      "remediation_evaluated",
+      "finding_transitioned",
+      "command_planned",
+    ]);
     await expect(authority.verifyIntegrity()).resolves.toBeUndefined();
     authority.close();
   });

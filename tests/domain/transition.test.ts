@@ -3713,7 +3713,7 @@ describe("transition", () => {
     ]);
     expect(command.payload.planArtifactId).toBe("artifact_plan_02JTEST");
     expect(result.auditFacts.map(({ type }) => type)).toEqual([
-      "review_accepted",
+      "remediation_evaluated",
       "command_planned",
     ]);
   });
@@ -3747,7 +3747,7 @@ describe("transition", () => {
       "command_after_verify_01JTEST",
     );
     expect(result.auditFacts.map(({ type }) => type)).toEqual([
-      "review_accepted",
+      "remediation_evaluated",
       "finding_transitioned",
       "command_planned",
     ]);
@@ -3816,7 +3816,7 @@ describe("transition", () => {
       "finding_architecture_01JTEST",
     ]);
     expect(result.auditFacts.map(({ type }) => type)).toEqual([
-      "review_accepted",
+      "remediation_evaluated",
       "command_planned",
     ]);
   });
@@ -5545,6 +5545,115 @@ describe("transition", () => {
         },
       }),
     ).rejects.toThrow("does not match its physical attempt");
+  });
+
+  it("couples accepted verification evidence to its domain transition", async () => {
+    const input = remediationReviewAcceptedInput("resolved");
+    const state = verifyPendingState();
+    let persistedProviderCompletion = false;
+    const authority: AuthorityPort = {
+      transaction: (work) =>
+        Promise.resolve(
+          work({
+            loadRun: <TState extends object>() => state as unknown as TState,
+            loadAcceptedCommandResult: () => null,
+            loadExecutionCapacity: () => ({
+              availableBudget: input.availableBudget,
+              mutationLeaseAvailable: true,
+            }),
+            settleProviderCompletion: () => ({ status: "eligible" as const }),
+            settleProviderFailure: () => ({ status: "eligible" as const }),
+            persistProviderFailure: () => {
+              throw new Error("unexpected provider failure");
+            },
+            persist: vi.fn(),
+            persistProviderCompletion: <TState extends object>(
+              completion: AcceptedProviderCompletion,
+            ) => {
+              persistedProviderCompletion = true;
+              return completion.toPersistenceData()
+                .result as unknown as PersistableTransition<TState>;
+            },
+          }),
+        ),
+    };
+    const artifact = (
+      artifactId: string,
+      contentHash: string,
+      kind: "provider_response" | "native_usage",
+    ) => ({
+      schemaVersion: 1 as const,
+      artifactId,
+      kind,
+      contentHash,
+      byteLength: 10,
+      mediaType: "application/json",
+      createdBy: "pid:reviewer",
+      provenance: {
+        method: "provider_generated" as const,
+        sourceArtifactIds: [input.acceptedAttempt.requestArtifactId],
+        commandId: input.originatingCommandId,
+        attemptId: input.acceptedAttempt.attemptId,
+      },
+    });
+
+    const result = await completeProviderAttempt(authority, {
+      runId: input.runId,
+      expectedStateVersion: input.expectedStateVersion,
+      input,
+      policy: pinnedPolicy,
+      completion: {
+        runId: input.runId,
+        commandId: input.originatingCommandId,
+        attemptId: input.acceptedAttempt.attemptId,
+        ownerProcess: "pid:reviewer",
+        correlationId: "correlation_verify_01JTEST",
+        requestArtifactId: input.acceptedAttempt.requestArtifactId,
+        requestContentHash: input.acceptedAttempt.requestContentHash,
+        outputArtifact: artifact(
+          input.reviewArtifact.artifactId,
+          input.reviewArtifact.contentHash,
+          "provider_response",
+        ),
+        rawResponseArtifact: artifact(
+          input.acceptedAttempt.rawResponseArtifactId,
+          input.acceptedAttempt.rawResponseContentHash,
+          "provider_response",
+        ),
+        nativeUsageArtifact: artifact(
+          input.acceptedAttempt.nativeUsageArtifactId,
+          input.acceptedAttempt.nativeUsageContentHash,
+          "native_usage",
+        ),
+        actualUsage: {
+          calls: 1,
+          inputTokens: 10,
+          outputTokens: 20,
+          costUsdMicros: 100,
+        },
+        providerEvidence: {
+          requestedModel: pinnedPolicy.reviewerAssignment.modelId,
+          returnedModel: pinnedPolicy.reviewerAssignment.modelId,
+          endpoint: "https://provider.invalid",
+          behaviorHeaders: {},
+          providerResponseId: "response_verify_1",
+          correlationId: "correlation_verify_01JTEST",
+          preflight: {
+            canonicalModelId: pinnedPolicy.reviewerAssignment.modelId,
+            structuredOutput: true as const,
+            contextWindowTokens: 100_000,
+            maxOutputTokens: 10_000,
+            inputTokens: 1_000,
+          },
+        },
+      },
+    });
+
+    if (!("nextState" in result)) {
+      throw new Error("Expected the provider result to advance the run");
+    }
+    expect(result.nextState.state).toBe("closure");
+    expect(persistedProviderCompletion).toBe(true);
   });
 
   it("does not run a domain transition for an evidence-only provider result", async () => {
