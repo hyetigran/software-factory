@@ -30,8 +30,17 @@ type ProviderResult =
   | { kind: "completed"; structured: unknown; evidence: ProviderEvidence }
   | { kind: "refused"; evidence: ProviderEvidence }
   | { kind: "truncated"; evidence: ProviderEvidence }
-  | { kind: "schema_invalid"; raw: unknown; errors: unknown[]; evidence: ProviderEvidence }
-  | { kind: "transport_failure"; retryable: boolean; evidence: ProviderEvidence }
+  | {
+      kind: "schema_invalid";
+      raw: unknown;
+      errors: unknown[];
+      evidence: ProviderEvidence;
+    }
+  | {
+      kind: "transport_failure";
+      retryable: boolean;
+      evidence: ProviderEvidence;
+    }
   | { kind: "unknown_outcome"; evidence: ProviderEvidence };
 
 interface ProviderEvidence {
@@ -55,7 +64,7 @@ Authorization headers and credential values are removed before request recording
 ## Error mapping
 
 | Condition                                                       | Common result                         |
-|---|---|
+| --------------------------------------------------------------- | ------------------------------------- |
 | Valid complete structured output                                | `completed`                           |
 | Provider safety/policy refusal                                  | `refused`                             |
 | Maximum output or context limit reached                         | `truncated`                           |

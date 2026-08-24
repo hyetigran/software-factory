@@ -1587,6 +1587,198 @@ describe("SQLite authority", () => {
     authority.close();
   });
 
+  it("projects the waiver lifecycle into the waivers read model", async () => {
+    const path = await databasePath();
+    const authority = await openAuthority(path);
+    const runId = "run_waivers";
+    const actor = {
+      kind: "human" as const,
+      displayName: "Tigran",
+      osAccount: "tig",
+    };
+    const base = {
+      runId,
+      stateVersion: 1,
+      state: "remediation",
+      policyLocked: true,
+      blockedReason: null,
+      sourceArtifactId: "artifact_source",
+      sourceContentHash: createHash("sha256").update("source").digest("hex"),
+      configurationArtifactId: "artifact_configuration",
+      configurationContentHash: executionConfigurationHash,
+      policyHash: "a".repeat(64),
+      activeFindings: [
+        {
+          findingId: "finding_waived_1",
+          status: "open",
+          latestObservationId: "observation_waived_1",
+          severity: "low",
+          ruleId: "rule_waived",
+          title: "Waivable finding",
+          evidence: [],
+        },
+      ],
+    };
+    const seedFact = {
+      type: "test_seeded_state",
+      actor: { kind: "system" as const, component: "test", version: "1" },
+      reason: "seed a remediation run for waiver projection",
+      evidence: [],
+      payload: { runId },
+    };
+    await commitTransition<TestState>(authority, {
+      runId,
+      expectedStateVersion: 0,
+      transition: () => ({
+        nextState: base as unknown as TestState,
+        commands: [],
+        auditFacts: [seedFact],
+      }),
+    });
+    const grantedEvidence = [
+      {
+        kind: "artifact" as const,
+        artifactId: "artifact_plan_v1",
+        contentHash: "e".repeat(64),
+      },
+    ];
+    const waiver = {
+      waiverId: "waiver_1",
+      findingId: "finding_waived_1",
+      status: "active" as const,
+      reason: "Accepted low risk",
+      actor,
+      evidence: grantedEvidence,
+    };
+    await commitTransition<TestState>(authority, {
+      runId,
+      expectedStateVersion: 1,
+      transition: () => ({
+        nextState: {
+          ...base,
+          stateVersion: 2,
+          waivers: [waiver],
+        } as unknown as TestState,
+        commands: [],
+        auditFacts: [
+          {
+            type: "waiver_granted",
+            actor,
+            reason: waiver.reason,
+            evidence: grantedEvidence,
+            payload: {
+              waiverId: waiver.waiverId,
+              findingId: waiver.findingId,
+              severity: "low",
+            },
+          },
+        ],
+      }),
+    });
+    const raw = new DatabaseSync(path, { readOnly: true });
+    const row = () =>
+      raw
+        .prepare(
+          `SELECT status, reason, evidence_hash, granted_by_actor_id,
+                  reaffirmed_at
+             FROM waivers WHERE waiver_id = 'waiver_1'`,
+        )
+        .get() as {
+        status: string;
+        reason: string;
+        evidence_hash: string;
+        granted_by_actor_id: string;
+        reaffirmed_at: string | null;
+      };
+    expect(row()).toEqual({
+      status: "active",
+      reason: "Accepted low risk",
+      evidence_hash: createHash("sha256")
+        .update(canonicalJson(grantedEvidence))
+        .digest("hex"),
+      granted_by_actor_id: "Tigran:tig",
+      reaffirmed_at: null,
+    });
+
+    await commitTransition<TestState>(authority, {
+      runId,
+      expectedStateVersion: 2,
+      transition: () => ({
+        nextState: {
+          ...base,
+          stateVersion: 3,
+          waivers: [{ ...waiver, status: "stale" as const }],
+        } as unknown as TestState,
+        commands: [],
+        auditFacts: [
+          {
+            type: "waiver_invalidated",
+            actor: { kind: "system", component: "test", version: "1" },
+            reason: "Evidence changed",
+            evidence: [],
+            payload: {
+              waiverId: waiver.waiverId,
+              findingId: waiver.findingId,
+              changedArtifactId: "artifact_plan_v1",
+              previousContentHash: "e".repeat(64),
+              currentContentHash: "f".repeat(64),
+            },
+          },
+        ],
+      }),
+    });
+    expect(row().status).toBe("stale");
+    expect(row().reaffirmed_at).toBeNull();
+
+    const reaffirmedEvidence = [
+      {
+        kind: "artifact" as const,
+        artifactId: "artifact_plan_v2",
+        contentHash: "f".repeat(64),
+      },
+    ];
+    await commitTransition<TestState>(authority, {
+      runId,
+      expectedStateVersion: 3,
+      transition: () => ({
+        nextState: {
+          ...base,
+          stateVersion: 4,
+          waivers: [
+            {
+              ...waiver,
+              status: "active" as const,
+              evidence: reaffirmedEvidence,
+            },
+          ],
+        } as unknown as TestState,
+        commands: [],
+        auditFacts: [
+          {
+            type: "waiver_reaffirmed",
+            actor,
+            reason: "Reaffirmed",
+            evidence: reaffirmedEvidence,
+            payload: {
+              waiverId: waiver.waiverId,
+              findingId: waiver.findingId,
+            },
+          },
+        ],
+      }),
+    });
+    expect(row().status).toBe("active");
+    expect(row().evidence_hash).toBe(
+      createHash("sha256")
+        .update(canonicalJson(reaffirmedEvidence))
+        .digest("hex"),
+    );
+    expect(row().reaffirmed_at).not.toBeNull();
+    raw.close();
+    await expect(authority.verifyIntegrity()).resolves.toBeUndefined();
+    authority.close();
+  });
+
   it("atomically persists state, commands, and a verifiable audit chain", async () => {
     const path = await databasePath();
     const authority = await openAuthority(path, {

@@ -24,8 +24,11 @@ import {
   type PlanningRequested,
   type PinnedModelUnavailable,
   type ProviderOutcomeFailed,
+  type RelevantEvidenceChanged,
   type RemediationGenerated,
   type ReviewAccepted,
+  waivedFindingIds,
+  type WaiverGranted,
   type RunStarted,
   type SourceExclusionApproved,
   type ExternalEditDetected,
@@ -746,6 +749,64 @@ function remediationGeneratedInput(): RemediationGenerated {
       kind: "planner",
       provider: "openai",
       modelId: "gpt-5.6-2026-08-01",
+    },
+  };
+}
+
+function waiverGrantedInput(): WaiverGranted {
+  return {
+    type: "WaiverGranted",
+    runId: "run_01JTEST0000000000000000000",
+    expectedStateVersion: 9,
+    waiverId: "waiver_architecture_01JTEST",
+    findingId: "finding_architecture_01JTEST",
+    reason: "Accepted architecture risk for this release",
+    displayedEvidence: [
+      {
+        artifactId: "artifact_plan_01JTEST",
+        contentHash: planContentHash,
+        verified: true,
+      },
+    ],
+    auditChainVerified: true,
+    databaseIntegrityVerified: true,
+    schemaCompatible: true,
+    mutationLeaseAvailable: true,
+    actor: { kind: "human", displayName: "Tigran", osAccount: "tig" },
+  };
+}
+
+function waivedRemediationState(): AdvancedRunState & {
+  state: "remediation";
+} {
+  const result = transition(
+    remediationState(),
+    waiverGrantedInput(),
+    pinnedPolicy,
+  ).nextState;
+  if (result.state !== "remediation") {
+    throw new Error("Expected waived remediation state fixture");
+  }
+  return result;
+}
+
+function relevantEvidenceChangedInput(): RelevantEvidenceChanged {
+  return {
+    type: "RelevantEvidenceChanged",
+    runId: "run_01JTEST0000000000000000000",
+    expectedStateVersion: 10,
+    changedArtifactId: "artifact_plan_01JTEST",
+    previousContentHash: planContentHash,
+    currentContentHash: "9".repeat(64),
+    changeVerified: true,
+    auditChainVerified: true,
+    databaseIntegrityVerified: true,
+    schemaCompatible: true,
+    mutationLeaseAvailable: true,
+    actor: {
+      kind: "system",
+      component: "projection-monitor",
+      version: "0.0.0",
     },
   };
 }
@@ -3492,6 +3553,352 @@ describe("transition", () => {
         pinnedPolicy,
       ),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("grants a waiver pinned to the exact evidence the human saw", () => {
+    const result = transition(
+      remediationState(),
+      waiverGrantedInput(),
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.stateVersion).toBe(10);
+    expect(result.nextState.state).toBe("remediation");
+    expect(result.nextState.waivers).toEqual([
+      {
+        waiverId: "waiver_architecture_01JTEST",
+        findingId: "finding_architecture_01JTEST",
+        status: "active",
+        reason: "Accepted architecture risk for this release",
+        actor: { kind: "human", displayName: "Tigran", osAccount: "tig" },
+        evidence: [
+          {
+            kind: "artifact",
+            artifactId: "artifact_plan_01JTEST",
+            contentHash: planContentHash,
+          },
+        ],
+      },
+    ]);
+    expect(result.commands).toEqual([]);
+    expect(result.auditFacts).toEqual([
+      {
+        type: "waiver_granted",
+        actor: { kind: "human", displayName: "Tigran", osAccount: "tig" },
+        reason: "Accepted architecture risk for this release",
+        evidence: [
+          {
+            kind: "artifact",
+            artifactId: "artifact_plan_01JTEST",
+            contentHash: planContentHash,
+          },
+        ],
+        payload: {
+          waiverId: "waiver_architecture_01JTEST",
+          findingId: "finding_architecture_01JTEST",
+          severity: "high",
+        },
+      },
+    ]);
+    expect(waivedFindingIds(result.nextState.waivers)).toEqual(
+      new Set(["finding_architecture_01JTEST"]),
+    );
+  });
+
+  it.each([
+    ["a stale state version", { expectedStateVersion: 8 }],
+    ["an unknown finding", { findingId: "finding_unknown_01JTEST" }],
+    ["an empty reason", { reason: "  " }],
+    ["an empty waiver id", { waiverId: " " }],
+    [
+      "evidence that omits what the finding cites",
+      {
+        displayedEvidence: [
+          {
+            artifactId: "artifact_rendered_plan_01JTEST",
+            contentHash: "2".repeat(64),
+            verified: true,
+          },
+        ],
+      },
+    ],
+    [
+      "unverified displayed evidence",
+      {
+        displayedEvidence: [
+          {
+            artifactId: "artifact_plan_01JTEST",
+            contentHash: planContentHash,
+            verified: false,
+          },
+        ],
+      },
+    ],
+    ["no displayed evidence", { displayedEvidence: [] }],
+    [
+      "a non-human actor identity",
+      { actor: { kind: "human" as const, displayName: "", osAccount: "tig" } },
+    ],
+    ["a broken audit chain", { auditChainVerified: false }],
+    ["a conflicting mutation lease", { mutationLeaseAvailable: false }],
+  ])("rejects WaiverGranted with %s", (_name, override) => {
+    expect(() =>
+      transition(
+        remediationState(),
+        { ...waiverGrantedInput(), ...override },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("rejects a duplicate waiver identity", () => {
+    expect(() =>
+      transition(
+        waivedRemediationState(),
+        { ...waiverGrantedInput(), expectedStateVersion: 10 },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("invalidates waivers whose pinned evidence changed, preserving the record", () => {
+    const result = transition(
+      waivedRemediationState(),
+      relevantEvidenceChangedInput(),
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.stateVersion).toBe(11);
+    expect(result.nextState.waivers).toEqual([
+      expect.objectContaining({
+        waiverId: "waiver_architecture_01JTEST",
+        status: "stale",
+        reason: "Accepted architecture risk for this release",
+      }),
+    ]);
+    expect(result.commands).toEqual([]);
+    expect(result.auditFacts).toEqual([
+      expect.objectContaining({
+        type: "waiver_invalidated",
+        payload: {
+          waiverId: "waiver_architecture_01JTEST",
+          findingId: "finding_architecture_01JTEST",
+          changedArtifactId: "artifact_plan_01JTEST",
+          previousContentHash: planContentHash,
+          currentContentHash: "9".repeat(64),
+        },
+      }),
+    ]);
+    expect(waivedFindingIds(result.nextState.waivers)).toEqual(new Set());
+  });
+
+  it.each([
+    [
+      "no active waiver referencing the change",
+      { changedArtifactId: "artifact_unrelated_01JTEST" },
+    ],
+    ["an unverified change", { changeVerified: false }],
+    ["an unchanged content hash", { currentContentHash: planContentHash }],
+    [
+      "a missing system actor identity",
+      {
+        actor: {
+          kind: "system" as const,
+          component: "",
+          version: "0.0.0",
+        },
+      },
+    ],
+  ])("rejects RelevantEvidenceChanged with %s", (_name, override) => {
+    expect(() =>
+      transition(
+        waivedRemediationState(),
+        {
+          ...relevantEvidenceChangedInput(),
+          ...override,
+        },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("reaffirms a stale waiver against currently displayed evidence", () => {
+    const stale = transition(
+      waivedRemediationState(),
+      relevantEvidenceChangedInput(),
+      pinnedPolicy,
+    ).nextState;
+
+    const result = transition(
+      stale,
+      {
+        type: "WaiverReaffirmed",
+        runId: "run_01JTEST0000000000000000000",
+        expectedStateVersion: 11,
+        waiverId: "waiver_architecture_01JTEST",
+        reason: "Risk still acceptable against the changed evidence",
+        displayedEvidence: [
+          {
+            artifactId: "artifact_plan_01JTEST",
+            contentHash: "9".repeat(64),
+            verified: true,
+          },
+        ],
+        auditChainVerified: true,
+        databaseIntegrityVerified: true,
+        schemaCompatible: true,
+        mutationLeaseAvailable: true,
+        actor: { kind: "human", displayName: "Tigran", osAccount: "tig" },
+      },
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.stateVersion).toBe(12);
+    expect(result.nextState.waivers).toEqual([
+      expect.objectContaining({
+        waiverId: "waiver_architecture_01JTEST",
+        status: "active",
+      }),
+    ]);
+    expect(result.auditFacts).toEqual([
+      expect.objectContaining({
+        type: "waiver_reaffirmed",
+        actor: { kind: "human", displayName: "Tigran", osAccount: "tig" },
+        reason: "Risk still acceptable against the changed evidence",
+        payload: {
+          waiverId: "waiver_architecture_01JTEST",
+          findingId: "finding_architecture_01JTEST",
+        },
+      }),
+    ]);
+    expect(waivedFindingIds(result.nextState.waivers)).toEqual(
+      new Set(["finding_architecture_01JTEST"]),
+    );
+  });
+
+  it("rejects reaffirming an unknown waiver or with incomplete evidence", () => {
+    const reaffirm = {
+      type: "WaiverReaffirmed" as const,
+      runId: "run_01JTEST0000000000000000000",
+      expectedStateVersion: 10,
+      waiverId: "waiver_architecture_01JTEST",
+      reason: "Risk still acceptable",
+      displayedEvidence: [
+        {
+          artifactId: "artifact_plan_01JTEST",
+          contentHash: planContentHash,
+          verified: true,
+        },
+      ],
+      auditChainVerified: true,
+      databaseIntegrityVerified: true,
+      schemaCompatible: true,
+      mutationLeaseAvailable: true,
+      actor: {
+        kind: "human" as const,
+        displayName: "Tigran",
+        osAccount: "tig",
+      },
+    };
+    for (const override of [
+      { waiverId: "waiver_unknown_01JTEST" },
+      { reason: "  " },
+      { displayedEvidence: [] },
+      {
+        displayedEvidence: [
+          {
+            artifactId: "artifact_rendered_plan_01JTEST",
+            contentHash: "2".repeat(64),
+            verified: true,
+          },
+        ],
+      },
+      {
+        actor: {
+          kind: "human" as const,
+          displayName: "Tigran",
+          osAccount: "",
+        },
+      },
+    ]) {
+      expect(() =>
+        transition(
+          waivedRemediationState(),
+          { ...reaffirm, ...override },
+          pinnedPolicy,
+        ),
+      ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+    }
+  });
+
+  it("rejects reaffirming against the exact evidence the invalidation flagged", () => {
+    const stale = transition(
+      waivedRemediationState(),
+      relevantEvidenceChangedInput(),
+      pinnedPolicy,
+    ).nextState;
+
+    expect(() =>
+      transition(
+        stale,
+        {
+          type: "WaiverReaffirmed",
+          runId: "run_01JTEST0000000000000000000",
+          expectedStateVersion: 11,
+          waiverId: "waiver_architecture_01JTEST",
+          reason: "Risk still acceptable",
+          displayedEvidence: [
+            {
+              artifactId: "artifact_plan_01JTEST",
+              contentHash: planContentHash,
+              verified: true,
+            },
+          ],
+          auditChainVerified: true,
+          databaseIntegrityVerified: true,
+          schemaCompatible: true,
+          mutationLeaseAvailable: true,
+          actor: { kind: "human", displayName: "Tigran", osAccount: "tig" },
+        },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("rejects a waiver granted by a non-human actor", () => {
+    expect(() =>
+      transition(
+        remediationState(),
+        {
+          ...waiverGrantedInput(),
+          actor: {
+            kind: "planner",
+            provider: "openai",
+            modelId: "gpt-5.6-2026-08-01",
+          } as unknown as WaiverGranted["actor"],
+        },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("waives a critical finding like any other severity", () => {
+    const state = remediationState();
+    const critical = {
+      ...state,
+      activeFindings: state.activeFindings.map((finding) => ({
+        ...finding,
+        severity: "critical" as const,
+      })),
+    };
+
+    const result = transition(critical, waiverGrantedInput(), pinnedPolicy);
+
+    const fact = result.auditFacts[0];
+    if (fact?.type !== "waiver_granted") {
+      throw new Error("Expected a waiver_granted fact");
+    }
+    expect(fact.payload.severity).toBe("critical");
   });
 
   it("exports a non-final provisional baseline result", () => {

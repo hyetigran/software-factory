@@ -75,7 +75,30 @@ type RunStateBase = {
   };
   sourceExclusions?: SourceExclusion[];
   reviewIndependenceOverride?: ReviewIndependenceOverride;
+  waivers?: Waiver[];
 };
+
+export type Waiver = {
+  waiverId: string;
+  findingId: string;
+  status: "active" | "stale";
+  reason: string;
+  actor: HumanActor;
+  evidence: ArtifactEvidenceReference[];
+  staleEvidence?: Array<{
+    artifactId: string;
+    previousContentHash: string;
+    currentContentHash: string;
+  }>;
+};
+
+export function waivedFindingIds(waivers: Waiver[] | undefined): Set<string> {
+  return new Set(
+    (waivers ?? [])
+      .filter(({ status }) => status === "active")
+      .map(({ findingId }) => findingId),
+  );
+}
 
 export type DraftRunState = RunStateBase & {
   state: "draft";
@@ -690,6 +713,50 @@ export type RemediationGenerated = {
   schemaCompatible: boolean;
   mutationLeaseAvailable: boolean;
   actor: ModelActor & { kind: "planner" };
+};
+
+export type WaiverGranted = {
+  type: "WaiverGranted";
+  runId: string;
+  expectedStateVersion: number;
+  waiverId: string;
+  findingId: string;
+  reason: string;
+  displayedEvidence: VerifiedArtifactInput[];
+  auditChainVerified: boolean;
+  databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
+  actor: HumanActor;
+};
+
+export type WaiverReaffirmed = {
+  type: "WaiverReaffirmed";
+  runId: string;
+  expectedStateVersion: number;
+  waiverId: string;
+  reason: string;
+  displayedEvidence: VerifiedArtifactInput[];
+  auditChainVerified: boolean;
+  databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
+  actor: HumanActor;
+};
+
+export type RelevantEvidenceChanged = {
+  type: "RelevantEvidenceChanged";
+  runId: string;
+  expectedStateVersion: number;
+  changedArtifactId: string;
+  previousContentHash: string;
+  currentContentHash: string;
+  changeVerified: boolean;
+  auditChainVerified: boolean;
+  databaseIntegrityVerified: boolean;
+  schemaCompatible: boolean;
+  mutationLeaseAvailable: boolean;
+  actor: SystemActor;
 };
 
 export type ProviderOutcomeFailed = {
@@ -1316,6 +1383,43 @@ export type RunHaltedFact = {
   };
 };
 
+export type WaiverGrantedFact = {
+  type: "waiver_granted";
+  actor: HumanActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    waiverId: string;
+    findingId: string;
+    severity: FindingSeverity;
+  };
+};
+
+export type WaiverReaffirmedFact = {
+  type: "waiver_reaffirmed";
+  actor: HumanActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    waiverId: string;
+    findingId: string;
+  };
+};
+
+export type WaiverInvalidatedFact = {
+  type: "waiver_invalidated";
+  actor: SystemActor;
+  reason: string;
+  evidence: ArtifactEvidenceReference[];
+  payload: {
+    waiverId: string;
+    findingId: string;
+    changedArtifactId: string;
+    previousContentHash: string;
+    currentContentHash: string;
+  };
+};
+
 export type IndependenceOverrideGrantedFact = {
   type: "independence_override_granted";
   actor: HumanActor;
@@ -1388,6 +1492,9 @@ export type TransitionResult = {
     | ReviewAcceptedFact
     | RemediationProposedFact
     | FindingCreatedFact
+    | WaiverGrantedFact
+    | WaiverReaffirmedFact
+    | WaiverInvalidatedFact
     | IndependenceOverrideGrantedFact
     | RerunAuthorizedFact
     | ExternalEditFact
@@ -1611,6 +1718,9 @@ type NonterminalDomainInput =
   | PlanSubmitted
   | ReviewAccepted
   | RemediationGenerated
+  | WaiverGranted
+  | WaiverReaffirmed
+  | RelevantEvidenceChanged
   | IndependenceOverrideGranted
   | RerunAuthorized
   | ExternalEditDetected
@@ -1839,6 +1949,12 @@ export function transition(
       return acceptBaselineReview(previousState, input, policy);
     case "RemediationGenerated":
       return proposeRemediation(previousState, input, policy);
+    case "WaiverGranted":
+      return grantWaiver(previousState, input);
+    case "WaiverReaffirmed":
+      return reaffirmWaiver(previousState, input);
+    case "RelevantEvidenceChanged":
+      return invalidateWaivers(previousState, input);
     case "ProviderOutcomeFailed":
       return haltAfterProviderFailure(previousState, input, policy);
     case "PinnedModelUnavailable":
@@ -4164,6 +4280,297 @@ function proposeRemediation(
         [remediationEvidence, revisedPlanEvidence],
       ),
     ],
+  };
+}
+
+function humanActorIsValid(actor: HumanActor): boolean {
+  return (
+    actor.kind === "human" &&
+    actor.displayName.trim().length > 0 &&
+    actor.osAccount.trim().length > 0
+  );
+}
+
+function activeFindingById(
+  state: NonterminalRunState,
+  findingId: string,
+): ActiveFinding | undefined {
+  return "activeFindings" in state
+    ? state.activeFindings.find((finding) => finding.findingId === findingId)
+    : undefined;
+}
+
+function displayedArtifactEvidence(
+  displayedEvidence: VerifiedArtifactInput[],
+): ArtifactEvidenceReference[] {
+  return displayedEvidence.map(({ artifactId, contentHash }) =>
+    artifactEvidence(artifactId, contentHash),
+  );
+}
+
+function displayedEvidenceCoversWaiverContext(
+  state: NonterminalRunState,
+  finding: ActiveFinding,
+  displayedEvidence: VerifiedArtifactInput[],
+  staleEvidence: NonNullable<Waiver["staleEvidence"]> = [],
+): boolean {
+  const pairKey = (artifactId: string, contentHash: string): string =>
+    `${artifactId}:${contentHash}`;
+  const supersededByArtifact = new Map(
+    staleEvidence.map((change) => [change.artifactId, change]),
+  );
+  const displayed = new Set(
+    displayedEvidence.map(({ artifactId, contentHash }) =>
+      pairKey(artifactId, contentHash),
+    ),
+  );
+  const required = [
+    ...finding.evidence,
+    ...("currentPlan" in state
+      ? [
+          {
+            artifactId: state.currentPlan.artifactId,
+            contentHash: state.currentPlan.contentHash,
+          },
+        ]
+      : []),
+  ].map(({ artifactId, contentHash }) => {
+    const superseded = supersededByArtifact.get(artifactId);
+    return superseded === undefined
+      ? pairKey(artifactId, contentHash)
+      : pairKey(artifactId, superseded.currentContentHash);
+  });
+  const outdated = staleEvidence.map(({ artifactId, previousContentHash }) =>
+    pairKey(artifactId, previousContentHash),
+  );
+  const current = staleEvidence.map(({ artifactId, currentContentHash }) =>
+    pairKey(artifactId, currentContentHash),
+  );
+  return (
+    displayedEvidence.length > 0 &&
+    displayedEvidence.every(verifiedArtifactInputIsValid) &&
+    required.every((key) => displayed.has(key)) &&
+    current.every((key) => displayed.has(key)) &&
+    outdated.every((key) => !displayed.has(key))
+  );
+}
+
+function waiverIntegrityHolds(
+  input: WaiverGranted | WaiverReaffirmed | RelevantEvidenceChanged,
+): boolean {
+  return (
+    input.auditChainVerified &&
+    input.databaseIntegrityVerified &&
+    input.schemaCompatible &&
+    input.mutationLeaseAvailable
+  );
+}
+
+function grantWaiver(
+  previousState: NonterminalRunState | null,
+  input: WaiverGranted,
+): TransitionResult {
+  if (previousState === null || previousState.runId !== input.runId) {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      "WaiverGranted requires the matching nonterminal run",
+    );
+  }
+  const finding = activeFindingById(previousState, input.findingId);
+  const waivers = previousState.waivers ?? [];
+  if (
+    input.expectedStateVersion !== previousState.stateVersion ||
+    finding === undefined ||
+    finding.status !== "open" ||
+    input.waiverId.trim().length === 0 ||
+    waivers.some(({ waiverId }) => waiverId === input.waiverId) ||
+    input.reason.trim().length === 0 ||
+    !humanActorIsValid(input.actor) ||
+    !displayedEvidenceCoversWaiverContext(
+      previousState,
+      finding,
+      input.displayedEvidence,
+    ) ||
+    !waiverIntegrityHolds(input)
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "WaiverGranted requires a human decision on an active finding with its exact evidence displayed",
+    );
+  }
+  const evidence = displayedArtifactEvidence(input.displayedEvidence);
+  return {
+    nextState: {
+      ...previousState,
+      stateVersion: previousState.stateVersion + 1,
+      waivers: [
+        ...waivers,
+        {
+          waiverId: input.waiverId,
+          findingId: input.findingId,
+          status: "active",
+          reason: input.reason,
+          actor: input.actor,
+          evidence,
+        },
+      ],
+    },
+    commands: [],
+    auditFacts: [
+      {
+        type: "waiver_granted",
+        actor: input.actor,
+        reason: input.reason,
+        evidence,
+        payload: {
+          waiverId: input.waiverId,
+          findingId: input.findingId,
+          severity: finding.severity,
+        },
+      },
+    ],
+  };
+}
+
+function reaffirmWaiver(
+  previousState: NonterminalRunState | null,
+  input: WaiverReaffirmed,
+): TransitionResult {
+  if (previousState === null || previousState.runId !== input.runId) {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      "WaiverReaffirmed requires the matching nonterminal run",
+    );
+  }
+  const waivers = previousState.waivers ?? [];
+  const waiver = waivers.find(({ waiverId }) => waiverId === input.waiverId);
+  const finding =
+    waiver === undefined
+      ? undefined
+      : activeFindingById(previousState, waiver.findingId);
+  if (
+    input.expectedStateVersion !== previousState.stateVersion ||
+    waiver === undefined ||
+    finding === undefined ||
+    input.reason.trim().length === 0 ||
+    !humanActorIsValid(input.actor) ||
+    !displayedEvidenceCoversWaiverContext(
+      previousState,
+      finding,
+      input.displayedEvidence,
+      waiver.staleEvidence,
+    ) ||
+    !waiverIntegrityHolds(input)
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "WaiverReaffirmed requires a human decision on an existing waiver with current evidence displayed",
+    );
+  }
+  const evidence = displayedArtifactEvidence(input.displayedEvidence);
+  return {
+    nextState: {
+      ...previousState,
+      stateVersion: previousState.stateVersion + 1,
+      waivers: waivers.map((existing) => {
+        if (existing.waiverId !== input.waiverId) return existing;
+        const { staleEvidence: _superseded, ...reaffirmed } = existing;
+        void _superseded;
+        return { ...reaffirmed, status: "active" as const, evidence };
+      }),
+    },
+    commands: [],
+    auditFacts: [
+      {
+        type: "waiver_reaffirmed",
+        actor: input.actor,
+        reason: input.reason,
+        evidence,
+        payload: {
+          waiverId: input.waiverId,
+          findingId: waiver.findingId,
+        },
+      },
+    ],
+  };
+}
+
+function invalidateWaivers(
+  previousState: NonterminalRunState | null,
+  input: RelevantEvidenceChanged,
+): TransitionResult {
+  if (previousState === null || previousState.runId !== input.runId) {
+    throw new DomainTransitionError(
+      "INVALID_TRANSITION",
+      "RelevantEvidenceChanged requires the matching nonterminal run",
+    );
+  }
+  const waivers = previousState.waivers ?? [];
+  const affected = waivers.filter(
+    (waiver) =>
+      waiver.status === "active" &&
+      waiver.evidence.some(
+        ({ artifactId, contentHash }) =>
+          artifactId === input.changedArtifactId &&
+          contentHash === input.previousContentHash,
+      ),
+  );
+  if (
+    input.expectedStateVersion !== previousState.stateVersion ||
+    affected.length === 0 ||
+    input.changedArtifactId.trim().length === 0 ||
+    !/^[a-f0-9]{64}$/u.test(input.previousContentHash) ||
+    !/^[a-f0-9]{64}$/u.test(input.currentContentHash) ||
+    input.previousContentHash === input.currentContentHash ||
+    !input.changeVerified ||
+    input.actor.kind !== "system" ||
+    input.actor.component.trim().length === 0 ||
+    input.actor.version.trim().length === 0 ||
+    !waiverIntegrityHolds(input)
+  ) {
+    throw new DomainTransitionError(
+      "PRECONDITION_FAILED",
+      "RelevantEvidenceChanged requires a verified change to evidence an active waiver references",
+    );
+  }
+  const affectedIds = new Set(affected.map(({ waiverId }) => waiverId));
+  return {
+    nextState: {
+      ...previousState,
+      stateVersion: previousState.stateVersion + 1,
+      waivers: waivers.map((waiver) =>
+        affectedIds.has(waiver.waiverId)
+          ? {
+              ...waiver,
+              status: "stale" as const,
+              staleEvidence: [
+                ...(waiver.staleEvidence ?? []),
+                {
+                  artifactId: input.changedArtifactId,
+                  previousContentHash: input.previousContentHash,
+                  currentContentHash: input.currentContentHash,
+                },
+              ],
+            }
+          : waiver,
+      ),
+    },
+    commands: [],
+    auditFacts: affected.map((waiver) => ({
+      type: "waiver_invalidated",
+      actor: input.actor,
+      reason: "Evidence the waiver references changed after the grant",
+      evidence: [
+        artifactEvidence(input.changedArtifactId, input.currentContentHash),
+      ],
+      payload: {
+        waiverId: waiver.waiverId,
+        findingId: waiver.findingId,
+        changedArtifactId: input.changedArtifactId,
+        previousContentHash: input.previousContentHash,
+        currentContentHash: input.currentContentHash,
+      },
+    })),
   };
 }
 

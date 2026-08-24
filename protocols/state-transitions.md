@@ -5,7 +5,7 @@ This protocol is normative for the pure `transition(previousState, input, policy
 ## States
 
 | State                    | Meaning                                                              |
-|---|---|
+| ------------------------ | -------------------------------------------------------------------- |
 | `draft`                  | Run exists; requirements are not approved.                           |
 | `requirements_approved`  | One ledger version and its exclusions are approved.                  |
 | `planning`               | A canonical plan is being generated or revised.                      |
@@ -38,7 +38,7 @@ Each accepted transition increments `state_version` exactly once and emits at le
 ## Transition table
 
 | Current state            | Input                         | Guard                                                                                     | Next state                      | Commands                                        | Audit facts                                            |
-|---|---|---|---|---|---|
+| ------------------------ | ----------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------- | ----------------------------------------------- | ------------------------------------------------------ |
 | none                     | `RunStarted`                  | no nonterminal run; source object verified                                                | `draft`                         | render source registration report               | run started; source registered                         |
 | `draft`                  | `LedgerSubmitted`             | schema and source references valid                                                        | `draft`                         | validate coverage; render ledger projection     | ledger version submitted                               |
 | `draft`                  | `SourceExclusionApproved`     | span exists; reason nonempty; human actor                                                 | `draft`                         | recompute coverage                              | exclusion approved                                     |
@@ -68,9 +68,9 @@ Each accepted transition increments `state_version` exactly once and emits at le
 | any nonterminal          | `ExternalEditDetected`        | working projection hash differs                                                           | unchanged, blocked              | register external-edit artifact                 | external edit detected                                 |
 | any blocked by edit      | `ProjectionRestored`          | hash equals verified render                                                               | unchanged, unblocked            | none                                            | projection restored                                    |
 | any blocked by edit      | `PlanSubmitted`               | canonical plan and transition map valid                                                   | `baseline_review`               | render plan; baseline review                    | external edit reconciled by submission                 |
-| any nonterminal          | `WaiverGranted`               | human; finding active; reason nonempty                                                    | unchanged                       | recompute gate                                  | finding waived                                         |
-| any nonterminal          | `WaiverReaffirmed`            | human; current evidence displayed                                                         | unchanged                       | recompute gate                                  | waiver reaffirmed                                      |
-| any nonterminal          | `RelevantEvidenceChanged`     | active waiver references changed evidence                                                 | unchanged                       | recompute gate                                  | waiver invalidated                                     |
+| any nonterminal          | `WaiverGranted`               | human; finding active; reason nonempty                                                    | unchanged                       | none (gates derive from waiver state)           | finding waived                                         |
+| any nonterminal          | `WaiverReaffirmed`            | human; reason nonempty; current evidence displayed                                        | unchanged                       | none (gates derive from waiver state)           | waiver reaffirmed                                      |
+| any nonterminal          | `RelevantEvidenceChanged`     | active waiver references changed evidence                                                 | unchanged                       | none (gates derive from waiver state)           | waiver invalidated                                     |
 | `requirements_approved`  | `IndependenceOverrideGranted` | human; reason nonempty; normal assignment matches pinned policy; before provider dispatch | `requirements_approved`         | none                                            | independence reduced by override                       |
 | any nonterminal          | `BudgetReduced`               | new ceilings >= actual + reserved usage                                                   | unchanged                       | none                                            | budget reduced                                         |
 | any nonterminal          | `RerunAuthorized`             | human; command, attempt, correlation, and reason nonempty                                 | unchanged                       | none                                            | rerun authorized                                       |
@@ -87,7 +87,7 @@ Each accepted transition increments `state_version` exactly once and emits at le
 ## Failure routing
 
 | Outcome                  | Route                                                            |
-|---|---|
+| ------------------------ | ---------------------------------------------------------------- |
 | deterministic validation | reject input; no retry command                                   |
 | transient transport      | retry same logical command if attempt/call budgets remain        |
 | unknown provider outcome | reconcile recording; otherwise retry with duplicate-call warning |

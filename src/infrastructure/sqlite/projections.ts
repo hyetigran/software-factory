@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
 import { canonicalJson } from "../../domain/canonical-json.js";
@@ -279,6 +280,60 @@ export function projectAuthoritativeState(
         string(finding.ruleId),
         canonicalJson(finding.evidence),
         recordedAt,
+      );
+  }
+
+  const waivers = Array.isArray(state.waivers) ? state.waivers : [];
+  for (const waiverValue of waivers) {
+    const waiver = object(waiverValue);
+    if (waiver === null) continue;
+    const waiverId = string(waiver.waiverId);
+    const findingId = string(waiver.findingId);
+    const reason = string(waiver.reason);
+    const status =
+      waiver.status === "active" || waiver.status === "stale"
+        ? (waiver.status as string)
+        : null;
+    const actor = object(waiver.actor);
+    if (
+      waiverId === null ||
+      findingId === null ||
+      reason === null ||
+      status === null ||
+      actor === null
+    ) {
+      continue;
+    }
+    const evidenceHash = createHash("sha256")
+      .update(canonicalJson(waiver.evidence ?? []))
+      .digest("hex");
+    const reaffirmed = facts.some(
+      ({ type, payload }) =>
+        type === "waiver_reaffirmed" &&
+        (payload as State).waiverId === waiverId,
+    );
+    database
+      .prepare(
+        `INSERT INTO waivers
+          (waiver_id, finding_id, run_id, status, reason, evidence_hash,
+           granted_by_actor_id, granted_at, reaffirmed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(waiver_id) DO UPDATE SET
+           status = excluded.status,
+           reason = excluded.reason,
+           evidence_hash = excluded.evidence_hash,
+           reaffirmed_at = COALESCE(excluded.reaffirmed_at, waivers.reaffirmed_at)`,
+      )
+      .run(
+        waiverId,
+        findingId,
+        runId,
+        status,
+        reason,
+        evidenceHash,
+        `${String(actor.displayName)}:${String(actor.osAccount)}`,
+        recordedAt,
+        reaffirmed ? recordedAt : null,
       );
   }
 
