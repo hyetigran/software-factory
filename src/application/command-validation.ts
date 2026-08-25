@@ -193,7 +193,9 @@ function payloadIsValid(commandType: string, value: object): boolean {
           "policyHash",
           "budgetReportArtifactId",
         ]) &&
-        ["planning", "baseline_review"].includes(String(payload.haltedFrom)) &&
+        ["planning", "baseline_review", "remediation", "closure"].includes(
+          String(payload.haltedFrom),
+        ) &&
         [
           "refusal",
           "invalid_output",
@@ -240,6 +242,17 @@ function payloadIsValid(commandType: string, value: object): boolean {
       return hasExactKeys(value, ["backupId"]) && stringFields(["backupId"]);
     case "verify_integrity":
       return hasExactKeys(value, ["scope"]) && payload.scope === "workspace";
+    case "render_qualification_report":
+      return (
+        hasExactKeys(value, [
+          "planVersionId",
+          "planArtifactId",
+          "ledgerVersionId",
+          "waiverIds",
+        ]) &&
+        stringFields(["planVersionId", "planArtifactId", "ledgerVersionId"]) &&
+        stringSet(payload.waiverIds, false)
+      );
     case "repair_schema":
       return (
         hasExactKeys(value, [
@@ -269,6 +282,7 @@ export function commandIsValid(command: PersistableCommand): boolean {
     render_ledger_approval: "local",
     generate_plan: "provider",
     render_plan: "local",
+    render_qualification_report: "local",
     baseline_review: "provider",
     generate_remediation: "provider",
     verify_remediation: "provider",

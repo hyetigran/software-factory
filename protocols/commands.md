@@ -57,6 +57,7 @@ A command with `prerequisiteCommandIds` is ineligible until every referenced log
 | `generate_remediation`              | Planner revision and claims                                  | `RemediationGenerated`                          |
 | `verify_remediation`                | Reviewer evaluates claims and full diff context              | `RemediationReviewAccepted`                     |
 | `closure_review`                    | full Reviewer evaluation after blockers clear                | `ClosureReviewAccepted`                         |
+| `render_qualification_report`       | deterministic qualification report with gate evidence        | operational evidence only; no domain transition |
 | `repair_schema`                     | same provider repairs invalid structured response            | original success input                          |
 | `export_terminal`                   | manifest, report, and eligible plan projections              | `TerminalExportCompleted`                       |
 | `attempt_provider_cancel`           | best-effort cancellation where supported                     | operational evidence only                       |

@@ -27,6 +27,7 @@ import {
   type RelevantEvidenceChanged,
   type RemediationGenerated,
   type RemediationReviewAccepted,
+  type ClosureReviewAccepted,
   type ReviewAccepted,
   waivedFindingIds,
   type WaiverGranted,
@@ -870,6 +871,141 @@ function remediationReviewAcceptedInput(
   };
 }
 
+const closureReviewContentHash = "bc".repeat(32);
+
+function closureState(): AdvancedRunState & { state: "closure" } {
+  const result = transition(
+    verifyPendingState(),
+    remediationReviewAcceptedInput("resolved"),
+    pinnedPolicy,
+  ).nextState;
+  if (result.state !== "closure") {
+    throw new Error("Expected closure state fixture");
+  }
+  return result;
+}
+
+function closureReviewAcceptedInput(input: {
+  findings?: ClosureReviewAccepted["findings"];
+  blockingFindingIds: string[];
+}): ClosureReviewAccepted {
+  return {
+    type: "ClosureReviewAccepted",
+    runId: "run_01JTEST0000000000000000000",
+    expectedStateVersion: 11,
+    reviewId: "review_closure_01JTEST",
+    reviewPurposeId:
+      "run_01JTEST0000000000000000000:plan:plan_version_02JTEST:closure:1",
+    originatingCommandId: "command_after_verify_01JTEST",
+    reviewArtifact: {
+      artifactId: "artifact_closure_review_01JTEST",
+      contentHash: closureReviewContentHash,
+      verified: true,
+    },
+    reviewRequestArtifact: {
+      artifactId: "artifact_closure_request_01JTEST",
+      contentHash: "de".repeat(32),
+      verified: true,
+    },
+    providerUsageArtifact: {
+      artifactId: "artifact_closure_usage_01JTEST",
+      contentHash: "ef".repeat(32),
+      verified: true,
+    },
+    acceptedAttempt: {
+      validator: "accepted-provider-attempt-v1",
+      commandId: "command_after_verify_01JTEST",
+      attemptId: "attempt_closure_review_01JTEST_1",
+      requestArtifactId: "artifact_closure_request_01JTEST",
+      requestContentHash: "de".repeat(32),
+      responseArtifactId: "artifact_closure_review_01JTEST",
+      responseContentHash: closureReviewContentHash,
+      rawResponseArtifactId: "artifact_closure_raw_01JTEST",
+      rawResponseContentHash: "fa".repeat(32),
+      nativeUsageArtifactId: "artifact_closure_usage_01JTEST",
+      nativeUsageContentHash: "ef".repeat(32),
+    },
+    reviewedPlanVersionId: "plan_version_02JTEST",
+    reviewedPlanContentHash: revisedPlanContentHash,
+    reviewedPolicyHash: policyHash,
+    outputValid: true,
+    outputValidation: {
+      validator: "deterministic-review-output-v1",
+      validatedReviewContentHash: closureReviewContentHash,
+      schemaValid: true,
+      taxonomyValid: true,
+      controlledIdsValid: true,
+      evidenceReferencesSupplied: true,
+    },
+    findings: input.findings ?? [],
+    reconciliation: {
+      validator: "deterministic-finding-reconciliation-v1",
+      validatedReviewContentHash: closureReviewContentHash,
+      priorFindingsAccountedFor: true,
+      ambiguousCandidatesResolved: true,
+      findingIdsAssignedByOrchestrator: true,
+      observationIdsUnique: true,
+      blockingFindingIds: input.blockingFindingIds,
+    },
+    remediationCycleCeiling: 3,
+    remediationCyclesUsed: 1,
+    closureCycleCeiling: 2,
+    closureCyclesUsed: 1,
+    nextCommandId: "command_after_closure_01JTEST",
+    nextCommandBudgetMaximum: {
+      calls: 1,
+      inputTokens: 70_000,
+      outputTokens: 28_000,
+      costUsdMicros: 40_000_000,
+    },
+    nextCommandTimeoutMs: 120_000,
+    nextCommandReasoning: "high",
+    nextCommandRequestPolicyResolved: true,
+    remediationPromptArtifact: {
+      artifactId: "artifact_remediation_prompt_01JTEST",
+      contentHash: "a".repeat(64),
+      verified: true,
+    },
+    remediationSchemaArtifact: {
+      artifactId: "artifact_remediation_schema_01JTEST",
+      contentHash: "b".repeat(64),
+      verified: true,
+    },
+    reportCommandId: "command_render_qualification_01JTEST",
+    availableBudget: {
+      calls: 2,
+      inputTokens: 100_000,
+      outputTokens: 40_000,
+      costUsdMicros: 50_000_000,
+    },
+    exhaustionReport: null,
+    auditChainVerified: true,
+    databaseIntegrityVerified: true,
+    schemaCompatible: true,
+    mutationLeaseAvailable: true,
+    actor: {
+      kind: "reviewer",
+      provider: "anthropic",
+      modelId: "claude-frontier-pinned-20260801",
+    },
+  };
+}
+
+const closureFinding = {
+  findingId: "finding_closure_01JTEST",
+  observationId: "observation_closure_01JTEST",
+  severity: "high" as const,
+  ruleId: "rule_closure_gap",
+  title: "Closure surfaced a new blocking gap",
+  evidence: [
+    {
+      kind: "artifact" as const,
+      artifactId: "artifact_plan_02JTEST",
+      contentHash: revisedPlanContentHash,
+    },
+  ],
+};
+
 function waiverGrantedInput(): WaiverGranted {
   return {
     type: "WaiverGranted",
@@ -1079,7 +1215,7 @@ function advancedRunState(state: AdvancedRunState["state"]): AdvancedRunState {
     }
     return accepted;
   }
-  return { ...base, state };
+  return { ...base, state } as unknown as AdvancedRunState;
 }
 
 function approvalReadyDraft(): DraftRunState {
@@ -4162,6 +4298,552 @@ describe("transition", () => {
         verifyPendingState(),
         { ...remediationReviewAcceptedInput("resolved"), ...override },
         pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("qualifies a clean closure review with no active waivers", () => {
+    const result = transition(
+      closureState(),
+      closureReviewAcceptedInput({ blockingFindingIds: [] }),
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.state).toBe("qualified");
+    expect(result.nextState.stateVersion).toBe(12);
+    if (
+      result.nextState.state !== "qualified" &&
+      result.nextState.state !== "qualified_with_waivers"
+    ) {
+      throw new Error("Expected a qualified state");
+    }
+    expect(result.nextState.qualification).toEqual({
+      closureReviewId: "review_closure_01JTEST",
+      closureReview: {
+        artifactId: "artifact_closure_review_01JTEST",
+        contentHash: closureReviewContentHash,
+      },
+      waiverIds: [],
+      reportCommandId: "command_render_qualification_01JTEST",
+    });
+    const command = result.commands[0];
+    if (command?.commandType !== "render_qualification_report") {
+      throw new Error("Expected a render_qualification_report command");
+    }
+    expect(result.commands).toHaveLength(1);
+    expect(command.provider).toBe("local");
+    expect(command.payload).toEqual({
+      planVersionId: "plan_version_02JTEST",
+      planArtifactId: "artifact_plan_02JTEST",
+      ledgerVersionId: "ledger_01JTEST",
+      waiverIds: [],
+    });
+    expect(result.auditFacts.map(({ type }) => type)).toEqual([
+      "review_accepted",
+      "plan_qualified",
+      "command_planned",
+    ]);
+    const qualified = result.auditFacts[1];
+    if (qualified?.type !== "plan_qualified") {
+      throw new Error("Expected a plan_qualified fact");
+    }
+    expect(qualified.payload).toEqual({
+      planVersionId: "plan_version_02JTEST",
+      planContentHash: revisedPlanContentHash,
+      closureReviewId: "review_closure_01JTEST",
+      closureReviewArtifactId: "artifact_closure_review_01JTEST",
+      gateId:
+        "run_01JTEST0000000000000000000:gate:closure:plan_version_02JTEST",
+      waiverIds: [],
+    });
+  });
+
+  it("qualifies with waivers when active waivers carry the remaining blockers", () => {
+    const closureWithFinding = transition(
+      baselineReviewState(),
+      reviewAcceptedInput([]),
+      pinnedPolicy,
+    ).nextState;
+    if (closureWithFinding.state !== "closure") {
+      throw new Error("Expected closure state");
+    }
+    const waived = transition(
+      closureWithFinding,
+      { ...waiverGrantedInput(), expectedStateVersion: 9 },
+      pinnedPolicy,
+    ).nextState;
+    if (waived.state !== "closure") {
+      throw new Error("Expected closure state");
+    }
+
+    const result = transition(
+      waived,
+      {
+        ...closureReviewAcceptedInput({
+          blockingFindingIds: ["finding_architecture_01JTEST"],
+        }),
+        expectedStateVersion: 10,
+        reviewPurposeId:
+          "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:closure:1",
+        originatingCommandId: "command_after_baseline_01JTEST",
+        acceptedAttempt: {
+          ...closureReviewAcceptedInput({ blockingFindingIds: [] })
+            .acceptedAttempt,
+          commandId: "command_after_baseline_01JTEST",
+        },
+        reviewedPlanVersionId: "plan_version_01JTEST",
+        reviewedPlanContentHash: planContentHash,
+        remediationCyclesUsed: 0,
+      },
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.state).toBe("qualified_with_waivers");
+    if (
+      result.nextState.state !== "qualified" &&
+      result.nextState.state !== "qualified_with_waivers"
+    ) {
+      throw new Error("Expected a qualified state");
+    }
+    expect(result.nextState.qualification.waiverIds).toEqual([
+      "waiver_architecture_01JTEST",
+    ]);
+    const qualified = result.auditFacts[1];
+    if (qualified?.type !== "plan_qualified") {
+      throw new Error("Expected a plan_qualified fact");
+    }
+    expect(qualified.payload.waiverIds).toEqual([
+      "waiver_architecture_01JTEST",
+    ]);
+    const command = result.commands[0];
+    if (command?.commandType !== "render_qualification_report") {
+      throw new Error("Expected a render_qualification_report command");
+    }
+    expect(command.payload.waiverIds).toEqual(["waiver_architecture_01JTEST"]);
+  });
+
+  it("refuses to qualify over a stale waiver and reopens remediation", () => {
+    const closureWithFinding = transition(
+      baselineReviewState(),
+      reviewAcceptedInput([]),
+      pinnedPolicy,
+    ).nextState;
+    if (closureWithFinding.state !== "closure") {
+      throw new Error("Expected closure state");
+    }
+    const waived = transition(
+      closureWithFinding,
+      { ...waiverGrantedInput(), expectedStateVersion: 9 },
+      pinnedPolicy,
+    ).nextState;
+    const stale = transition(
+      waived,
+      { ...relevantEvidenceChangedInput(), expectedStateVersion: 10 },
+      pinnedPolicy,
+    ).nextState;
+    if (stale.state !== "closure") {
+      throw new Error("Expected closure state");
+    }
+
+    const result = transition(
+      stale,
+      {
+        ...closureReviewAcceptedInput({
+          blockingFindingIds: ["finding_architecture_01JTEST"],
+        }),
+        expectedStateVersion: 11,
+        reviewPurposeId:
+          "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:closure:1",
+        originatingCommandId: "command_after_baseline_01JTEST",
+        acceptedAttempt: {
+          ...closureReviewAcceptedInput({ blockingFindingIds: [] })
+            .acceptedAttempt,
+          commandId: "command_after_baseline_01JTEST",
+        },
+        reviewedPlanVersionId: "plan_version_01JTEST",
+        reviewedPlanContentHash: planContentHash,
+        remediationCyclesUsed: 0,
+      },
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.state).toBe("remediation");
+    if (result.nextState.state !== "remediation") {
+      throw new Error("Expected remediation state");
+    }
+    expect(result.nextState.blockingFindingIds).toEqual([
+      "finding_architecture_01JTEST",
+    ]);
+  });
+
+  it("reopens bounded remediation for new closure blockers", () => {
+    const result = transition(
+      closureState(),
+      closureReviewAcceptedInput({
+        findings: [closureFinding],
+        blockingFindingIds: ["finding_closure_01JTEST"],
+      }),
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.state).toBe("remediation");
+    expect(result.nextState.stateVersion).toBe(12);
+    if (result.nextState.state !== "remediation") {
+      throw new Error("Expected remediation state");
+    }
+    expect(
+      result.nextState.activeFindings.map(({ findingId }) => findingId),
+    ).toEqual(["finding_closure_01JTEST"]);
+    expect(result.nextState.blockingFindingIds).toEqual([
+      "finding_closure_01JTEST",
+    ]);
+    expect(result.nextState.activeReview.cycle).toBe(2);
+    expect(result.nextState.closureCyclesCompleted).toBe(1);
+    const command = result.commands[0];
+    if (command?.commandType !== "generate_remediation") {
+      throw new Error("Expected a generate_remediation command");
+    }
+    expect(command.purposeId).toBe(
+      "run_01JTEST0000000000000000000:plan:plan_version_02JTEST:remediation:2",
+    );
+    expect(command.payload.blockingFindingIds).toEqual([
+      "finding_closure_01JTEST",
+    ]);
+    expect(result.auditFacts.map(({ type }) => type)).toEqual([
+      "review_accepted",
+      "finding_created",
+      "command_planned",
+    ]);
+  });
+
+  it.each([
+    [
+      "the closure-cycle ceiling",
+      { closureCycles: 1, remediationCycles: 3 },
+      { closureCycleCeiling: 1 },
+    ],
+    [
+      "the remediation-cycle ceiling",
+      { closureCycles: 2, remediationCycles: 1 },
+      { remediationCycleCeiling: 1 },
+    ],
+  ])(
+    "halts closure blockers when %s is exhausted",
+    (_name, ceilings, override) => {
+      const result = transition(
+        closureState(),
+        {
+          ...closureReviewAcceptedInput({
+            findings: [closureFinding],
+            blockingFindingIds: ["finding_closure_01JTEST"],
+          }),
+          ...override,
+          exhaustionReport: {
+            terminalReportCommandId: "command_terminal_report_01JTEST",
+            budgetReportArtifact: {
+              artifactId: "artifact_budget_report_01JTEST",
+              contentHash: "3".repeat(64),
+              verified: true,
+            },
+            attemptIds: ["attempt_closure_review_01JTEST_1"],
+            reason: "Closure or remediation cycle ceiling is exhausted",
+          },
+        },
+        { ...pinnedPolicy, cycleCeilings: ceilings },
+      );
+
+      expect(result.nextState.state).toBe("halted");
+      if (result.nextState.state !== "halted") {
+        throw new Error("Expected halted state");
+      }
+      expect(result.nextState.unresolvedFindingIds).toEqual([
+        "finding_closure_01JTEST",
+      ]);
+      expect(result.auditFacts.map(({ type }) => type)).toEqual([
+        "review_accepted",
+        "finding_created",
+        "run_halted",
+        "command_planned",
+      ]);
+      const command = result.commands[0];
+      if (command?.commandType !== "export_terminal") {
+        throw new Error("Expected an export_terminal command");
+      }
+      expect(command.payload.failureClassification).toBe("budget");
+    },
+  );
+
+  it("rejects ClosureReviewAccepted outside the closure state", () => {
+    expect(() =>
+      transition(
+        verifyPendingState(),
+        {
+          ...closureReviewAcceptedInput({ blockingFindingIds: [] }),
+          expectedStateVersion: 10,
+        },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_TRANSITION" }));
+  });
+
+  it.each([
+    ["a stale state version", { expectedStateVersion: 10 }],
+    [
+      "a mismatched closure purpose",
+      { reviewPurposeId: "purpose_other_01JTEST" },
+    ],
+    [
+      "a mismatched originating command",
+      { originatingCommandId: "command_other_01JTEST" },
+    ],
+    [
+      "an attempt bound to a different response",
+      {
+        acceptedAttempt: {
+          ...closureReviewAcceptedInput({ blockingFindingIds: [] })
+            .acceptedAttempt,
+          responseContentHash: "0".repeat(64),
+        },
+      },
+    ],
+    ["invalid structured output", { outputValid: false }],
+    [
+      "output validated against a different artifact",
+      {
+        outputValidation: {
+          ...closureReviewAcceptedInput({ blockingFindingIds: [] })
+            .outputValidation,
+          validatedReviewContentHash: "0".repeat(64),
+        },
+      },
+    ],
+    [
+      "an unreconciled prior finding set",
+      {
+        reconciliation: {
+          ...closureReviewAcceptedInput({ blockingFindingIds: [] })
+            .reconciliation,
+          priorFindingsAccountedFor: false,
+        },
+      },
+    ],
+    [
+      "a blocker that is neither new nor active",
+      {
+        reconciliation: {
+          ...closureReviewAcceptedInput({ blockingFindingIds: [] })
+            .reconciliation,
+          blockingFindingIds: ["finding_unknown_01JTEST"],
+        },
+      },
+    ],
+    [
+      "finding evidence outside the supplied artifacts",
+      {
+        findings: [
+          {
+            ...closureFinding,
+            evidence: [
+              {
+                kind: "artifact" as const,
+                artifactId: "artifact_unrelated_01JTEST",
+                contentHash: "9".repeat(64),
+              },
+            ],
+          },
+        ],
+        reconciliation: {
+          ...closureReviewAcceptedInput({ blockingFindingIds: [] })
+            .reconciliation,
+          blockingFindingIds: ["finding_closure_01JTEST"],
+        },
+      },
+    ],
+    [
+      "a reviewed plan different from the current plan",
+      { reviewedPlanVersionId: "plan_version_01JTEST" },
+    ],
+    [
+      "the wrong Reviewer actor",
+      {
+        actor: {
+          kind: "reviewer" as const,
+          provider: "anthropic" as const,
+          modelId: "claude-other-model",
+        },
+      },
+    ],
+    [
+      "a closure cycle ceiling different from pinned policy",
+      { closureCycleCeiling: 5 },
+    ],
+    [
+      "a remediation cycle ceiling different from pinned policy",
+      { remediationCycleCeiling: 5 },
+    ],
+    [
+      "a closure cycle count out of step with the run",
+      { closureCyclesUsed: 2 },
+    ],
+    [
+      "a remediation cycle count out of step with the run",
+      { remediationCyclesUsed: 2 },
+    ],
+    ["an empty qualification report command", { reportCommandId: "" }],
+    ["a broken audit chain", { auditChainVerified: false }],
+    ["a conflicting mutation lease", { mutationLeaseAvailable: false }],
+  ])("rejects ClosureReviewAccepted with %s", (_name, override) => {
+    expect(() =>
+      transition(
+        closureState(),
+        {
+          ...closureReviewAcceptedInput({ blockingFindingIds: [] }),
+          ...override,
+        },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("rejects qualification that omits an open blocking-severity finding", () => {
+    const closureWithFinding = transition(
+      baselineReviewState(),
+      reviewAcceptedInput([]),
+      pinnedPolicy,
+    ).nextState;
+    if (closureWithFinding.state !== "closure") {
+      throw new Error("Expected closure state");
+    }
+
+    expect(() =>
+      transition(
+        closureWithFinding,
+        {
+          ...closureReviewAcceptedInput({ blockingFindingIds: [] }),
+          expectedStateVersion: 9,
+          reviewPurposeId:
+            "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:closure:1",
+          originatingCommandId: "command_after_baseline_01JTEST",
+          acceptedAttempt: {
+            ...closureReviewAcceptedInput({ blockingFindingIds: [] })
+              .acceptedAttempt,
+            commandId: "command_after_baseline_01JTEST",
+          },
+          reviewedPlanVersionId: "plan_version_01JTEST",
+          reviewedPlanContentHash: planContentHash,
+          remediationCyclesUsed: 0,
+        },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("rejects omitting a stale-waived finding from the blocking set", () => {
+    const closureWithFinding = transition(
+      baselineReviewState(),
+      reviewAcceptedInput([]),
+      pinnedPolicy,
+    ).nextState;
+    if (closureWithFinding.state !== "closure") {
+      throw new Error("Expected closure state");
+    }
+    const mediumSeverity = {
+      ...closureWithFinding,
+      activeFindings: closureWithFinding.activeFindings.map((finding) => ({
+        ...finding,
+        severity: "medium" as const,
+      })),
+    };
+    const waived = transition(
+      mediumSeverity,
+      { ...waiverGrantedInput(), expectedStateVersion: 9 },
+      pinnedPolicy,
+    ).nextState;
+    const stale = transition(
+      waived,
+      { ...relevantEvidenceChangedInput(), expectedStateVersion: 10 },
+      pinnedPolicy,
+    ).nextState;
+    if (stale.state !== "closure") {
+      throw new Error("Expected closure state");
+    }
+
+    expect(() =>
+      transition(
+        stale,
+        {
+          ...closureReviewAcceptedInput({ blockingFindingIds: [] }),
+          expectedStateVersion: 11,
+          reviewPurposeId:
+            "run_01JTEST0000000000000000000:plan:plan_version_01JTEST:closure:1",
+          originatingCommandId: "command_after_baseline_01JTEST",
+          acceptedAttempt: {
+            ...closureReviewAcceptedInput({ blockingFindingIds: [] })
+              .acceptedAttempt,
+            commandId: "command_after_baseline_01JTEST",
+          },
+          reviewedPlanVersionId: "plan_version_01JTEST",
+          reviewedPlanContentHash: planContentHash,
+          remediationCyclesUsed: 0,
+        },
+        pinnedPolicy,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
+  });
+
+  it("ignores waivers whose findings no longer exist when qualifying", () => {
+    const orphanWaiver = {
+      ...closureState(),
+      waivers: [
+        {
+          waiverId: "waiver_resolved_01JTEST",
+          findingId: "finding_resolved_gone_01JTEST",
+          status: "active" as const,
+          reason: "Accepted risk on a finding that has since resolved",
+          actor: {
+            kind: "human" as const,
+            displayName: "Tigran",
+            osAccount: "tig",
+          },
+          evidence: [
+            {
+              kind: "artifact" as const,
+              artifactId: "artifact_plan_01JTEST",
+              contentHash: planContentHash,
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = transition(
+      orphanWaiver,
+      closureReviewAcceptedInput({ blockingFindingIds: [] }),
+      pinnedPolicy,
+    );
+
+    expect(result.nextState.state).toBe("qualified");
+    if (
+      result.nextState.state !== "qualified" &&
+      result.nextState.state !== "qualified_with_waivers"
+    ) {
+      throw new Error("Expected a qualified state");
+    }
+    expect(result.nextState.qualification.waiverIds).toEqual([]);
+  });
+
+  it("rejects closure exhaustion without a terminal report", () => {
+    expect(() =>
+      transition(
+        closureState(),
+        closureReviewAcceptedInput({
+          findings: [closureFinding],
+          blockingFindingIds: ["finding_closure_01JTEST"],
+        }),
+        {
+          ...pinnedPolicy,
+          cycleCeilings: { remediationCycles: 1, closureCycles: 2 },
+        },
       ),
     ).toThrowError(expect.objectContaining({ code: "PRECONDITION_FAILED" }));
   });
